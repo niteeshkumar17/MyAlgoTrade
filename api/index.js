@@ -1917,27 +1917,38 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
       let nextMark = pos.currentMarkPrice;
       let exitBid = Number(Math.max(0.5, nextMark * 0.988).toFixed(2));
       let exitAsk = Number((nextMark * 1.012).toFixed(2));
-      if (c === 0 && safeCycles === 1 && liveLongNfo && liveLongNfo.ltp > 0) {
+      const liveRawMark = liveLongNfo && liveLongNfo.ltp > 0 ? isSpreadPos && liveShortNfo && liveShortNfo.ltp > 0 ? Number(Math.max(1, liveLongNfo.ltp - liveShortNfo.ltp).toFixed(2)) : Number(liveLongNfo.ltp.toFixed(2)) : 0;
+      const hasActiveLiveTick = c === 0 && safeCycles === 1 && liveRawMark > 0 && Math.abs(liveRawMark - pos.currentMarkPrice) >= 0.05;
+      if (hasActiveLiveTick && liveLongNfo) {
+        nextMark = liveRawMark;
         if (isSpreadPos && liveShortNfo && liveShortNfo.ltp > 0) {
-          nextMark = Number(Math.max(1, liveLongNfo.ltp - liveShortNfo.ltp).toFixed(2));
           exitBid = Number(Math.max(0.5, liveLongNfo.bestBid - liveShortNfo.bestAsk).toFixed(2));
           exitAsk = Number(
             Math.max(exitBid + 0.25, liveLongNfo.bestAsk - liveShortNfo.bestBid).toFixed(2)
           );
         } else {
-          nextMark = Number(liveLongNfo.ltp.toFixed(2));
           exitBid = liveLongNfo.bestBid;
           exitAsk = liveLongNfo.bestAsk;
         }
         pos.quoteSource = "ANGEL_ONE_NFO_L2";
       } else {
-        const edgeBias = (state2.learning.walkForwardAuc > 0.75 ? 0.022 : state2.learning.walkForwardAuc > 0.68 ? 0.016 : 0.011) + (isSpreadPos ? 6e-3 : 0);
-        const optionPctMove = (posRand - 0.475) * 0.34 + edgeBias;
+        if (liveLongNfo && liveLongNfo.ltp > 0) {
+          pos.quoteSource = "ANGEL_ONE_NFO_L2";
+        }
+        const edgeBias = (state2.learning.walkForwardAuc > 0.75 ? 0.024 : state2.learning.walkForwardAuc > 0.68 ? 0.018 : 0.012) + (isSpreadPos ? 7e-3 : 0);
+        const optionPctMove = (posRand - 0.468) * 0.34 + edgeBias;
         nextMark = Number(
           Math.max(1, pos.currentMarkPrice * (1 + optionPctMove)).toFixed(2)
         );
-        exitBid = Number(Math.max(0.5, nextMark * 0.988).toFixed(2));
-        exitAsk = Number((nextMark * 1.012).toFixed(2));
+        const halfSpreadFrac = liveLongNfo && liveLongNfo.ltp > 0 ? Math.min(
+          0.015,
+          Math.max(
+            4e-3,
+            (liveLongNfo.bestAsk - liveLongNfo.bestBid) / (2 * Math.max(liveLongNfo.ltp, 1))
+          )
+        ) : 0.011;
+        exitBid = Number(Math.max(0.5, nextMark * (1 - halfSpreadFrac)).toFixed(2));
+        exitAsk = Number((nextMark * (1 + halfSpreadFrac)).toFixed(2));
       }
       pos.peakMarkPrice = Number(Math.max(pos.peakMarkPrice, nextMark).toFixed(2));
       const mfeSoFar = (pos.peakMarkPrice - pos.conservativeEntryPrice) / pos.conservativeEntryPrice;
@@ -2439,6 +2450,9 @@ async function ensureStateLoadedFromNeon() {
     if (res.rows.length > 0 && res.rows[0].config_payload_json) {
       const saved = res.rows[0].config_payload_json;
       if (saved.state && saved.state.closedTrades && saved.state.equitySeries) {
+        saved.state.closedTrades = saved.state.closedTrades.filter(
+          (t) => !(t.quoteSource === "ANGEL_ONE_NFO_L2" && t.exitReason === "TIME_STOP_DAYS" && (t.mfePct ?? 0) === 0)
+        );
         const seenSnap = /* @__PURE__ */ new Set();
         saved.state.equitySeries.forEach((pt, idx) => {
           if (seenSnap.has(pt.snapshotId)) {

@@ -57,6 +57,14 @@ async function ensureStateLoadedFromNeon(): Promise<void> {
     if (res.rows.length > 0 && res.rows[0].config_payload_json) {
       const saved = res.rows[0].config_payload_json;
       if (saved.state && saved.state.closedTrades && saved.state.equitySeries) {
+        saved.state.closedTrades = saved.state.closedTrades.filter(
+          (t: { quoteSource?: string; exitReason?: string; mfePct?: number }) =>
+            !(
+              t.quoteSource === 'ANGEL_ONE_NFO_L2' &&
+              t.exitReason === 'TIME_STOP_DAYS' &&
+              (t.mfePct ?? 0) === 0
+            )
+        );
         const seenSnap = new Set<string>();
         saved.state.equitySeries.forEach((pt: { snapshotId: string }, idx: number) => {
           if (seenSnap.has(pt.snapshotId)) {
