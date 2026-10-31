@@ -914,6 +914,318 @@ function buildInitialQuantState() {
   };
 }
 
+// src/quant/angelOneSmartApi.ts
+import crypto from "node:crypto";
+var ANGEL_ONE_NSE_TOKENS = {
+  NIFTY: {
+    symbol: "NIFTY",
+    angelToken: "99926000",
+    tradingSymbol: "Nifty 50",
+    exchange: "NSE"
+  },
+  BANKNIFTY: {
+    symbol: "BANKNIFTY",
+    angelToken: "99926009",
+    tradingSymbol: "Nifty Bank",
+    exchange: "NSE"
+  },
+  FINNIFTY: {
+    symbol: "FINNIFTY",
+    angelToken: "99926037",
+    tradingSymbol: "Nifty Fin Service",
+    exchange: "NSE"
+  },
+  INDIA_VIX: {
+    symbol: "INDIA_VIX",
+    angelToken: "99926017",
+    tradingSymbol: "India VIX",
+    exchange: "NSE"
+  },
+  RELIANCE: {
+    symbol: "RELIANCE",
+    angelToken: "2885",
+    tradingSymbol: "RELIANCE-EQ",
+    exchange: "NSE"
+  },
+  TCS: {
+    symbol: "TCS",
+    angelToken: "11536",
+    tradingSymbol: "TCS-EQ",
+    exchange: "NSE"
+  },
+  HDFCBANK: {
+    symbol: "HDFCBANK",
+    angelToken: "1333",
+    tradingSymbol: "HDFCBANK-EQ",
+    exchange: "NSE"
+  },
+  INFY: {
+    symbol: "INFY",
+    angelToken: "1594",
+    tradingSymbol: "INFY-EQ",
+    exchange: "NSE"
+  },
+  ICICIBANK: {
+    symbol: "ICICIBANK",
+    angelToken: "4963",
+    tradingSymbol: "ICICIBANK-EQ",
+    exchange: "NSE"
+  },
+  SBIN: {
+    symbol: "SBIN",
+    angelToken: "3045",
+    tradingSymbol: "SBIN-EQ",
+    exchange: "NSE"
+  }
+};
+var ANGEL_BASE_URL = "https://apiconnect.angelone.in";
+var cachedJwtToken = null;
+var cachedFeedToken = null;
+var jwtExpiresAtMs = 0;
+var lastLoginAtIso = null;
+var lastQuoteFetchAtIso = null;
+var lastAngelError = null;
+var cachedOptionGreeks = {};
+function decodeBase32(base32Raw) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  const cleaned = base32Raw.toUpperCase().replace(/[^A-Z2-7]/g, "");
+  let bits = 0;
+  let value = 0;
+  const output = [];
+  for (let i = 0; i < cleaned.length; i++) {
+    const idx = alphabet.indexOf(cleaned[i]);
+    if (idx === -1) continue;
+    value = value << 5 | idx;
+    bits += 5;
+    if (bits >= 8) {
+      output.push(value >>> bits - 8 & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(output);
+}
+function generateAngelTotp(base32Secret, timestampMs = Date.now()) {
+  const key = decodeBase32(base32Secret);
+  const counter = Math.floor(timestampMs / 1e3 / 30);
+  const counterBuf = Buffer.alloc(8);
+  counterBuf.writeBigUInt64BE(BigInt(counter), 0);
+  const hmac = crypto.createHmac("sha1", key).update(counterBuf).digest();
+  const offset = hmac[hmac.length - 1] & 15;
+  const binary = (hmac[offset] & 127) << 24 | (hmac[offset + 1] & 255) << 16 | (hmac[offset + 2] & 255) << 8 | hmac[offset + 3] & 255;
+  const otp = binary % 1e6;
+  return otp.toString().padStart(6, "0");
+}
+function getAngelCredentials() {
+  const apiKey = (process.env.ANGEL_API_KEY || process.env.ANGEL_SMARTAPI_KEY || "").trim();
+  const clientCode = (process.env.ANGEL_CLIENT_CODE || process.env.ANGEL_CLIENT_ID || "").trim();
+  const mpin = (process.env.ANGEL_MPIN || process.env.ANGEL_PASSWORD || "").trim();
+  const totpSecret = (process.env.ANGEL_TOTP_SECRET || "").trim();
+  const configured = Boolean(apiKey && clientCode && mpin && totpSecret);
+  return { apiKey, clientCode, mpin, totpSecret, configured };
+}
+function buildAngelHeaders(apiKey, jwtToken) {
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "X-UserType": "USER",
+    "X-SourceID": "WEB",
+    "X-ClientLocalIP": "127.0.0.1",
+    "X-ClientPublicIP": "127.0.0.1",
+    "X-MACAddress": "02:00:00:00:00:01",
+    "X-PrivateKey": apiKey
+  };
+  if (jwtToken) {
+    headers.Authorization = jwtToken.startsWith("Bearer ") ? jwtToken : `Bearer ${jwtToken}`;
+  }
+  return headers;
+}
+async function ensureAngelOneSession(forceRefresh = false) {
+  const { apiKey, clientCode, mpin, totpSecret, configured } = getAngelCredentials();
+  if (!configured) {
+    return null;
+  }
+  const now = Date.now();
+  if (!forceRefresh && cachedJwtToken && now < jwtExpiresAtMs) {
+    return cachedJwtToken;
+  }
+  try {
+    const totp = generateAngelTotp(totpSecret, now);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    const res = await fetch(
+      `${ANGEL_BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword`,
+      {
+        method: "POST",
+        headers: buildAngelHeaders(apiKey),
+        body: JSON.stringify({
+          clientcode: clientCode,
+          password: mpin,
+          totp
+        }),
+        signal: controller.signal
+      }
+    );
+    clearTimeout(timer);
+    const payload = await res.json();
+    if (!res.ok || !payload?.status || !payload?.data?.jwtToken) {
+      lastAngelError = payload?.message || payload?.errorcode || `Angel login HTTP ${res.status}`;
+      return null;
+    }
+    cachedJwtToken = payload.data.jwtToken;
+    cachedFeedToken = payload.data.feedToken ?? null;
+    jwtExpiresAtMs = now + 18 * 60 * 60 * 1e3;
+    lastLoginAtIso = new Date(now).toISOString();
+    lastAngelError = null;
+    return cachedJwtToken;
+  } catch (err) {
+    lastAngelError = err instanceof Error ? err.message : "Angel login network error";
+    return null;
+  }
+}
+async function fetchAngelOneFullMarketQuotes() {
+  const { apiKey, configured } = getAngelCredentials();
+  if (!configured) return null;
+  let jwt = await ensureAngelOneSession(false);
+  if (!jwt) return null;
+  const tokenList = Object.values(ANGEL_ONE_NSE_TOKENS).map((t) => t.angelToken);
+  const tokenToSymbol = /* @__PURE__ */ new Map();
+  for (const [sym, meta] of Object.entries(ANGEL_ONE_NSE_TOKENS)) {
+    tokenToSymbol.set(meta.angelToken, sym);
+  }
+  const executeQuoteCall = async (token) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    const response = await fetch(
+      `${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`,
+      {
+        method: "POST",
+        headers: buildAngelHeaders(apiKey, token),
+        body: JSON.stringify({
+          mode: "FULL",
+          exchangeTokens: {
+            NSE: tokenList
+          }
+        }),
+        signal: controller.signal
+      }
+    );
+    clearTimeout(timer);
+    return response;
+  };
+  try {
+    let res = await executeQuoteCall(jwt);
+    let data = await res.json();
+    if (!data?.status && (data?.errorcode === "AG8001" || res.status === 401)) {
+      jwt = await ensureAngelOneSession(true);
+      if (!jwt) return null;
+      res = await executeQuoteCall(jwt);
+      data = await res.json();
+    }
+    if (!data?.status || !Array.isArray(data?.data?.fetched)) {
+      lastAngelError = data?.message || data?.errorcode || "Angel quote fetch unsuccessful";
+      return null;
+    }
+    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+    lastQuoteFetchAtIso = nowIso;
+    lastAngelError = null;
+    const results = {};
+    for (const item of data.data.fetched) {
+      const sym = tokenToSymbol.get(String(item.symbolToken || ""));
+      if (!sym) continue;
+      const ltp = Number(item.ltp ?? 0);
+      if (ltp <= 0) continue;
+      const close = Number(item.close ?? ltp);
+      const pctChange = typeof item.percentChange === "number" ? Number(item.percentChange.toFixed(2)) : close > 0 ? Number(((ltp - close) / close * 100).toFixed(2)) : 0;
+      const rawBid = Number(item.depth?.buy?.[0]?.price ?? 0);
+      const rawAsk = Number(item.depth?.sell?.[0]?.price ?? 0);
+      const bestBid = rawBid > 0 ? rawBid : Number((ltp * 0.9992).toFixed(2));
+      const bestAsk = rawAsk > 0 && rawAsk >= bestBid ? rawAsk : Number((ltp * 1.0008).toFixed(2));
+      const mid = (bestBid + bestAsk) / 2;
+      const spreadPctOfMid = mid > 0 ? Number(((bestAsk - bestBid) / mid).toFixed(5)) : 16e-4;
+      results[sym] = {
+        symbol: sym,
+        angelToken: String(item.symbolToken),
+        ltp: Number(ltp.toFixed(2)),
+        open: Number((item.open ?? ltp).toFixed(2)),
+        high: Number((item.high ?? ltp).toFixed(2)),
+        low: Number((item.low ?? ltp).toFixed(2)),
+        close: Number(close.toFixed(2)),
+        percentChange: pctChange,
+        bestBid,
+        bestAsk,
+        spreadPctOfMid,
+        tradeVolume: Number(item.tradeVolume ?? 0),
+        openInterest: Number(item.opnInterest ?? 0),
+        updatedAt: nowIso
+      };
+    }
+    return Object.keys(results).length > 0 ? results : null;
+  } catch (err) {
+    lastAngelError = err instanceof Error ? err.message : "Angel quote network error";
+    return null;
+  }
+}
+async function fetchAngelOneOptionGreeks(underlying, expiryDate = "26NOV2026") {
+  const { apiKey, configured } = getAngelCredentials();
+  if (!configured) return null;
+  const jwt = await ensureAngelOneSession(false);
+  if (!jwt) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(
+      `${ANGEL_BASE_URL}/rest/secure/angelbroking/marketData/v1/optionGreek`,
+      {
+        method: "POST",
+        headers: buildAngelHeaders(apiKey, jwt),
+        body: JSON.stringify({
+          name: underlying,
+          expirydate: expiryDate
+        }),
+        signal: controller.signal
+      }
+    );
+    clearTimeout(timer);
+    const payload = await res.json();
+    if (!payload?.status || !Array.isArray(payload?.data) || payload.data.length === 0) {
+      return cachedOptionGreeks[underlying] ?? null;
+    }
+    const calls = payload.data.filter((r) => r.optionType === "CE" && Number(r.impliedVolatility) > 0);
+    const puts = payload.data.filter((r) => r.optionType === "PE" && Number(r.impliedVolatility) > 0);
+    const atmCall = calls.sort((a, b) => Math.abs(Number(a.delta) - 0.5) - Math.abs(Number(b.delta) - 0.5))[0] ?? calls[0];
+    const atmPut = puts.sort((a, b) => Math.abs(Math.abs(Number(a.delta)) - 0.5) - Math.abs(Math.abs(Number(b.delta)) - 0.5))[0] ?? puts[0];
+    const summary = {
+      underlying,
+      expiryDate,
+      atmImpliedVolatilityPct: Number(atmCall?.impliedVolatility ?? atmPut?.impliedVolatility ?? 14.5),
+      atmCallDelta: Number(atmCall?.delta ?? 0.52),
+      atmPutDelta: Number(atmPut?.delta ?? -0.48),
+      atmTheta: Number(atmCall?.theta ?? -12.4),
+      atmVega: Number(atmCall?.vega ?? 18.2),
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    cachedOptionGreeks[underlying] = summary;
+    return summary;
+  } catch {
+    return cachedOptionGreeks[underlying] ?? null;
+  }
+}
+function getAngelOneConnectionStatus() {
+  const { clientCode, configured } = getAngelCredentials();
+  const masked = clientCode.length >= 4 ? `${clientCode.slice(0, 2)}***${clientCode.slice(-2)}` : configured ? "CONFIGURED" : "NOT_SET";
+  return {
+    configured,
+    authenticated: Boolean(configured && cachedJwtToken && Date.now() < jwtExpiresAtMs),
+    providerName: "Angel One SmartAPI (NSE L1/L2 + Option Greeks + 5m OHLCV)",
+    clientCodeMasked: masked,
+    feedMode: configured && cachedJwtToken ? "ANGEL_ONE_SMARTAPI_FULL" : "FALLBACK_PUBLIC_NSE",
+    tokensTracked: Object.keys(ANGEL_ONE_NSE_TOKENS).length,
+    lastLoginAt: lastLoginAtIso,
+    lastQuoteFetchAt: lastQuoteFetchAtIso,
+    lastError: lastAngelError
+  };
+}
+
 // src/quant/livePaperRunner.ts
 var YAHOO_TICKER_MAP = {
   NIFTY: "%5ENSEI",
@@ -944,6 +1256,7 @@ var cachedSpots = {};
 for (const [sym, px] of Object.entries(BASE_SPOTS)) {
   cachedSpots[sym] = {
     symbol: sym,
+    angelToken: ANGEL_ONE_NSE_TOKENS[sym]?.angelToken,
     spot: px,
     changePct: 0.18,
     source: "NSE_SIM_BAR",
@@ -952,11 +1265,42 @@ for (const [sym, px] of Object.entries(BASE_SPOTS)) {
 }
 async function refreshLiveNseQuotes() {
   const now = Date.now();
-  if (now - lastRealFetchMs < 3e4) {
+  if (now - lastRealFetchMs < 15e3) {
     return cachedSpots;
   }
   lastRealFetchMs = now;
-  const symbolsToFetch = ["NIFTY", "BANKNIFTY", "INDIA_VIX", "RELIANCE", "TCS", "HDFCBANK"];
+  const angelQuotes = await fetchAngelOneFullMarketQuotes();
+  if (angelQuotes && Object.keys(angelQuotes).length > 0) {
+    for (const [sym, item] of Object.entries(angelQuotes)) {
+      cachedSpots[sym] = {
+        symbol: sym,
+        angelToken: item.angelToken,
+        spot: item.ltp,
+        changePct: item.percentChange,
+        bestBid: item.bestBid,
+        bestAsk: item.bestAsk,
+        tradeVolume: item.tradeVolume,
+        openInterest: item.openInterest,
+        source: "ANGEL_ONE_LIVE",
+        updatedAt: item.updatedAt
+      };
+      BASE_SPOTS[sym] = item.ltp;
+    }
+    fetchAngelOneOptionGreeks("NIFTY").catch(() => {
+    });
+    return cachedSpots;
+  }
+  const symbolsToFetch = [
+    "NIFTY",
+    "BANKNIFTY",
+    "INDIA_VIX",
+    "RELIANCE",
+    "TCS",
+    "HDFCBANK",
+    "INFY",
+    "ICICIBANK",
+    "SBIN"
+  ];
   await Promise.all(
     symbolsToFetch.map(async (sym) => {
       const yTicker = YAHOO_TICKER_MAP[sym];
@@ -981,6 +1325,7 @@ async function refreshLiveNseQuotes() {
           const chg = prev && prev > 0 ? (price - prev) / prev * 100 : 0;
           cachedSpots[sym] = {
             symbol: sym,
+            angelToken: ANGEL_ONE_NSE_TOKENS[sym]?.angelToken,
             spot: Number(price.toFixed(2)),
             changePct: Number(chg.toFixed(2)),
             source: "NSE_LIVE_FEED",
@@ -992,12 +1337,13 @@ async function refreshLiveNseQuotes() {
       }
     })
   );
-  if (cachedSpots.NIFTY && cachedSpots.BANKNIFTY) {
+  if (cachedSpots.NIFTY && cachedSpots.BANKNIFTY && cachedSpots.FINNIFTY?.source !== "ANGEL_ONE_LIVE") {
     const finSpot = Number(
       (cachedSpots.NIFTY.spot * 0.48 + cachedSpots.BANKNIFTY.spot * 0.235).toFixed(2)
     );
     cachedSpots.FINNIFTY = {
       symbol: "FINNIFTY",
+      angelToken: ANGEL_ONE_NSE_TOKENS.FINNIFTY.angelToken,
       spot: finSpot,
       changePct: cachedSpots.BANKNIFTY.changePct,
       source: cachedSpots.NIFTY.source,
@@ -1097,22 +1443,36 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
     const phase = Math.sin(seq * 12.9898 + state2.closedTrades.length * 78.233) * 43758.5453;
     const rand = phase - Math.floor(phase);
     for (const sym of underlyings) {
-      const cur = cachedSpots[sym]?.spot ?? BASE_SPOTS[sym] ?? 1e3;
-      const symHash = sym.charCodeAt(0) + sym.charCodeAt(sym.length - 1) + cycleNum;
-      const microShock = Math.sin(symHash * 0.73) * 42e-4 + (rand - 0.482) * 55e-4;
-      const nextSpot = Number(Math.max(50, cur * (1 + microShock)).toFixed(2));
-      cachedSpots[sym] = {
-        symbol: sym,
-        spot: nextSpot,
-        changePct: Number((microShock * 100).toFixed(2)),
-        source: cachedSpots[sym]?.source ?? "NSE_SIM_BAR",
-        updatedAt: nowIso
-      };
+      const existing = cachedSpots[sym];
+      const cur = existing?.spot ?? BASE_SPOTS[sym] ?? 1e3;
+      if (c === 0 && safeCycles === 1 && existing?.source === "ANGEL_ONE_LIVE") {
+        cachedSpots[sym] = {
+          ...existing,
+          updatedAt: nowIso
+        };
+      } else {
+        const symHash = sym.charCodeAt(0) + sym.charCodeAt(sym.length - 1) + cycleNum;
+        const microShock = Math.sin(symHash * 0.73) * 42e-4 + (rand - 0.482) * 55e-4;
+        const nextSpot = Number(Math.max(50, cur * (1 + microShock)).toFixed(2));
+        cachedSpots[sym] = {
+          ...existing,
+          symbol: sym,
+          angelToken: existing?.angelToken ?? ANGEL_ONE_NSE_TOKENS[sym]?.angelToken,
+          spot: nextSpot,
+          changePct: Number((microShock * 100).toFixed(2)),
+          source: existing?.source ?? "NSE_SIM_BAR",
+          updatedAt: nowIso
+        };
+      }
     }
-    const vixDrift = (rand - 0.495) * 0.35;
-    state2.health.indiaVixLevel = Number(
-      Math.max(10.5, Math.min(28, state2.health.indiaVixLevel + vixDrift)).toFixed(2)
-    );
+    if (c === 0 && safeCycles === 1 && cachedSpots.INDIA_VIX?.source === "ANGEL_ONE_LIVE") {
+      state2.health.indiaVixLevel = cachedSpots.INDIA_VIX.spot;
+    } else {
+      const vixDrift = (rand - 0.495) * 0.35;
+      state2.health.indiaVixLevel = Number(
+        Math.max(10.5, Math.min(28, state2.health.indiaVixLevel + vixDrift)).toFixed(2)
+      );
+    }
     state2.health.niftySpot = cachedSpots.NIFTY.spot;
     state2.health.bankNiftySpot = cachedSpots.BANKNIFTY.spot;
     if (state2.health.indiaVixLevel >= 21.5) {
@@ -1563,6 +1923,7 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
     retrainsTriggered,
     latestActionSummary: latestActionSummary2,
     liveQuotes: cachedSpots,
+    angelOneStatus: getAngelOneConnectionStatus(),
     learningComparison: computeLearningEffectiveness(state2)
   };
 }
@@ -1800,6 +2161,7 @@ app.get("/api/overview", async (_req, res) => {
       totalAutonomousCyclesRun,
       latestActionSummary,
       liveQuotes,
+      angelOneStatus: getAngelOneConnectionStatus(),
       learningComparison: computeLearningEffectiveness(state)
     },
     headline: {
@@ -1861,6 +2223,7 @@ app.get("/api/health", async (_req, res) => {
     status: "ok",
     health: state.health,
     control: state.control,
+    angelOneStatus: getAngelOneConnectionStatus(),
     heartbeatAgeMinutes: offlineCheck.ageMinutes,
     isOffline: offlineCheck.isOffline,
     totalAutonomousCyclesRun,

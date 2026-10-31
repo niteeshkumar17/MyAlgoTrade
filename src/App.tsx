@@ -47,6 +47,17 @@ export default function App() {
       totalAutonomousCyclesRun: number;
       latestActionSummary: string;
       liveQuotes: Record<string, LiveSpotQuote>;
+      angelOneStatus?: {
+        configured: boolean;
+        authenticated: boolean;
+        providerName: string;
+        clientCodeMasked: string;
+        feedMode: 'ANGEL_ONE_SMARTAPI_FULL' | 'FALLBACK_PUBLIC_NSE';
+        tokensTracked: number;
+        lastLoginAt: string | null;
+        lastQuoteFetchAt: string | null;
+        lastError: string | null;
+      };
       learningComparison: {
         earlyTradesExpectancyInr: number;
         recentTradesExpectancyInr: number;
@@ -662,6 +673,68 @@ export default function App() {
                   })}
                 </div>
               </div>
+
+              {/* Angel One SmartAPI Live NSE Market Data Strip */}
+              {overviewData.liveRunner?.liveQuotes && (
+                <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-slate-900 dark:text-slate-100">
+                        Market Data Feed:
+                      </span>
+                      <span
+                        className={`font-mono px-2 py-0.5 rounded text-[11px] font-semibold ${
+                          overviewData.liveRunner.angelOneStatus?.authenticated
+                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                            : 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30'
+                        }`}
+                      >
+                        {overviewData.liveRunner.angelOneStatus?.authenticated
+                          ? `ANGEL ONE SMARTAPI LIVE (${overviewData.liveRunner.angelOneStatus.clientCodeMasked} · FULL L1/L2 + GREEKS)`
+                          : overviewData.liveRunner.angelOneStatus?.configured
+                          ? `ANGEL ONE CONFIGURED (${overviewData.liveRunner.angelOneStatus.clientCodeMasked}) — CONNECTING...`
+                          : 'ANGEL ONE SMARTAPI READY (Set ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_MPIN, ANGEL_TOTP_SECRET in Vercel)'}
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-mono text-slate-500">
+                      10 NSE Tokens (#99926000 NIFTY · #99926009 BANKNIFTY · #99926037 FINNIFTY · #99926017 VIX)
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-5 lg:grid-cols-10 gap-2 text-[11px] font-mono tabular-nums">
+                    {Object.values(overviewData.liveRunner.liveQuotes).map((q) => (
+                      <div
+                        key={q.symbol}
+                        className="px-2.5 py-1.5 rounded bg-slate-50 dark:bg-slate-950/70 border border-slate-200/80 dark:border-slate-800/80"
+                      >
+                        <div className="flex items-center justify-between gap-1 text-slate-500">
+                          <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">
+                            {q.symbol}
+                          </span>
+                          <span className="text-[9px] opacity-75">
+                            {q.source === 'ANGEL_ONE_LIVE' ? 'ANGEL' : 'NSE'}
+                          </span>
+                        </div>
+                        <div className="font-semibold text-slate-900 dark:text-slate-100 mt-0.5">
+                          {q.symbol === 'INDIA_VIX'
+                            ? q.spot.toFixed(2)
+                            : q.spot.toLocaleString('en-IN', { maximumFractionDigits: 1 })}
+                        </div>
+                        <div
+                          className={`text-[10px] ${
+                            q.changePct >= 0
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-rose-600 dark:text-rose-400'
+                          }`}
+                        >
+                          {q.changePct >= 0 ? '+' : ''}
+                          {q.changePct.toFixed(2)}%
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </section>
 
             {/* Headline KPI Strip */}

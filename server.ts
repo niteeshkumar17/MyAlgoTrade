@@ -20,6 +20,7 @@ import {
   executeAutonomousPaperCycles,
   refreshLiveNseQuotes,
 } from './src/quant/livePaperRunner.js';
+import { getAngelOneConnectionStatus } from './src/quant/angelOneSmartApi.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -295,6 +296,7 @@ app.get('/api/overview', async (_req, res) => {
       totalAutonomousCyclesRun,
       latestActionSummary,
       liveQuotes,
+      angelOneStatus: getAngelOneConnectionStatus(),
       learningComparison: computeLearningEffectiveness(state),
     },
     headline: {
@@ -366,6 +368,7 @@ app.get('/api/health', async (_req, res) => {
     status: 'ok',
     health: state.health,
     control: state.control,
+    angelOneStatus: getAngelOneConnectionStatus(),
     heartbeatAgeMinutes: offlineCheck.ageMinutes,
     isOffline: offlineCheck.isOffline,
     totalAutonomousCyclesRun,

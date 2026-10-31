@@ -12,6 +12,13 @@
  */
 
 import {
+  ANGEL_ONE_NSE_TOKENS,
+  AngelOneConnectionStatus,
+  fetchAngelOneFullMarketQuotes,
+  fetchAngelOneOptionGreeks,
+  getAngelOneConnectionStatus,
+} from './angelOneSmartApi.js';
+import {
   blackScholesOptionPrice,
   calculateRoundtripPnl,
   classifyTradePostMortem,
@@ -29,9 +36,14 @@ import { QuantSystemState } from './seedStore.js';
 
 export interface LiveSpotQuote {
   symbol: string;
+  angelToken?: string;
   spot: number;
   changePct: number;
-  source: 'NSE_LIVE_FEED' | 'NSE_SIM_BAR';
+  bestBid?: number;
+  bestAsk?: number;
+  tradeVolume?: number;
+  openInterest?: number;
+  source: 'ANGEL_ONE_LIVE' | 'NSE_LIVE_FEED' | 'NSE_SIM_BAR';
   updatedAt: string;
 }
 
@@ -43,6 +55,7 @@ export interface CycleExecutionReport {
   retrainsTriggered: number;
   latestActionSummary: string;
   liveQuotes: Record<string, LiveSpotQuote>;
+  angelOneStatus: AngelOneConnectionStatus;
   learningComparison: {
     earlyTradesExpectancyInr: number;
     recentTradesExpectancyInr: number;
@@ -85,6 +98,7 @@ const cachedSpots: Record<string, LiveSpotQuote> = {};
 for (const [sym, px] of Object.entries(BASE_SPOTS)) {
   cachedSpots[sym] = {
     symbol: sym,
+    angelToken: ANGEL_ONE_NSE_TOKENS[sym]?.angelToken,
     spot: px,
     changePct: 0.18,
     source: 'NSE_SIM_BAR',
@@ -93,16 +107,54 @@ for (const [sym, px] of Object.entries(BASE_SPOTS)) {
 }
 
 /**
- * Fetch real NSE spot quotes from Yahoo Finance public chart endpoint (throttled to every 30s).
+ * Primary Market Data Fetcher:
+ * 1. Connects to Angel One SmartAPI (`market/v1/quote/` mode="FULL" + `marketData/v1/optionGreek`)
+ *    for all 10 NSE symbols (`NIFTY`, `BANKNIFTY`, `FINNIFTY`, `INDIA_VIX`, `RELIANCE`, `TCS`,
+ *    `HDFCBANK`, `INFY`, `ICICIBANK`, `SBIN`).
+ * 2. Gracefully falls back to public NSE feed only if Angel One credentials are not yet configured.
  */
 export async function refreshLiveNseQuotes(): Promise<Record<string, LiveSpotQuote>> {
   const now = Date.now();
-  if (now - lastRealFetchMs < 30000) {
+  if (now - lastRealFetchMs < 15000) {
     return cachedSpots;
   }
   lastRealFetchMs = now;
 
-  const symbolsToFetch = ['NIFTY', 'BANKNIFTY', 'INDIA_VIX', 'RELIANCE', 'TCS', 'HDFCBANK'];
+  // 1. Primary: Angel One SmartAPI Full Market Data (LTP + 5-Level Depth + OI + Volume)
+  const angelQuotes = await fetchAngelOneFullMarketQuotes();
+  if (angelQuotes && Object.keys(angelQuotes).length > 0) {
+    for (const [sym, item] of Object.entries(angelQuotes)) {
+      cachedSpots[sym] = {
+        symbol: sym,
+        angelToken: item.angelToken,
+        spot: item.ltp,
+        changePct: item.percentChange,
+        bestBid: item.bestBid,
+        bestAsk: item.bestAsk,
+        tradeVolume: item.tradeVolume,
+        openInterest: item.openInterest,
+        source: 'ANGEL_ONE_LIVE',
+        updatedAt: item.updatedAt,
+      };
+      BASE_SPOTS[sym] = item.ltp;
+    }
+    // Also refresh Angel One live Option Greeks for NIFTY in the background
+    fetchAngelOneOptionGreeks('NIFTY').catch(() => {});
+    return cachedSpots;
+  }
+
+  // 2. Fallback: Public NSE Chart Feed (when Angel One env vars are not yet added)
+  const symbolsToFetch = [
+    'NIFTY',
+    'BANKNIFTY',
+    'INDIA_VIX',
+    'RELIANCE',
+    'TCS',
+    'HDFCBANK',
+    'INFY',
+    'ICICIBANK',
+    'SBIN',
+  ];
   await Promise.all(
     symbolsToFetch.map(async (sym) => {
       const yTicker = YAHOO_TICKER_MAP[sym];
@@ -133,6 +185,7 @@ export async function refreshLiveNseQuotes(): Promise<Record<string, LiveSpotQuo
           const chg = prev && prev > 0 ? ((price - prev) / prev) * 100 : 0;
           cachedSpots[sym] = {
             symbol: sym,
+            angelToken: ANGEL_ONE_NSE_TOKENS[sym]?.angelToken,
             spot: Number(price.toFixed(2)),
             changePct: Number(chg.toFixed(2)),
             source: 'NSE_LIVE_FEED',
@@ -141,18 +194,19 @@ export async function refreshLiveNseQuotes(): Promise<Record<string, LiveSpotQuo
           BASE_SPOTS[sym] = cachedSpots[sym].spot;
         }
       } catch {
-        // Keep last known quote + micro bar evolution
+        // Keep last known quote
       }
     })
   );
 
-  // Derive FINNIFTY proportionally if NIFTY moved
-  if (cachedSpots.NIFTY && cachedSpots.BANKNIFTY) {
+  // Derive FINNIFTY proportionally if NIFTY moved in fallback mode
+  if (cachedSpots.NIFTY && cachedSpots.BANKNIFTY && cachedSpots.FINNIFTY?.source !== 'ANGEL_ONE_LIVE') {
     const finSpot = Number(
       (cachedSpots.NIFTY.spot * 0.48 + cachedSpots.BANKNIFTY.spot * 0.235).toFixed(2)
     );
     cachedSpots.FINNIFTY = {
       symbol: 'FINNIFTY',
+      angelToken: ANGEL_ONE_NSE_TOKENS.FINNIFTY.angelToken,
       spot: finSpot,
       changePct: cachedSpots.BANKNIFTY.changePct,
       source: cachedSpots.NIFTY.source,
@@ -309,25 +363,40 @@ export function executeAutonomousPaperCycles(
     const phase = Math.sin(seq * 12.9898 + state.closedTrades.length * 78.233) * 43758.5453;
     const rand = phase - Math.floor(phase);
 
-    // 1. Evolve NSE spot prices & INDIA VIX with realistic 5-minute bar drift
+    // 1. Use exact Angel One SmartAPI live quotes on single real-time cycles;
+    //    apply 5-minute bar evolution only during multi-cycle fast-forward or when market is closed
     for (const sym of underlyings) {
-      const cur = cachedSpots[sym]?.spot ?? BASE_SPOTS[sym] ?? 1000;
-      const symHash = sym.charCodeAt(0) + sym.charCodeAt(sym.length - 1) + cycleNum;
-      const microShock = (Math.sin(symHash * 0.73) * 0.0042) + (rand - 0.482) * 0.0055;
-      const nextSpot = Number(Math.max(50, cur * (1 + microShock)).toFixed(2));
-      cachedSpots[sym] = {
-        symbol: sym,
-        spot: nextSpot,
-        changePct: Number((microShock * 100).toFixed(2)),
-        source: cachedSpots[sym]?.source ?? 'NSE_SIM_BAR',
-        updatedAt: nowIso,
-      };
+      const existing = cachedSpots[sym];
+      const cur = existing?.spot ?? BASE_SPOTS[sym] ?? 1000;
+      if (c === 0 && safeCycles === 1 && existing?.source === 'ANGEL_ONE_LIVE') {
+        cachedSpots[sym] = {
+          ...existing,
+          updatedAt: nowIso,
+        };
+      } else {
+        const symHash = sym.charCodeAt(0) + sym.charCodeAt(sym.length - 1) + cycleNum;
+        const microShock = Math.sin(symHash * 0.73) * 0.0042 + (rand - 0.482) * 0.0055;
+        const nextSpot = Number(Math.max(50, cur * (1 + microShock)).toFixed(2));
+        cachedSpots[sym] = {
+          ...existing,
+          symbol: sym,
+          angelToken: existing?.angelToken ?? ANGEL_ONE_NSE_TOKENS[sym]?.angelToken,
+          spot: nextSpot,
+          changePct: Number((microShock * 100).toFixed(2)),
+          source: existing?.source ?? 'NSE_SIM_BAR',
+          updatedAt: nowIso,
+        };
+      }
     }
 
-    const vixDrift = (rand - 0.495) * 0.35;
-    state.health.indiaVixLevel = Number(
-      Math.max(10.5, Math.min(28.0, state.health.indiaVixLevel + vixDrift)).toFixed(2)
-    );
+    if (c === 0 && safeCycles === 1 && cachedSpots.INDIA_VIX?.source === 'ANGEL_ONE_LIVE') {
+      state.health.indiaVixLevel = cachedSpots.INDIA_VIX.spot;
+    } else {
+      const vixDrift = (rand - 0.495) * 0.35;
+      state.health.indiaVixLevel = Number(
+        Math.max(10.5, Math.min(28.0, state.health.indiaVixLevel + vixDrift)).toFixed(2)
+      );
+    }
     state.health.niftySpot = cachedSpots.NIFTY.spot;
     state.health.bankNiftySpot = cachedSpots.BANKNIFTY.spot;
 
@@ -879,6 +948,7 @@ export function executeAutonomousPaperCycles(
     retrainsTriggered,
     latestActionSummary,
     liveQuotes: cachedSpots,
+    angelOneStatus: getAngelOneConnectionStatus(),
     learningComparison: computeLearningEffectiveness(state),
   };
 }
