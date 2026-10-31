@@ -256,7 +256,10 @@ refreshLiveNseQuotes().catch(() => {});
 if (!process.env.VERCEL) {
   setInterval(async () => {
     if (!autoRunEnabled || state.health.simulatedOfflineMode) return;
-    await refreshLiveNseQuotes();
+    const openTokens = state.openPositions
+      .flatMap((p) => [p.angelToken, p.shortAngelToken])
+      .filter(Boolean) as string[];
+    await refreshLiveNseQuotes(openTokens);
     const rep = executeAutonomousPaperCycles(state, 1);
     totalAutonomousCyclesRun += rep.cyclesRun;
     latestActionSummary = rep.latestActionSummary;
@@ -266,7 +269,10 @@ if (!process.env.VERCEL) {
 // 1. GET /api/overview
 app.get('/api/overview', async (_req, res) => {
   await ensureStateLoadedFromNeon();
-  const liveQuotes = await refreshLiveNseQuotes();
+  const openTokens = state.openPositions
+    .flatMap((p) => [p.angelToken, p.shortAngelToken])
+    .filter(Boolean) as string[];
+  const liveQuotes = await refreshLiveNseQuotes(openTokens);
   if (process.env.VERCEL && autoRunEnabled && !state.health.simulatedOfflineMode) {
     const rep = executeAutonomousPaperCycles(state, 1);
     totalAutonomousCyclesRun += rep.cyclesRun;

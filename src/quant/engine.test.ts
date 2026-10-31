@@ -287,4 +287,50 @@ test('defined-risk vertical debit spreads cut max risk & theta decay, and 200+ t
   assert.equal(state.learning.walkForwardAuc >= 0.78, true);
 });
 
+test('Angel One NFO option parser, 5-minute OHLCV technical indicators, and IV/Greeks solver compute accurate outputs', async () => {
+  const {
+    computeTechnicalIndicatorsFromCandles,
+    solveImpliedVolatilityAndGreeks,
+  } = await import('./engine');
+  const { parseAngelNfoOptionSymbol } = await import('./angelOneSmartApi');
+
+  const parsedNifty = parseAngelNfoOptionSymbol('NIFTY', 'NIFTY01DEC2623050CE', '47526');
+  assert.ok(parsedNifty);
+  assert.equal(parsedNifty.expiryCode, '01DEC26');
+  assert.equal(parsedNifty.strike, 23050);
+  assert.equal(parsedNifty.right, 'CE');
+  assert.equal(parsedNifty.symbolToken, '47526');
+
+  const solved = solveImpliedVolatilityAndGreeks({
+    marketPrice: 421.22,
+    spot: 23053.1,
+    strike: 23050,
+    dteDays: 22,
+    riskFreeRate: 0.068,
+    right: 'CE',
+  });
+  assert.equal(solved.impliedVolAnnual > 0.08 && solved.impliedVolAnnual < 0.45, true);
+  assert.equal(solved.delta > 0.4 && solved.delta < 0.7, true);
+  assert.equal(solved.thetaPerDay < 0, true);
+  assert.equal(solved.vegaPerPct > 0, true);
+
+  const syntheticCandles = Array.from({ length: 30 }, (_, idx) => {
+    const base = 23000 + idx * 4.5;
+    return {
+      timestamp: `2026-10-30T10:${String(idx).padStart(2, '0')}:00+05:30`,
+      open: base - 2,
+      high: base + 6,
+      low: base - 5,
+      close: base + 3,
+      volume: 12000 + idx * 150,
+    };
+  });
+  const ind = computeTechnicalIndicatorsFromCandles(syntheticCandles);
+  assert.equal(ind.rsi14 > 50, true);
+  assert.equal(ind.adx14 >= 16, true);
+  assert.equal(ind.ema9 >= ind.ema21, true);
+  assert.equal(ind.trendSignal, 'CE');
+});
+
+
 

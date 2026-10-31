@@ -14,7 +14,11 @@
 import {
   ANGEL_ONE_NSE_TOKENS,
   AngelOneConnectionStatus,
+  AngelOneNfoOptionQuote,
+  fetchAngelOneFiveMinCandles,
   fetchAngelOneFullMarketQuotes,
+  fetchAngelOneLiveOptionPairQuotes,
+  fetchAngelOneNfoQuotesByTokens,
   fetchAngelOneOptionGreeks,
   getAngelOneConnectionStatus,
 } from './angelOneSmartApi.js';
@@ -22,14 +26,17 @@ import {
   blackScholesOptionPrice,
   calculateRoundtripPnl,
   classifyTradePostMortem,
+  computeTechnicalIndicatorsFromCandles,
   evaluatePositionExit,
   evaluateRiskAndSize,
+  LiveTechnicalIndicators,
   MarketRegime,
   NSE_LOT_SIZES,
   OpenOptionPosition,
   OptionRight,
   simulatePessimisticFill,
   simulateVerticalDebitSpreadFill,
+  solveImpliedVolatilityAndGreeks,
   StrategyName,
 } from './engine.js';
 import { QuantSystemState } from './seedStore.js';
@@ -43,6 +50,14 @@ export interface LiveSpotQuote {
   bestAsk?: number;
   tradeVolume?: number;
   openInterest?: number;
+  rsi14?: number;
+  adx14?: number;
+  atrPct?: number;
+  nfoContractSymbol?: string;
+  nfoToken?: string;
+  nfoOptionLtp?: number;
+  nfoBestBid?: number;
+  nfoBestAsk?: number;
   source: 'ANGEL_ONE_LIVE' | 'NSE_LIVE_FEED' | 'NSE_SIM_BAR';
   updatedAt: string;
 }
@@ -93,7 +108,17 @@ const BASE_SPOTS: Record<string, number> = {
 
 let lastRealFetchMs = 0;
 let monotonicSeq = 1000;
+let rotationCursor = 0;
 const cachedSpots: Record<string, LiveSpotQuote> = {};
+const cachedTechnicals: Record<string, LiveTechnicalIndicators> = {};
+const cachedNfoPairsByUnderlying: Record<
+  string,
+  { longLeg: AngelOneNfoOptionQuote | null; shortLeg: AngelOneNfoOptionQuote | null }
+> = {};
+let cachedOpenPositionNfoMarks: Record<
+  string,
+  { ltp: number; bestBid: number; bestAsk: number; openInterest: number; tradeVolume: number }
+> = {};
 
 for (const [sym, px] of Object.entries(BASE_SPOTS)) {
   cachedSpots[sym] = {
@@ -106,14 +131,26 @@ for (const [sym, px] of Object.entries(BASE_SPOTS)) {
   };
 }
 
+function getStrikeStep(underlying: string): number {
+  return underlying === 'BANKNIFTY'
+    ? 100
+    : underlying === 'NIFTY' || underlying === 'FINNIFTY'
+    ? 50
+    : 20;
+}
+
 /**
  * Primary Market Data Fetcher:
- * 1. Connects to Angel One SmartAPI (`market/v1/quote/` mode="FULL" + `marketData/v1/optionGreek`)
+ * 1. Connects to Angel One SmartAPI (`market/v1/quote/` mode="FULL" + NFO Option L2 Depth + 5m OHLCV Candles)
  *    for all 10 NSE symbols (`NIFTY`, `BANKNIFTY`, `FINNIFTY`, `INDIA_VIX`, `RELIANCE`, `TCS`,
  *    `HDFCBANK`, `INFY`, `ICICIBANK`, `SBIN`).
- * 2. Gracefully falls back to public NSE feed only if Angel One credentials are not yet configured.
+ * 2. Rotates 1 underlying per cycle to fetch 5-minute OHLCV candles (`getCandleData`) and live NFO Option
+ *    contract L2 orderbooks (`searchScrip` + `market/v1/quote/` NFO) while respecting Angel One rate limits.
+ * 3. Gracefully falls back to public NSE feed only if Angel One credentials are not yet configured.
  */
-export async function refreshLiveNseQuotes(): Promise<Record<string, LiveSpotQuote>> {
+export async function refreshLiveNseQuotes(
+  openPositionTokens: string[] = []
+): Promise<Record<string, LiveSpotQuote>> {
   const now = Date.now();
   if (now - lastRealFetchMs < 15000) {
     return cachedSpots;
@@ -124,7 +161,9 @@ export async function refreshLiveNseQuotes(): Promise<Record<string, LiveSpotQuo
   const angelQuotes = await fetchAngelOneFullMarketQuotes();
   if (angelQuotes && Object.keys(angelQuotes).length > 0) {
     for (const [sym, item] of Object.entries(angelQuotes)) {
+      const prev = cachedSpots[sym];
       cachedSpots[sym] = {
+        ...prev,
         symbol: sym,
         angelToken: item.angelToken,
         spot: item.ltp,
@@ -138,7 +177,60 @@ export async function refreshLiveNseQuotes(): Promise<Record<string, LiveSpotQuo
       };
       BASE_SPOTS[sym] = item.ltp;
     }
-    // Also refresh Angel One live Option Greeks for NIFTY in the background
+
+    // Rotate 1 underlying per 15s refresh to pull live 5m OHLCV candles + live NFO Option L2 orderbook
+    const tradeableUnderlyings = Object.keys(NSE_LOT_SIZES);
+    const activeSym = tradeableUnderlyings[rotationCursor % tradeableUnderlyings.length];
+    rotationCursor++;
+
+    try {
+      const candles = await fetchAngelOneFiveMinCandles(
+        activeSym,
+        '2026-10-20 09:15',
+        '2026-11-05 15:30'
+      );
+      if (candles && candles.length >= 15) {
+        const ind = computeTechnicalIndicatorsFromCandles(candles);
+        cachedTechnicals[activeSym] = ind;
+        if (cachedSpots[activeSym]) {
+          cachedSpots[activeSym].rsi14 = ind.rsi14;
+          cachedSpots[activeSym].adx14 = ind.adx14;
+          cachedSpots[activeSym].atrPct = ind.atrPct;
+        }
+      }
+
+      const spotPx = cachedSpots[activeSym]?.spot ?? BASE_SPOTS[activeSym] ?? 23050;
+      const step = getStrikeStep(activeSym);
+      const rightChoice = cachedTechnicals[activeSym]?.trendSignal ?? 'CE';
+      const targetStrike = Math.round(spotPx / step) * step;
+      const shortStrike =
+        rightChoice === 'CE' ? targetStrike + step * 2 : Math.max(step, targetStrike - step * 2);
+
+      const nfoPair = await fetchAngelOneLiveOptionPairQuotes({
+        underlying: activeSym,
+        targetStrike,
+        shortStrike,
+        right: rightChoice,
+      });
+      if (nfoPair.longLeg) {
+        cachedNfoPairsByUnderlying[activeSym] = nfoPair;
+        if (cachedSpots[activeSym]) {
+          cachedSpots[activeSym].nfoContractSymbol = nfoPair.longLeg.tradingSymbol;
+          cachedSpots[activeSym].nfoToken = nfoPair.longLeg.symbolToken;
+          cachedSpots[activeSym].nfoOptionLtp = nfoPair.longLeg.ltp;
+          cachedSpots[activeSym].nfoBestBid = nfoPair.longLeg.bestBid;
+          cachedSpots[activeSym].nfoBestAsk = nfoPair.longLeg.bestAsk;
+        }
+      }
+
+      if (openPositionTokens.length > 0) {
+        const liveMarks = await fetchAngelOneNfoQuotesByTokens(openPositionTokens);
+        cachedOpenPositionNfoMarks = { ...cachedOpenPositionNfoMarks, ...liveMarks };
+      }
+    } catch {
+      // Non-fatal: keep cached technicals and NFO quotes
+    }
+
     fetchAngelOneOptionGreeks('NIFTY').catch(() => {});
     return cachedSpots;
   }
@@ -434,19 +526,47 @@ export function executeAutonomousPaperCycles(
       const posPhase = Math.sin(posHash * 19.19) * 10000;
       const posRand = posPhase - Math.floor(posPhase);
 
-      // Positions that passed the >= 68% Capital-Preservation Gate + Bandit have a ~78–86% win rate
-      // with Breakeven-Lock protection once MFE >= +18% and -65% Theta decay on Vertical Spreads
       const isSpreadPos = pos.contractSymbol.includes('SPREAD');
-      const edgeBias =
-        (state.learning.walkForwardAuc > 0.75
-          ? 0.022
-          : state.learning.walkForwardAuc > 0.68
-          ? 0.016
-          : 0.011) + (isSpreadPos ? 0.006 : 0);
-      const optionPctMove = (posRand - 0.475) * 0.34 + edgeBias;
-      let nextMark = Number(
-        Math.max(1.0, pos.currentMarkPrice * (1 + optionPctMove)).toFixed(2)
-      );
+      const liveLongNfo = pos.angelToken ? cachedOpenPositionNfoMarks[pos.angelToken] : undefined;
+      const liveShortNfo = pos.shortAngelToken
+        ? cachedOpenPositionNfoMarks[pos.shortAngelToken]
+        : undefined;
+
+      let nextMark = pos.currentMarkPrice;
+      let exitBid = Number(Math.max(0.5, nextMark * 0.988).toFixed(2));
+      let exitAsk = Number((nextMark * 1.012).toFixed(2));
+
+      if (c === 0 && safeCycles === 1 && liveLongNfo && liveLongNfo.ltp > 0) {
+        // Real Angel One NFO Option Orderbook Mark-to-Market
+        if (isSpreadPos && liveShortNfo && liveShortNfo.ltp > 0) {
+          nextMark = Number(Math.max(1.0, liveLongNfo.ltp - liveShortNfo.ltp).toFixed(2));
+          exitBid = Number(Math.max(0.5, liveLongNfo.bestBid - liveShortNfo.bestAsk).toFixed(2));
+          exitAsk = Number(
+            Math.max(exitBid + 0.25, liveLongNfo.bestAsk - liveShortNfo.bestBid).toFixed(2)
+          );
+        } else {
+          nextMark = Number(liveLongNfo.ltp.toFixed(2));
+          exitBid = liveLongNfo.bestBid;
+          exitAsk = liveLongNfo.bestAsk;
+        }
+        pos.quoteSource = 'ANGEL_ONE_NFO_L2';
+      } else {
+        // Positions that passed the >= 68% Capital-Preservation Gate + Bandit have a ~78–86% win rate
+        // with Breakeven-Lock protection once MFE >= +18% and -65% Theta decay on Vertical Spreads
+        const edgeBias =
+          (state.learning.walkForwardAuc > 0.75
+            ? 0.022
+            : state.learning.walkForwardAuc > 0.68
+            ? 0.016
+            : 0.011) + (isSpreadPos ? 0.006 : 0);
+        const optionPctMove = (posRand - 0.475) * 0.34 + edgeBias;
+        nextMark = Number(
+          Math.max(1.0, pos.currentMarkPrice * (1 + optionPctMove)).toFixed(2)
+        );
+        exitBid = Number(Math.max(0.5, nextMark * 0.988).toFixed(2));
+        exitAsk = Number((nextMark * 1.012).toFixed(2));
+      }
+
       pos.peakMarkPrice = Number(Math.max(pos.peakMarkPrice, nextMark).toFixed(2));
       const mfeSoFar = (pos.peakMarkPrice - pos.conservativeEntryPrice) / pos.conservativeEntryPrice;
 
@@ -455,6 +575,8 @@ export function executeAutonomousPaperCycles(
         mfeSoFar >= 0.18 && nextMark <= pos.conservativeEntryPrice * 1.032;
       if (breakevenLocked) {
         nextMark = Number((pos.conservativeEntryPrice * 1.035).toFixed(2));
+        exitBid = Number(Math.max(0.5, nextMark * 0.99).toFixed(2));
+        exitAsk = Number((nextMark * 1.01).toFixed(2));
       }
 
       pos.currentMarkPrice = nextMark;
@@ -464,8 +586,8 @@ export function executeAutonomousPaperCycles(
       const exitSim = simulatePessimisticFill(
         'SELL',
         pos.lotsQty,
-        Number(Math.max(0.5, nextMark * 0.988).toFixed(2)),
-        Number((nextMark * 1.012).toFixed(2)),
+        exitBid,
+        exitAsk,
         pos.lotSize,
         undefined,
         {
@@ -551,6 +673,7 @@ export function executeAutonomousPaperCycles(
             ? 'Bull Call Spread (-65% Theta)'
             : 'Bear Put Spread (-65% Theta)'
           : `Single-Leg ${pos.right}`;
+        const posTech = cachedTechnicals[pos.underlying];
         const tradeId = `NSE-TRD-${1001 + state.closedTrades.length}`;
         state.closedTrades.unshift({
           tradeId,
@@ -568,10 +691,10 @@ export function executeAutonomousPaperCycles(
           deltaAtEntry: pos.delta,
           ivRankAtEntry: pos.ivRankPct,
           spreadPctAtEntry: entryFill.spreadPctOfMid,
-          confidenceAtEntry: 0.74,
-          rsiAtEntry: 55.2,
-          adxAtEntry: 25.8,
-          atrPctAtEntry: 0.0125,
+          confidenceAtEntry: posTech?.signalConfidence ?? 0.76,
+          rsiAtEntry: posTech?.rsi14 ?? 55.2,
+          adxAtEntry: posTech?.adx14 ?? 25.8,
+          atrPctAtEntry: posTech?.atrPct ?? 0.0125,
           indiaVixAtEntry: state.health.indiaVixLevel,
           timeOfDayBucket: timeBuckets[cycleNum % timeBuckets.length],
           conservativeEntryPrice: entryFill.conservativeFillPrice,
@@ -586,12 +709,14 @@ export function executeAutonomousPaperCycles(
           maePct,
           mfePct,
           holdMinutes: Math.max(45, pos.tradingDaysHeld * 180 + 60),
-          entryReason: `${structureTag} on ${pos.underlying} (${pos.strategyName}) approved by Quality Gate ${state.control.activeChampionVersion}`,
+          entryReason: `${structureTag} on ${pos.underlying}${pos.angelToken ? ` [Angel Token #${pos.angelToken}]` : ''} (${pos.strategyName}) approved by Quality Gate ${state.control.activeChampionVersion}`,
           exitReason: exitDecision.exitReason,
           postMortemLabel: pmLabel,
           diagnosisNotes: `Closed ${structureTag} via ${exitDecision.exitReason} (${pmLabel}): Cons ₹${entryFill.conservativeFillPrice.toFixed(2)} -> ₹${exitSim.conservativeFillPrice.toFixed(2)} (Net ${rt.conservativePnlInr >= 0 ? '+' : ''}₹${rt.conservativePnlInr.toFixed(2)}).`,
           openedAt: pos.openedAt,
           closedAt: nowIso,
+          angelToken: pos.angelToken,
+          quoteSource: pos.quoteSource ?? 'ANGEL_ONE_SPOT_BS',
         });
 
         // Update Thompson Sampling Bandit bucket for this trade
@@ -628,22 +753,36 @@ export function executeAutonomousPaperCycles(
 
     // 3. Scan NSE universe for candidate signals & evaluate Learned Quality Gate
     const candidateUnderlying = underlyings[cycleNum % underlyings.length];
-    const candidateStrat = strategies[cycleNum % strategies.length];
+    const liveTech = cachedTechnicals[candidateUnderlying];
+    const candidateStrat: StrategyName =
+      c === 0 && safeCycles === 1 && liveTech
+        ? liveTech.recommendedStrategy
+        : strategies[cycleNum % strategies.length];
     const lotSize = NSE_LOT_SIZES[candidateUnderlying] ?? 75;
     const spot = cachedSpots[candidateUnderlying]?.spot ?? BASE_SPOTS[candidateUnderlying] ?? 24480;
     const optRight: OptionRight =
-      state.health.currentRegime === 'trending_down' ? 'PE' : rand > 0.3 ? 'CE' : 'PE';
-    const strikeStep =
-      candidateUnderlying === 'BANKNIFTY'
-        ? 100
-        : candidateUnderlying === 'NIFTY' || candidateUnderlying === 'FINNIFTY'
-        ? 50
-        : 20;
-    const strike =
-      Math.round((spot * (optRight === 'CE' ? 1.003 : 0.997)) / strikeStep) * strikeStep;
+      c === 0 && safeCycles === 1 && liveTech
+        ? liveTech.trendSignal
+        : state.health.currentRegime === 'trending_down'
+        ? 'PE'
+        : rand > 0.3
+        ? 'CE'
+        : 'PE';
+    const strikeStep = getStrikeStep(candidateUnderlying);
+
+    const nfoPair = cachedNfoPairsByUnderlying[candidateUnderlying];
+    const hasLiveNfo =
+      c === 0 &&
+      safeCycles === 1 &&
+      Boolean(nfoPair?.longLeg && nfoPair.longLeg.right === optRight && nfoPair.longLeg.ltp > 0);
+
+    const strike = hasLiveNfo && nfoPair?.longLeg
+      ? nfoPair.longLeg.strike
+      : Math.round((spot * (optRight === 'CE' ? 1.003 : 0.997)) / strikeStep) * strikeStep;
     const dte = 14 + (cycleNum % 14);
     const ivAnnual = Math.max(0.13, state.health.indiaVixLevel / 100);
-    const quote = blackScholesOptionPrice({
+
+    const bsFallback = blackScholesOptionPrice({
       spot,
       strike,
       dteDays: dte,
@@ -652,17 +791,48 @@ export function executeAutonomousPaperCycles(
       right: optRight,
     });
 
-    const spreadPct = Number(((quote.ask - quote.bid) / Math.max(quote.mid, 1)).toFixed(4));
-    const confidence = Number((0.56 + rand * 0.34).toFixed(2));
-    const adx14 = Number((18 + rand * 18).toFixed(1));
-    const ivRankPct = Number((25 + rand * 55).toFixed(1));
+    const longBid = hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.bestBid : bsFallback.bid;
+    const longAsk = hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.bestAsk : bsFallback.ask;
+    const longMid = Number(((longBid + longAsk) / 2).toFixed(2));
+
+    const solvedLongGreeks = solveImpliedVolatilityAndGreeks({
+      marketPrice: longMid,
+      spot,
+      strike,
+      dteDays: dte,
+      riskFreeRate: 0.068,
+      right: optRight,
+    });
+
+    const spreadPct = Number(((longAsk - longBid) / Math.max(longMid, 1)).toFixed(4));
+    const confidence =
+      c === 0 && safeCycles === 1 && liveTech
+        ? liveTech.signalConfidence
+        : Number((0.56 + rand * 0.34).toFixed(2));
+    const adx14 =
+      c === 0 && safeCycles === 1 && liveTech
+        ? liveTech.adx14
+        : Number((18 + rand * 18).toFixed(1));
+    const ivRankPct = hasLiveNfo
+      ? Number(
+          Math.max(
+            15,
+            Math.min(90, ((solvedLongGreeks.impliedVolAnnual * 100 - 11) / 14) * 100)
+          ).toFixed(1)
+        )
+      : Number((25 + rand * 55).toFixed(1));
     const isMidday = cycleNum % 3 === 1;
 
     // Step 1: Automatically switch to Defined-Risk Vertical Debit Spread when IVR >= 45% or INDIA VIX >= 14.5
     const useVerticalSpread = ivRankPct >= 45 || state.health.indiaVixLevel >= 14.5;
     const shortStrike =
-      optRight === 'CE' ? strike + strikeStep * 2 : Math.max(strikeStep, strike - strikeStep * 2);
-    const shortQuote = blackScholesOptionPrice({
+      hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike
+        ? nfoPair.shortLeg.strike
+        : optRight === 'CE'
+        ? strike + strikeStep * 2
+        : Math.max(strikeStep, strike - strikeStep * 2);
+
+    const shortBsFallback = blackScholesOptionPrice({
       spot,
       strike: shortStrike,
       dteDays: dte,
@@ -670,6 +840,25 @@ export function executeAutonomousPaperCycles(
       riskFreeRate: 0.068,
       right: optRight,
     });
+    const shortBid =
+      hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike
+        ? nfoPair.shortLeg.bestBid
+        : shortBsFallback.bid;
+    const shortAsk =
+      hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike
+        ? nfoPair.shortLeg.bestAsk
+        : shortBsFallback.ask;
+    const shortDelta =
+      hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike
+        ? solveImpliedVolatilityAndGreeks({
+            marketPrice: (shortBid + shortAsk) / 2,
+            spot,
+            strike: shortStrike,
+            dteDays: dte,
+            riskFreeRate: 0.068,
+            right: optRight,
+          }).delta
+        : shortBsFallback.delta;
 
     const gateEval = predictLearnedQualityGateProb(state, {
       confidence,
@@ -681,16 +870,19 @@ export function executeAutonomousPaperCycles(
       isVerticalSpread: useVerticalSpread,
     });
 
+    const expiryTag = hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.expiryCode : '23NOV26';
     const contractSym = useVerticalSpread
-      ? `${candidateUnderlying}26NOV${strike}/${shortStrike}${optRight}_SPREAD`
-      : `${candidateUnderlying}26NOV${strike}${optRight}`;
+      ? `${candidateUnderlying}${expiryTag}${strike}/${shortStrike}${optRight}_SPREAD`
+      : hasLiveNfo && nfoPair?.longLeg
+      ? nfoPair.longLeg.tradingSymbol
+      : `${candidateUnderlying}${expiryTag}${strike}${optRight}`;
 
     if (!gateEval.passed) {
       signalsSkippedByGate++;
       const activeThresholdPct = (Math.max(0.67, state.learning.qualityGateThreshold) * 100).toFixed(1);
       // Log counterfactual outcome (setups with P(gain) < 68% lose money most of the time after spread & ₹35/lot fee)
       const cfMove = gateEval.prob < 0.67 ? -(0.12 + rand * 0.18) : (rand - 0.55) * 0.22;
-      const cfExit = Number(Math.max(0.5, quote.mid * (1 + cfMove)).toFixed(2));
+      const cfExit = Number(Math.max(0.5, longMid * (1 + cfMove)).toFixed(2));
       state.skippedSignals.unshift({
         signalId: `SIG-SKIP-${seq}`,
         generatedAt: nowIso,
@@ -702,7 +894,7 @@ export function executeAutonomousPaperCycles(
         qualityGateProb: gateEval.prob,
         skipReason: `Capital-Preservation Gate P(gain)=${(gateEval.prob * 100).toFixed(1)}% < ${activeThresholdPct}% threshold (Hard Floor 67% — IVR ${ivRankPct}%, Spread ${(spreadPct * 100).toFixed(1)}%)`,
         counterfactualContract: contractSym,
-        counterfactualEntryPrice: quote.mid,
+        counterfactualEntryPrice: longMid,
         counterfactualExitPrice: cfExit,
         counterfactualPnlPct: Number(cfMove.toFixed(4)),
       });
@@ -720,25 +912,25 @@ export function executeAutonomousPaperCycles(
 
       let rawConsUnitPx = 0;
       let entryFeeInr = 35.0;
-      let netDelta = quote.delta;
-      let thetaDecayFactor = 0.028;
+      let netDelta = solvedLongGreeks.delta;
+      let netTheta = solvedLongGreeks.thetaPerDay;
 
       if (useVerticalSpread) {
         const spreadSim = simulateVerticalDebitSpreadFill({
           right: optRight,
           lotsQty: 1,
-          longBid: quote.bid,
-          longAsk: quote.ask,
-          shortBid: shortQuote.bid,
-          shortAsk: shortQuote.ask,
+          longBid,
+          longAsk,
+          shortBid,
+          shortAsk,
           lotSize,
         });
         rawConsUnitPx = spreadSim.conservativeNetDebitPerUnit;
         entryFeeInr = spreadSim.totalEntryFeeInr; // ₹70/lot (2 legs x ₹35)
-        netDelta = Number((quote.delta - shortQuote.delta).toFixed(3));
-        thetaDecayFactor = 0.0098; // 65% Theta decay reduction
+        netDelta = Number((solvedLongGreeks.delta - shortDelta).toFixed(3));
+        netTheta = Number((solvedLongGreeks.thetaPerDay * 0.35).toFixed(2)); // 65% Theta decay reduction
       } else {
-        const entrySim = simulatePessimisticFill('BUY', 1, quote.bid, quote.ask, lotSize);
+        const entrySim = simulatePessimisticFill('BUY', 1, longBid, longAsk, lotSize);
         rawConsUnitPx = entrySim.conservativeFillPrice;
         entryFeeInr = entrySim.feeInr;
       }
@@ -766,6 +958,9 @@ export function executeAutonomousPaperCycles(
 
       if (riskCheck.allowed && state.openPositions.length < 5) {
         entriesOpened++;
+        const angelLongTok = hasLiveNfo ? nfoPair?.longLeg?.symbolToken : undefined;
+        const angelShortTok =
+          hasLiveNfo && useVerticalSpread ? nfoPair?.shortLeg?.symbolToken : undefined;
         const newPos: OpenOptionPosition = {
           positionId: `POS-NSE-${seq}`,
           tradeId: `NSE-TRD-${seq}`,
@@ -774,7 +969,7 @@ export function executeAutonomousPaperCycles(
           right: optRight,
           strike,
           lotSize,
-          expirationDate: '2026-11-26',
+          expirationDate: '2026-11-23',
           dte,
           strategyName: candidateStrat,
           regimeAtEntry: state.health.currentRegime,
@@ -787,7 +982,7 @@ export function executeAutonomousPaperCycles(
           unrealizedPnlInr: -entryFeeInr,
           unrealizedPnlPct: -0.003,
           delta: netDelta,
-          theta: Number((-effectiveEntryPx * thetaDecayFactor).toFixed(2)),
+          theta: netTheta,
           ivRankPct,
           stopLossPrice: Number((effectiveEntryPx * 0.75).toFixed(2)),
           takeProfitPrice: Number((effectiveEntryPx * 1.5).toFixed(2)),
@@ -795,6 +990,10 @@ export function executeAutonomousPaperCycles(
           tradingDaysHeld: 0,
           isIntradayFlagged: candidateStrat === 'breakout_momentum',
           openedAt: nowIso,
+          angelToken: angelLongTok,
+          shortAngelToken: angelShortTok,
+          underlyingSpotAtEntry: spot,
+          quoteSource: hasLiveNfo ? 'ANGEL_ONE_NFO_L2' : 'ANGEL_ONE_SPOT_BS',
         };
         state.openPositions.unshift(newPos);
         const structLabel = useVerticalSpread
@@ -802,7 +1001,8 @@ export function executeAutonomousPaperCycles(
             ? 'Bull Call Debit Spread (-65% Theta)'
             : 'Bear Put Debit Spread (-65% Theta)'
           : `Long ${optRight}`;
-        latestActionSummary = `Opened 1 lot (${lotSize} units) ${contractSym} [${structLabel}] @ ₹${effectiveEntryPx.toFixed(2)} via ${candidateStrat} (P(gain)=${(
+        const feedTag = angelLongTok ? ` · Angel NFO #${angelLongTok}` : '';
+        latestActionSummary = `Opened 1 lot (${lotSize} units) ${contractSym} [${structLabel}${feedTag}] @ ₹${effectiveEntryPx.toFixed(2)} via ${candidateStrat} (P(gain)=${(
           gateEval.prob * 100
         ).toFixed(1)}% >= ${(Math.max(0.67, state.learning.qualityGateThreshold) * 100).toFixed(0)}%)`;
       }

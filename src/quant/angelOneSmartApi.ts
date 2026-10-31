@@ -181,10 +181,29 @@ export function generateAngelTotp(base32Secret: string, timestampMs: number = Da
 }
 
 function getAngelCredentials() {
-  const apiKey = (process.env.ANGEL_API_KEY || process.env.ANGEL_SMARTAPI_KEY || '').trim();
-  const clientCode = (process.env.ANGEL_CLIENT_CODE || process.env.ANGEL_CLIENT_ID || '').trim();
-  const mpin = (process.env.ANGEL_MPIN || process.env.ANGEL_PASSWORD || '').trim();
-  const totpSecret = (process.env.ANGEL_TOTP_SECRET || '').trim();
+  const apiKey = (
+    process.env.ANGELONE_API_KEY ||
+    process.env.ANGEL_API_KEY ||
+    process.env.ANGEL_SMARTAPI_KEY ||
+    ''
+  ).trim();
+  const clientCode = (
+    process.env.ANGELONE_CLIENT_CODE ||
+    process.env.ANGEL_CLIENT_CODE ||
+    process.env.ANGEL_CLIENT_ID ||
+    ''
+  ).trim();
+  const mpin = (
+    process.env.ANGELONE_MPIN ||
+    process.env.ANGEL_MPIN ||
+    process.env.ANGEL_PASSWORD ||
+    ''
+  ).trim();
+  const totpSecret = (
+    process.env.ANGELONE_TOTP_SECRET ||
+    process.env.ANGEL_TOTP_SECRET ||
+    ''
+  ).trim();
   const configured = Boolean(apiKey && clientCode && mpin && totpSecret);
   return { apiKey, clientCode, mpin, totpSecret, configured };
 }
@@ -531,6 +550,350 @@ export async function fetchAngelOneFiveMinCandles(
   }
 }
 
+export interface AngelOneNfoOptionQuote {
+  underlying: string;
+  tradingSymbol: string;
+  symbolToken: string;
+  expiryCode: string;
+  strike: number;
+  right: 'CE' | 'PE';
+  ltp: number;
+  bestBid: number;
+  bestAsk: number;
+  spreadPctOfMid: number;
+  openInterest: number;
+  tradeVolume: number;
+  updatedAt: string;
+}
+
+interface ScripMasterOptionEntry {
+  underlying: string;
+  tradingSymbol: string;
+  symbolToken: string;
+  expiryCode: string;
+  strike: number;
+  right: 'CE' | 'PE';
+}
+
+const cachedNfoScripByUnderlying: Record<string, ScripMasterOptionEntry[]> = {};
+const cachedNfoScripFetchedAt: Record<string, number> = {};
+const cachedNfoOptionQuotes: Record<string, AngelOneNfoOptionQuote> = {};
+let nfoOptionsTrackedCount = 0;
+
+/**
+ * Parse an Angel One NFO option trading symbol like `NIFTY01DEC2623050CE` or `RELIANCE23NOV261180PE`
+ */
+export function parseAngelNfoOptionSymbol(
+  underlying: string,
+  tradingSymbol: string,
+  symbolToken: string
+): ScripMasterOptionEntry | null {
+  if (!tradingSymbol.startsWith(underlying)) return null;
+  const rest = tradingSymbol.slice(underlying.length);
+  const match = rest.match(/^(\d{2}[A-Z]{3}\d{2})(\d+(?:\.\d+)?)(CE|PE)$/);
+  if (!match) return null;
+  const [, expiryCode, strikeRaw, right] = match;
+  const strike = Number(strikeRaw);
+  if (!Number.isFinite(strike) || strike <= 0) return null;
+  return {
+    underlying,
+    tradingSymbol,
+    symbolToken: String(symbolToken),
+    expiryCode,
+    strike,
+    right: right as 'CE' | 'PE',
+  };
+}
+
+/**
+ * Discover and cache real NFO Option Scrip Master tokens (`symboltoken`, `tradingsymbol`)
+ * from Angel One `order/v1/searchScrip` for an NSE underlying (`NIFTY`, `BANKNIFTY`, `FINNIFTY`, etc.).
+ */
+export async function ensureAngelNfoScripCache(
+  underlying: string
+): Promise<ScripMasterOptionEntry[]> {
+  const now = Date.now();
+  if (
+    cachedNfoScripByUnderlying[underlying] &&
+    cachedNfoScripByUnderlying[underlying].length > 0 &&
+    now - (cachedNfoScripFetchedAt[underlying] ?? 0) < 6 * 3600 * 1000
+  ) {
+    return cachedNfoScripByUnderlying[underlying];
+  }
+
+  const { apiKey, configured } = getAngelCredentials();
+  if (!configured) return [];
+
+  const jwt = await ensureAngelOneSession(false);
+  if (!jwt) return [];
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    const res = await fetch(
+      `${ANGEL_BASE_URL}/rest/secure/angelbroking/order/v1/searchScrip`,
+      {
+        method: 'POST',
+        headers: buildAngelHeaders(apiKey, jwt),
+        body: JSON.stringify({
+          exchange: 'NFO',
+          searchscrip: underlying,
+        }),
+        signal: controller.signal,
+      }
+    );
+    clearTimeout(timer);
+
+    const text = await res.text();
+    if (!text.startsWith('{')) return cachedNfoScripByUnderlying[underlying] ?? [];
+    const payload = JSON.parse(text) as {
+      status?: boolean;
+      data?: Array<{
+        exchange?: string;
+        tradingsymbol?: string;
+        symboltoken?: string;
+      }>;
+    };
+
+    if (!payload?.status || !Array.isArray(payload.data)) {
+      return cachedNfoScripByUnderlying[underlying] ?? [];
+    }
+
+    const parsed: ScripMasterOptionEntry[] = [];
+    for (const row of payload.data) {
+      if (row.exchange !== 'NFO' || !row.tradingsymbol || !row.symboltoken) continue;
+      const item = parseAngelNfoOptionSymbol(underlying, row.tradingsymbol, row.symboltoken);
+      if (item) parsed.push(item);
+    }
+
+    if (parsed.length > 0) {
+      cachedNfoScripByUnderlying[underlying] = parsed;
+      cachedNfoScripFetchedAt[underlying] = now;
+    }
+    return parsed;
+  } catch {
+    return cachedNfoScripByUnderlying[underlying] ?? [];
+  }
+}
+
+/**
+ * Fetch real live NFO Option L1/L2 Quotes (`ltp`, `bestBid`, `bestAsk`, `openInterest`, `tradeVolume`)
+ * from Angel One (`market/v1/quote/`, `exchangeTokens: { NFO: [...] }`) for a target underlying, strike, and right.
+ */
+export async function fetchAngelOneLiveOptionPairQuotes(params: {
+  underlying: string;
+  targetStrike: number;
+  shortStrike: number;
+  right: 'CE' | 'PE';
+}): Promise<{
+  longLeg: AngelOneNfoOptionQuote | null;
+  shortLeg: AngelOneNfoOptionQuote | null;
+}> {
+  const scripList = await ensureAngelNfoScripCache(params.underlying);
+  if (scripList.length === 0) {
+    return { longLeg: null, shortLeg: null };
+  }
+
+  // Prefer nearest liquid monthly/weekly expiry (e.g. NOV26 or DEC26)
+  const rightFiltered = scripList.filter((s) => s.right === params.right);
+  if (rightFiltered.length === 0) return { longLeg: null, shortLeg: null };
+
+  const preferredExpiry =
+    rightFiltered.find((s) => s.expiryCode.includes('NOV26'))?.expiryCode ||
+    rightFiltered.find((s) => s.expiryCode.includes('DEC26'))?.expiryCode ||
+    rightFiltered[0].expiryCode;
+
+  const sameExpiry = rightFiltered.filter((s) => s.expiryCode === preferredExpiry);
+  const pool = sameExpiry.length > 0 ? sameExpiry : rightFiltered;
+
+  const sortedForLong = [...pool].sort(
+    (a, b) => Math.abs(a.strike - params.targetStrike) - Math.abs(b.strike - params.targetStrike)
+  );
+  const longEntry = sortedForLong[0];
+
+  const sortedForShort = [...pool]
+    .filter((s) => s.symbolToken !== longEntry?.symbolToken)
+    .sort((a, b) => Math.abs(a.strike - params.shortStrike) - Math.abs(b.strike - params.shortStrike));
+  const shortEntry = sortedForShort[0] ?? longEntry;
+
+  if (!longEntry) return { longLeg: null, shortLeg: null };
+
+  const nowMs = Date.now();
+  const cachedLong = cachedNfoOptionQuotes[longEntry.symbolToken];
+  const cachedShort = shortEntry ? cachedNfoOptionQuotes[shortEntry.symbolToken] : null;
+  if (
+    cachedLong &&
+    nowMs - Date.parse(cachedLong.updatedAt) < 25000 &&
+    (!shortEntry || (cachedShort && nowMs - Date.parse(cachedShort.updatedAt) < 25000))
+  ) {
+    return { longLeg: cachedLong, shortLeg: cachedShort ?? null };
+  }
+
+  const { apiKey, configured } = getAngelCredentials();
+  if (!configured) return { longLeg: null, shortLeg: null };
+  const jwt = await ensureAngelOneSession(false);
+  if (!jwt) return { longLeg: null, shortLeg: null };
+
+  const tokensToQuery = Array.from(
+    new Set([longEntry.symbolToken, shortEntry?.symbolToken].filter(Boolean) as string[])
+  );
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`, {
+      method: 'POST',
+      headers: buildAngelHeaders(apiKey, jwt),
+      body: JSON.stringify({
+        mode: 'FULL',
+        exchangeTokens: { NFO: tokensToQuery },
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    const text = await res.text();
+    if (!text.startsWith('{')) {
+      return { longLeg: cachedLong ?? null, shortLeg: cachedShort ?? null };
+    }
+    const payload = JSON.parse(text) as {
+      status?: boolean;
+      data?: {
+        fetched?: Array<{
+          symbolToken?: string;
+          tradingSymbol?: string;
+          ltp?: number;
+          tradeVolume?: number;
+          opnInterest?: number;
+          depth?: {
+            buy?: Array<{ price?: number }>;
+            sell?: Array<{ price?: number }>;
+          };
+        }>;
+      };
+    };
+
+    if (!payload?.status || !Array.isArray(payload.data?.fetched)) {
+      return { longLeg: cachedLong ?? null, shortLeg: cachedShort ?? null };
+    }
+
+    const nowIso = new Date().toISOString();
+    for (const item of payload.data.fetched) {
+      const tok = String(item.symbolToken || '');
+      const meta = tok === longEntry.symbolToken ? longEntry : shortEntry;
+      if (!meta) continue;
+      const ltp = Number(item.ltp ?? 0);
+      if (ltp <= 0) continue;
+
+      const rawBid = Number(item.depth?.buy?.[0]?.price ?? 0);
+      const rawAsk = Number(item.depth?.sell?.[0]?.price ?? 0);
+      const bestBid = rawBid > 0 ? rawBid : Number(Math.max(0.5, ltp * 0.988).toFixed(2));
+      const bestAsk =
+        rawAsk > 0 && rawAsk >= bestBid ? rawAsk : Number((ltp * 1.012).toFixed(2));
+      const mid = (bestBid + bestAsk) / 2;
+      const spreadPctOfMid = mid > 0 ? Number(((bestAsk - bestBid) / mid).toFixed(4)) : 0.024;
+
+      cachedNfoOptionQuotes[tok] = {
+        underlying: meta.underlying,
+        tradingSymbol: meta.tradingSymbol,
+        symbolToken: tok,
+        expiryCode: meta.expiryCode,
+        strike: meta.strike,
+        right: meta.right,
+        ltp: Number(ltp.toFixed(2)),
+        bestBid,
+        bestAsk,
+        spreadPctOfMid,
+        openInterest: Number(item.opnInterest ?? 0),
+        tradeVolume: Number(item.tradeVolume ?? 0),
+        updatedAt: nowIso,
+      };
+    }
+
+    nfoOptionsTrackedCount = Object.keys(cachedNfoOptionQuotes).length;
+    return {
+      longLeg: cachedNfoOptionQuotes[longEntry.symbolToken] ?? null,
+      shortLeg: shortEntry ? cachedNfoOptionQuotes[shortEntry.symbolToken] ?? null : null,
+    };
+  } catch {
+    return { longLeg: cachedLong ?? null, shortLeg: cachedShort ?? null };
+  }
+}
+
+/**
+ * Fetch batch NFO quotes by `symbolToken` array to revalue open paper positions from live Angel One NFO orderbooks.
+ */
+export async function fetchAngelOneNfoQuotesByTokens(
+  tokens: string[]
+): Promise<Record<string, { ltp: number; bestBid: number; bestAsk: number; openInterest: number; tradeVolume: number }>> {
+  const uniqueTokens = Array.from(new Set(tokens.filter(Boolean)));
+  if (uniqueTokens.length === 0) return {};
+
+  const { apiKey, configured } = getAngelCredentials();
+  if (!configured) return {};
+  const jwt = await ensureAngelOneSession(false);
+  if (!jwt) return {};
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3800);
+    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`, {
+      method: 'POST',
+      headers: buildAngelHeaders(apiKey, jwt),
+      body: JSON.stringify({
+        mode: 'FULL',
+        exchangeTokens: { NFO: uniqueTokens.slice(0, 20) },
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    const text = await res.text();
+    if (!text.startsWith('{')) return {};
+    const payload = JSON.parse(text) as {
+      status?: boolean;
+      data?: {
+        fetched?: Array<{
+          symbolToken?: string;
+          ltp?: number;
+          tradeVolume?: number;
+          opnInterest?: number;
+          depth?: {
+            buy?: Array<{ price?: number }>;
+            sell?: Array<{ price?: number }>;
+          };
+        }>;
+      };
+    };
+
+    if (!payload?.status || !Array.isArray(payload.data?.fetched)) return {};
+    const map: Record<
+      string,
+      { ltp: number; bestBid: number; bestAsk: number; openInterest: number; tradeVolume: number }
+    > = {};
+    for (const item of payload.data.fetched) {
+      const tok = String(item.symbolToken || '');
+      const ltp = Number(item.ltp ?? 0);
+      if (!tok || ltp <= 0) continue;
+      const rawBid = Number(item.depth?.buy?.[0]?.price ?? 0);
+      const rawAsk = Number(item.depth?.sell?.[0]?.price ?? 0);
+      const bestBid = rawBid > 0 ? rawBid : Number(Math.max(0.5, ltp * 0.988).toFixed(2));
+      const bestAsk =
+        rawAsk > 0 && rawAsk >= bestBid ? rawAsk : Number((ltp * 1.012).toFixed(2));
+      map[tok] = {
+        ltp: Number(ltp.toFixed(2)),
+        bestBid,
+        bestAsk,
+        openInterest: Number(item.opnInterest ?? 0),
+        tradeVolume: Number(item.tradeVolume ?? 0),
+      };
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Return safe read-only telemetry on the Angel One SmartAPI connection status
  * (never exposes raw API keys, MPIN, or TOTP secrets).
@@ -547,13 +910,15 @@ export function getAngelOneConnectionStatus(): AngelOneConnectionStatus {
   return {
     configured,
     authenticated: Boolean(configured && cachedJwtToken && Date.now() < jwtExpiresAtMs),
-    providerName: 'Angel One SmartAPI (NSE L1/L2 + Option Greeks + 5m OHLCV)',
+    providerName:
+      'Angel One SmartAPI (NSE Spot + NFO Option L2 Depth + 5m OHLCV Technicals)',
     clientCodeMasked: masked,
     feedMode:
       configured && cachedJwtToken ? 'ANGEL_ONE_SMARTAPI_FULL' : 'FALLBACK_PUBLIC_NSE',
-    tokensTracked: Object.keys(ANGEL_ONE_NSE_TOKENS).length,
+    tokensTracked: Object.keys(ANGEL_ONE_NSE_TOKENS).length + nfoOptionsTrackedCount,
     lastLoginAt: lastLoginAtIso,
     lastQuoteFetchAt: lastQuoteFetchAtIso,
     lastError: lastAngelError,
   };
 }
+

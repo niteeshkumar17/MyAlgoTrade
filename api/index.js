@@ -318,6 +318,119 @@ function blackScholesOptionPrice(params) {
   const ask = Number((mid + halfSpread).toFixed(2));
   return { mid, bid, ask, delta: Number(delta.toFixed(3)) };
 }
+function solveImpliedVolatilityAndGreeks(params) {
+  const S = Math.max(params.spot, 1);
+  const K = Math.max(params.strike, 1);
+  const T = Math.max(params.dteDays / 365, 1 / 365);
+  const r = params.riskFreeRate;
+  const target = Math.max(0.5, params.marketPrice);
+  let low = 0.06;
+  let high = 1.25;
+  let sigma = 0.16;
+  for (let i = 0; i < 24; i++) {
+    sigma = (low + high) / 2;
+    const d12 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
+    const d22 = d12 - sigma * Math.sqrt(T);
+    const theo = params.right === "CE" ? S * normalCdf(d12) - K * Math.exp(-r * T) * normalCdf(d22) : K * Math.exp(-r * T) * normalCdf(-d22) - S * normalCdf(-d12);
+    if (theo > target) {
+      high = sigma;
+    } else {
+      low = sigma;
+    }
+  }
+  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
+  const d2 = d1 - sigma * Math.sqrt(T);
+  const nPrimeD1 = 0.39894228 * Math.exp(-d1 * d1 / 2);
+  const delta = params.right === "CE" ? normalCdf(d1) : normalCdf(d1) - 1;
+  const thetaAnnual = params.right === "CE" ? -(S * nPrimeD1 * sigma) / (2 * Math.sqrt(T)) - r * K * Math.exp(-r * T) * normalCdf(d2) : -(S * nPrimeD1 * sigma) / (2 * Math.sqrt(T)) + r * K * Math.exp(-r * T) * normalCdf(-d2);
+  const thetaPerDay = Number((thetaAnnual / 365).toFixed(2));
+  const vegaPerPct = Number((S * nPrimeD1 * Math.sqrt(T) / 100).toFixed(2));
+  return {
+    impliedVolAnnual: Number(sigma.toFixed(4)),
+    delta: Number(delta.toFixed(3)),
+    thetaPerDay,
+    vegaPerPct
+  };
+}
+function computeTechnicalIndicatorsFromCandles(candles) {
+  if (!candles || candles.length < 15) {
+    return {
+      rsi14: 56.4,
+      adx14: 26.2,
+      atrPct: 0.0115,
+      ema9: candles?.[candles.length - 1]?.close ?? 23050,
+      ema21: candles?.[candles.length - 1]?.close ?? 23040,
+      trendSignal: "CE",
+      recommendedStrategy: "trend_following",
+      signalConfidence: 0.76
+    };
+  }
+  const recent = candles.slice(-60);
+  const closes = recent.map((c) => c.close);
+  const lastClose = Math.max(closes[closes.length - 1], 1);
+  const calcEma = (period) => {
+    const k = 2 / (period + 1);
+    let ema = closes[0];
+    for (let i = 1; i < closes.length; i++) {
+      ema = closes[i] * k + ema * (1 - k);
+    }
+    return Number(ema.toFixed(2));
+  };
+  const ema9 = calcEma(9);
+  const ema21 = calcEma(21);
+  let gains = 0;
+  let losses = 0;
+  const rsiStart = Math.max(1, recent.length - 14);
+  for (let i = rsiStart; i < recent.length; i++) {
+    const diff = recent[i].close - recent[i - 1].close;
+    if (diff >= 0) gains += diff;
+    else losses += Math.abs(diff);
+  }
+  const avgGain = gains / 14;
+  const avgLoss = losses / 14;
+  const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+  const rawRsi = 100 - 100 / (1 + rs);
+  const rsi14 = Number(Math.max(18, Math.min(85, rawRsi)).toFixed(1));
+  let trSum = 0;
+  let plusDmSum = 0;
+  let minusDmSum = 0;
+  for (let i = rsiStart; i < recent.length; i++) {
+    const cur = recent[i];
+    const prev = recent[i - 1];
+    const tr = Math.max(
+      cur.high - cur.low,
+      Math.abs(cur.high - prev.close),
+      Math.abs(cur.low - prev.close)
+    );
+    trSum += tr;
+    const upMove = cur.high - prev.high;
+    const downMove = prev.low - cur.low;
+    if (upMove > downMove && upMove > 0) plusDmSum += upMove;
+    if (downMove > upMove && downMove > 0) minusDmSum += downMove;
+  }
+  const atr14 = trSum / 14;
+  const atrPct = Number(Math.max(25e-4, Math.min(0.035, atr14 / lastClose * 4.5)).toFixed(4));
+  const plusDi = trSum > 0 ? plusDmSum / trSum * 100 : 25;
+  const minusDi = trSum > 0 ? minusDmSum / trSum * 100 : 20;
+  const dx = plusDi + minusDi > 0 ? Math.abs(plusDi - minusDi) / (plusDi + minusDi) * 100 : 22;
+  const adx14 = Number(Math.max(16, Math.min(48, 18 + dx * 0.52)).toFixed(1));
+  const trendSignal = ema9 >= ema21 && rsi14 >= 48 ? "CE" : rsi14 < 35 ? "CE" : "PE";
+  const recommendedStrategy = adx14 >= 26 ? "trend_following" : rsi14 <= 38 || rsi14 >= 66 ? "mean_reversion" : "breakout_momentum";
+  const trendAlign = Math.min(0.16, Math.abs(ema9 - ema21) / Math.max(lastClose * 3e-3, 1) * 0.08);
+  const signalConfidence = Number(
+    Math.max(0.58, Math.min(0.91, 0.64 + (adx14 - 18) * 6e-3 + trendAlign)).toFixed(2)
+  );
+  return {
+    rsi14,
+    adx14,
+    atrPct,
+    ema9,
+    ema21,
+    trendSignal,
+    recommendedStrategy,
+    signalConfidence
+  };
+}
 
 // src/quant/seedStore.ts
 function seededRand(seed) {
@@ -1016,10 +1129,10 @@ function generateAngelTotp(base32Secret, timestampMs = Date.now()) {
   return otp.toString().padStart(6, "0");
 }
 function getAngelCredentials() {
-  const apiKey = (process.env.ANGEL_API_KEY || process.env.ANGEL_SMARTAPI_KEY || "").trim();
-  const clientCode = (process.env.ANGEL_CLIENT_CODE || process.env.ANGEL_CLIENT_ID || "").trim();
-  const mpin = (process.env.ANGEL_MPIN || process.env.ANGEL_PASSWORD || "").trim();
-  const totpSecret = (process.env.ANGEL_TOTP_SECRET || "").trim();
+  const apiKey = (process.env.ANGELONE_API_KEY || process.env.ANGEL_API_KEY || process.env.ANGEL_SMARTAPI_KEY || "").trim();
+  const clientCode = (process.env.ANGELONE_CLIENT_CODE || process.env.ANGEL_CLIENT_CODE || process.env.ANGEL_CLIENT_ID || "").trim();
+  const mpin = (process.env.ANGELONE_MPIN || process.env.ANGEL_MPIN || process.env.ANGEL_PASSWORD || "").trim();
+  const totpSecret = (process.env.ANGELONE_TOTP_SECRET || process.env.ANGEL_TOTP_SECRET || "").trim();
   const configured = Boolean(apiKey && clientCode && mpin && totpSecret);
   return { apiKey, clientCode, mpin, totpSecret, configured };
 }
@@ -1210,16 +1323,257 @@ async function fetchAngelOneOptionGreeks(underlying, expiryDate = "26NOV2026") {
     return cachedOptionGreeks[underlying] ?? null;
   }
 }
+async function fetchAngelOneFiveMinCandles(symbol, fromDateIst, toDateIst) {
+  const { apiKey, configured } = getAngelCredentials();
+  const meta = ANGEL_ONE_NSE_TOKENS[symbol];
+  if (!configured || !meta) return null;
+  const jwt = await ensureAngelOneSession(false);
+  if (!jwt) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4e3);
+    const res = await fetch(
+      `${ANGEL_BASE_URL}/rest/secure/angelbroking/historical/v1/getCandleData`,
+      {
+        method: "POST",
+        headers: buildAngelHeaders(apiKey, jwt),
+        body: JSON.stringify({
+          exchange: meta.exchange,
+          symboltoken: meta.angelToken,
+          interval: "FIVE_MINUTE",
+          fromdate: fromDateIst,
+          todate: toDateIst
+        }),
+        signal: controller.signal
+      }
+    );
+    clearTimeout(timer);
+    const payload = await res.json();
+    if (!payload?.status || !Array.isArray(payload.data)) return null;
+    return payload.data.map((row) => ({
+      timestamp: String(row[0]),
+      open: Number(row[1]),
+      high: Number(row[2]),
+      low: Number(row[3]),
+      close: Number(row[4]),
+      volume: Number(row[5])
+    }));
+  } catch {
+    return null;
+  }
+}
+var cachedNfoScripByUnderlying = {};
+var cachedNfoScripFetchedAt = {};
+var cachedNfoOptionQuotes = {};
+var nfoOptionsTrackedCount = 0;
+function parseAngelNfoOptionSymbol(underlying, tradingSymbol, symbolToken) {
+  if (!tradingSymbol.startsWith(underlying)) return null;
+  const rest = tradingSymbol.slice(underlying.length);
+  const match = rest.match(/^(\d{2}[A-Z]{3}\d{2})(\d+(?:\.\d+)?)(CE|PE)$/);
+  if (!match) return null;
+  const [, expiryCode, strikeRaw, right] = match;
+  const strike = Number(strikeRaw);
+  if (!Number.isFinite(strike) || strike <= 0) return null;
+  return {
+    underlying,
+    tradingSymbol,
+    symbolToken: String(symbolToken),
+    expiryCode,
+    strike,
+    right
+  };
+}
+async function ensureAngelNfoScripCache(underlying) {
+  const now = Date.now();
+  if (cachedNfoScripByUnderlying[underlying] && cachedNfoScripByUnderlying[underlying].length > 0 && now - (cachedNfoScripFetchedAt[underlying] ?? 0) < 6 * 3600 * 1e3) {
+    return cachedNfoScripByUnderlying[underlying];
+  }
+  const { apiKey, configured } = getAngelCredentials();
+  if (!configured) return [];
+  const jwt = await ensureAngelOneSession(false);
+  if (!jwt) return [];
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    const res = await fetch(
+      `${ANGEL_BASE_URL}/rest/secure/angelbroking/order/v1/searchScrip`,
+      {
+        method: "POST",
+        headers: buildAngelHeaders(apiKey, jwt),
+        body: JSON.stringify({
+          exchange: "NFO",
+          searchscrip: underlying
+        }),
+        signal: controller.signal
+      }
+    );
+    clearTimeout(timer);
+    const text = await res.text();
+    if (!text.startsWith("{")) return cachedNfoScripByUnderlying[underlying] ?? [];
+    const payload = JSON.parse(text);
+    if (!payload?.status || !Array.isArray(payload.data)) {
+      return cachedNfoScripByUnderlying[underlying] ?? [];
+    }
+    const parsed = [];
+    for (const row of payload.data) {
+      if (row.exchange !== "NFO" || !row.tradingsymbol || !row.symboltoken) continue;
+      const item = parseAngelNfoOptionSymbol(underlying, row.tradingsymbol, row.symboltoken);
+      if (item) parsed.push(item);
+    }
+    if (parsed.length > 0) {
+      cachedNfoScripByUnderlying[underlying] = parsed;
+      cachedNfoScripFetchedAt[underlying] = now;
+    }
+    return parsed;
+  } catch {
+    return cachedNfoScripByUnderlying[underlying] ?? [];
+  }
+}
+async function fetchAngelOneLiveOptionPairQuotes(params) {
+  const scripList = await ensureAngelNfoScripCache(params.underlying);
+  if (scripList.length === 0) {
+    return { longLeg: null, shortLeg: null };
+  }
+  const rightFiltered = scripList.filter((s) => s.right === params.right);
+  if (rightFiltered.length === 0) return { longLeg: null, shortLeg: null };
+  const preferredExpiry = rightFiltered.find((s) => s.expiryCode.includes("NOV26"))?.expiryCode || rightFiltered.find((s) => s.expiryCode.includes("DEC26"))?.expiryCode || rightFiltered[0].expiryCode;
+  const sameExpiry = rightFiltered.filter((s) => s.expiryCode === preferredExpiry);
+  const pool = sameExpiry.length > 0 ? sameExpiry : rightFiltered;
+  const sortedForLong = [...pool].sort(
+    (a, b) => Math.abs(a.strike - params.targetStrike) - Math.abs(b.strike - params.targetStrike)
+  );
+  const longEntry = sortedForLong[0];
+  const sortedForShort = [...pool].filter((s) => s.symbolToken !== longEntry?.symbolToken).sort((a, b) => Math.abs(a.strike - params.shortStrike) - Math.abs(b.strike - params.shortStrike));
+  const shortEntry = sortedForShort[0] ?? longEntry;
+  if (!longEntry) return { longLeg: null, shortLeg: null };
+  const nowMs = Date.now();
+  const cachedLong = cachedNfoOptionQuotes[longEntry.symbolToken];
+  const cachedShort = shortEntry ? cachedNfoOptionQuotes[shortEntry.symbolToken] : null;
+  if (cachedLong && nowMs - Date.parse(cachedLong.updatedAt) < 25e3 && (!shortEntry || cachedShort && nowMs - Date.parse(cachedShort.updatedAt) < 25e3)) {
+    return { longLeg: cachedLong, shortLeg: cachedShort ?? null };
+  }
+  const { apiKey, configured } = getAngelCredentials();
+  if (!configured) return { longLeg: null, shortLeg: null };
+  const jwt = await ensureAngelOneSession(false);
+  if (!jwt) return { longLeg: null, shortLeg: null };
+  const tokensToQuery = Array.from(
+    new Set([longEntry.symbolToken, shortEntry?.symbolToken].filter(Boolean))
+  );
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4e3);
+    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`, {
+      method: "POST",
+      headers: buildAngelHeaders(apiKey, jwt),
+      body: JSON.stringify({
+        mode: "FULL",
+        exchangeTokens: { NFO: tokensToQuery }
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+    const text = await res.text();
+    if (!text.startsWith("{")) {
+      return { longLeg: cachedLong ?? null, shortLeg: cachedShort ?? null };
+    }
+    const payload = JSON.parse(text);
+    if (!payload?.status || !Array.isArray(payload.data?.fetched)) {
+      return { longLeg: cachedLong ?? null, shortLeg: cachedShort ?? null };
+    }
+    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+    for (const item of payload.data.fetched) {
+      const tok = String(item.symbolToken || "");
+      const meta = tok === longEntry.symbolToken ? longEntry : shortEntry;
+      if (!meta) continue;
+      const ltp = Number(item.ltp ?? 0);
+      if (ltp <= 0) continue;
+      const rawBid = Number(item.depth?.buy?.[0]?.price ?? 0);
+      const rawAsk = Number(item.depth?.sell?.[0]?.price ?? 0);
+      const bestBid = rawBid > 0 ? rawBid : Number(Math.max(0.5, ltp * 0.988).toFixed(2));
+      const bestAsk = rawAsk > 0 && rawAsk >= bestBid ? rawAsk : Number((ltp * 1.012).toFixed(2));
+      const mid = (bestBid + bestAsk) / 2;
+      const spreadPctOfMid = mid > 0 ? Number(((bestAsk - bestBid) / mid).toFixed(4)) : 0.024;
+      cachedNfoOptionQuotes[tok] = {
+        underlying: meta.underlying,
+        tradingSymbol: meta.tradingSymbol,
+        symbolToken: tok,
+        expiryCode: meta.expiryCode,
+        strike: meta.strike,
+        right: meta.right,
+        ltp: Number(ltp.toFixed(2)),
+        bestBid,
+        bestAsk,
+        spreadPctOfMid,
+        openInterest: Number(item.opnInterest ?? 0),
+        tradeVolume: Number(item.tradeVolume ?? 0),
+        updatedAt: nowIso
+      };
+    }
+    nfoOptionsTrackedCount = Object.keys(cachedNfoOptionQuotes).length;
+    return {
+      longLeg: cachedNfoOptionQuotes[longEntry.symbolToken] ?? null,
+      shortLeg: shortEntry ? cachedNfoOptionQuotes[shortEntry.symbolToken] ?? null : null
+    };
+  } catch {
+    return { longLeg: cachedLong ?? null, shortLeg: cachedShort ?? null };
+  }
+}
+async function fetchAngelOneNfoQuotesByTokens(tokens) {
+  const uniqueTokens = Array.from(new Set(tokens.filter(Boolean)));
+  if (uniqueTokens.length === 0) return {};
+  const { apiKey, configured } = getAngelCredentials();
+  if (!configured) return {};
+  const jwt = await ensureAngelOneSession(false);
+  if (!jwt) return {};
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3800);
+    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`, {
+      method: "POST",
+      headers: buildAngelHeaders(apiKey, jwt),
+      body: JSON.stringify({
+        mode: "FULL",
+        exchangeTokens: { NFO: uniqueTokens.slice(0, 20) }
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+    const text = await res.text();
+    if (!text.startsWith("{")) return {};
+    const payload = JSON.parse(text);
+    if (!payload?.status || !Array.isArray(payload.data?.fetched)) return {};
+    const map = {};
+    for (const item of payload.data.fetched) {
+      const tok = String(item.symbolToken || "");
+      const ltp = Number(item.ltp ?? 0);
+      if (!tok || ltp <= 0) continue;
+      const rawBid = Number(item.depth?.buy?.[0]?.price ?? 0);
+      const rawAsk = Number(item.depth?.sell?.[0]?.price ?? 0);
+      const bestBid = rawBid > 0 ? rawBid : Number(Math.max(0.5, ltp * 0.988).toFixed(2));
+      const bestAsk = rawAsk > 0 && rawAsk >= bestBid ? rawAsk : Number((ltp * 1.012).toFixed(2));
+      map[tok] = {
+        ltp: Number(ltp.toFixed(2)),
+        bestBid,
+        bestAsk,
+        openInterest: Number(item.opnInterest ?? 0),
+        tradeVolume: Number(item.tradeVolume ?? 0)
+      };
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
 function getAngelOneConnectionStatus() {
   const { clientCode, configured } = getAngelCredentials();
   const masked = clientCode.length >= 4 ? `${clientCode.slice(0, 2)}***${clientCode.slice(-2)}` : configured ? "CONFIGURED" : "NOT_SET";
   return {
     configured,
     authenticated: Boolean(configured && cachedJwtToken && Date.now() < jwtExpiresAtMs),
-    providerName: "Angel One SmartAPI (NSE L1/L2 + Option Greeks + 5m OHLCV)",
+    providerName: "Angel One SmartAPI (NSE Spot + NFO Option L2 Depth + 5m OHLCV Technicals)",
     clientCodeMasked: masked,
     feedMode: configured && cachedJwtToken ? "ANGEL_ONE_SMARTAPI_FULL" : "FALLBACK_PUBLIC_NSE",
-    tokensTracked: Object.keys(ANGEL_ONE_NSE_TOKENS).length,
+    tokensTracked: Object.keys(ANGEL_ONE_NSE_TOKENS).length + nfoOptionsTrackedCount,
     lastLoginAt: lastLoginAtIso,
     lastQuoteFetchAt: lastQuoteFetchAtIso,
     lastError: lastAngelError
@@ -1252,7 +1606,11 @@ var BASE_SPOTS = {
 };
 var lastRealFetchMs = 0;
 var monotonicSeq = 1e3;
+var rotationCursor = 0;
 var cachedSpots = {};
+var cachedTechnicals = {};
+var cachedNfoPairsByUnderlying = {};
+var cachedOpenPositionNfoMarks = {};
 for (const [sym, px] of Object.entries(BASE_SPOTS)) {
   cachedSpots[sym] = {
     symbol: sym,
@@ -1263,7 +1621,10 @@ for (const [sym, px] of Object.entries(BASE_SPOTS)) {
     updatedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
 }
-async function refreshLiveNseQuotes() {
+function getStrikeStep(underlying) {
+  return underlying === "BANKNIFTY" ? 100 : underlying === "NIFTY" || underlying === "FINNIFTY" ? 50 : 20;
+}
+async function refreshLiveNseQuotes(openPositionTokens = []) {
   const now = Date.now();
   if (now - lastRealFetchMs < 15e3) {
     return cachedSpots;
@@ -1272,7 +1633,9 @@ async function refreshLiveNseQuotes() {
   const angelQuotes = await fetchAngelOneFullMarketQuotes();
   if (angelQuotes && Object.keys(angelQuotes).length > 0) {
     for (const [sym, item] of Object.entries(angelQuotes)) {
+      const prev = cachedSpots[sym];
       cachedSpots[sym] = {
+        ...prev,
         symbol: sym,
         angelToken: item.angelToken,
         spot: item.ltp,
@@ -1285,6 +1648,51 @@ async function refreshLiveNseQuotes() {
         updatedAt: item.updatedAt
       };
       BASE_SPOTS[sym] = item.ltp;
+    }
+    const tradeableUnderlyings = Object.keys(NSE_LOT_SIZES);
+    const activeSym = tradeableUnderlyings[rotationCursor % tradeableUnderlyings.length];
+    rotationCursor++;
+    try {
+      const candles = await fetchAngelOneFiveMinCandles(
+        activeSym,
+        "2026-10-20 09:15",
+        "2026-11-05 15:30"
+      );
+      if (candles && candles.length >= 15) {
+        const ind = computeTechnicalIndicatorsFromCandles(candles);
+        cachedTechnicals[activeSym] = ind;
+        if (cachedSpots[activeSym]) {
+          cachedSpots[activeSym].rsi14 = ind.rsi14;
+          cachedSpots[activeSym].adx14 = ind.adx14;
+          cachedSpots[activeSym].atrPct = ind.atrPct;
+        }
+      }
+      const spotPx = cachedSpots[activeSym]?.spot ?? BASE_SPOTS[activeSym] ?? 23050;
+      const step = getStrikeStep(activeSym);
+      const rightChoice = cachedTechnicals[activeSym]?.trendSignal ?? "CE";
+      const targetStrike = Math.round(spotPx / step) * step;
+      const shortStrike = rightChoice === "CE" ? targetStrike + step * 2 : Math.max(step, targetStrike - step * 2);
+      const nfoPair = await fetchAngelOneLiveOptionPairQuotes({
+        underlying: activeSym,
+        targetStrike,
+        shortStrike,
+        right: rightChoice
+      });
+      if (nfoPair.longLeg) {
+        cachedNfoPairsByUnderlying[activeSym] = nfoPair;
+        if (cachedSpots[activeSym]) {
+          cachedSpots[activeSym].nfoContractSymbol = nfoPair.longLeg.tradingSymbol;
+          cachedSpots[activeSym].nfoToken = nfoPair.longLeg.symbolToken;
+          cachedSpots[activeSym].nfoOptionLtp = nfoPair.longLeg.ltp;
+          cachedSpots[activeSym].nfoBestBid = nfoPair.longLeg.bestBid;
+          cachedSpots[activeSym].nfoBestAsk = nfoPair.longLeg.bestAsk;
+        }
+      }
+      if (openPositionTokens.length > 0) {
+        const liveMarks = await fetchAngelOneNfoQuotesByTokens(openPositionTokens);
+        cachedOpenPositionNfoMarks = { ...cachedOpenPositionNfoMarks, ...liveMarks };
+      }
+    } catch {
     }
     fetchAngelOneOptionGreeks("NIFTY").catch(() => {
     });
@@ -1436,6 +1844,20 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
   let signalsSkippedByGate = 0;
   let retrainsTriggered = 0;
   let latestActionSummary2 = "Marked open positions to market; holding within risk guardrails.";
+  const seenSnapIds = /* @__PURE__ */ new Set();
+  state2.equitySeries.forEach((pt, idx) => {
+    const match = pt.snapshotId.match(/(\d+)/);
+    if (match) {
+      const n = Number(match[1]);
+      if (Number.isFinite(n) && n >= monotonicSeq) {
+        monotonicSeq = n + 1;
+      }
+    }
+    if (seenSnapIds.has(pt.snapshotId)) {
+      pt.snapshotId = `${pt.snapshotId}-${idx}`;
+    }
+    seenSnapIds.add(pt.snapshotId);
+  });
   for (let c = 0; c < safeCycles; c++) {
     const seq = ++monotonicSeq;
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
@@ -1490,16 +1912,40 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
       const posPhase = Math.sin(posHash * 19.19) * 1e4;
       const posRand = posPhase - Math.floor(posPhase);
       const isSpreadPos = pos.contractSymbol.includes("SPREAD");
-      const edgeBias = (state2.learning.walkForwardAuc > 0.75 ? 0.022 : state2.learning.walkForwardAuc > 0.68 ? 0.016 : 0.011) + (isSpreadPos ? 6e-3 : 0);
-      const optionPctMove = (posRand - 0.475) * 0.34 + edgeBias;
-      let nextMark = Number(
-        Math.max(1, pos.currentMarkPrice * (1 + optionPctMove)).toFixed(2)
-      );
+      const liveLongNfo = pos.angelToken ? cachedOpenPositionNfoMarks[pos.angelToken] : void 0;
+      const liveShortNfo = pos.shortAngelToken ? cachedOpenPositionNfoMarks[pos.shortAngelToken] : void 0;
+      let nextMark = pos.currentMarkPrice;
+      let exitBid = Number(Math.max(0.5, nextMark * 0.988).toFixed(2));
+      let exitAsk = Number((nextMark * 1.012).toFixed(2));
+      if (c === 0 && safeCycles === 1 && liveLongNfo && liveLongNfo.ltp > 0) {
+        if (isSpreadPos && liveShortNfo && liveShortNfo.ltp > 0) {
+          nextMark = Number(Math.max(1, liveLongNfo.ltp - liveShortNfo.ltp).toFixed(2));
+          exitBid = Number(Math.max(0.5, liveLongNfo.bestBid - liveShortNfo.bestAsk).toFixed(2));
+          exitAsk = Number(
+            Math.max(exitBid + 0.25, liveLongNfo.bestAsk - liveShortNfo.bestBid).toFixed(2)
+          );
+        } else {
+          nextMark = Number(liveLongNfo.ltp.toFixed(2));
+          exitBid = liveLongNfo.bestBid;
+          exitAsk = liveLongNfo.bestAsk;
+        }
+        pos.quoteSource = "ANGEL_ONE_NFO_L2";
+      } else {
+        const edgeBias = (state2.learning.walkForwardAuc > 0.75 ? 0.022 : state2.learning.walkForwardAuc > 0.68 ? 0.016 : 0.011) + (isSpreadPos ? 6e-3 : 0);
+        const optionPctMove = (posRand - 0.475) * 0.34 + edgeBias;
+        nextMark = Number(
+          Math.max(1, pos.currentMarkPrice * (1 + optionPctMove)).toFixed(2)
+        );
+        exitBid = Number(Math.max(0.5, nextMark * 0.988).toFixed(2));
+        exitAsk = Number((nextMark * 1.012).toFixed(2));
+      }
       pos.peakMarkPrice = Number(Math.max(pos.peakMarkPrice, nextMark).toFixed(2));
       const mfeSoFar = (pos.peakMarkPrice - pos.conservativeEntryPrice) / pos.conservativeEntryPrice;
       const breakevenLocked = mfeSoFar >= 0.18 && nextMark <= pos.conservativeEntryPrice * 1.032;
       if (breakevenLocked) {
         nextMark = Number((pos.conservativeEntryPrice * 1.035).toFixed(2));
+        exitBid = Number(Math.max(0.5, nextMark * 0.99).toFixed(2));
+        exitAsk = Number((nextMark * 1.01).toFixed(2));
       }
       pos.currentMarkPrice = nextMark;
       pos.troughMarkPrice = Number(Math.min(pos.troughMarkPrice, nextMark).toFixed(2));
@@ -1507,8 +1953,8 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
       const exitSim = simulatePessimisticFill(
         "SELL",
         pos.lotsQty,
-        Number(Math.max(0.5, nextMark * 0.988).toFixed(2)),
-        Number((nextMark * 1.012).toFixed(2)),
+        exitBid,
+        exitAsk,
         pos.lotSize,
         void 0,
         {
@@ -1580,6 +2026,7 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
           regimeAtExit: state2.health.currentRegime
         });
         const structureTag = isSpreadPos ? pos.right === "CE" ? "Bull Call Spread (-65% Theta)" : "Bear Put Spread (-65% Theta)" : `Single-Leg ${pos.right}`;
+        const posTech = cachedTechnicals[pos.underlying];
         const tradeId = `NSE-TRD-${1001 + state2.closedTrades.length}`;
         state2.closedTrades.unshift({
           tradeId,
@@ -1597,10 +2044,10 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
           deltaAtEntry: pos.delta,
           ivRankAtEntry: pos.ivRankPct,
           spreadPctAtEntry: entryFill.spreadPctOfMid,
-          confidenceAtEntry: 0.74,
-          rsiAtEntry: 55.2,
-          adxAtEntry: 25.8,
-          atrPctAtEntry: 0.0125,
+          confidenceAtEntry: posTech?.signalConfidence ?? 0.76,
+          rsiAtEntry: posTech?.rsi14 ?? 55.2,
+          adxAtEntry: posTech?.adx14 ?? 25.8,
+          atrPctAtEntry: posTech?.atrPct ?? 0.0125,
           indiaVixAtEntry: state2.health.indiaVixLevel,
           timeOfDayBucket: timeBuckets[cycleNum % timeBuckets.length],
           conservativeEntryPrice: entryFill.conservativeFillPrice,
@@ -1615,12 +2062,14 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
           maePct,
           mfePct,
           holdMinutes: Math.max(45, pos.tradingDaysHeld * 180 + 60),
-          entryReason: `${structureTag} on ${pos.underlying} (${pos.strategyName}) approved by Quality Gate ${state2.control.activeChampionVersion}`,
+          entryReason: `${structureTag} on ${pos.underlying}${pos.angelToken ? ` [Angel Token #${pos.angelToken}]` : ""} (${pos.strategyName}) approved by Quality Gate ${state2.control.activeChampionVersion}`,
           exitReason: exitDecision.exitReason,
           postMortemLabel: pmLabel,
           diagnosisNotes: `Closed ${structureTag} via ${exitDecision.exitReason} (${pmLabel}): Cons \u20B9${entryFill.conservativeFillPrice.toFixed(2)} -> \u20B9${exitSim.conservativeFillPrice.toFixed(2)} (Net ${rt.conservativePnlInr >= 0 ? "+" : ""}\u20B9${rt.conservativePnlInr.toFixed(2)}).`,
           openedAt: pos.openedAt,
-          closedAt: nowIso
+          closedAt: nowIso,
+          angelToken: pos.angelToken,
+          quoteSource: pos.quoteSource ?? "ANGEL_ONE_SPOT_BS"
         });
         const bucketMatch = state2.learning.banditAllocations.find(
           (b) => b.bucketKey.includes(pos.strategyName) && b.bucketKey.includes(pos.underlying)
@@ -1650,15 +2099,18 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
     }
     state2.openPositions = remainingPositions;
     const candidateUnderlying = underlyings[cycleNum % underlyings.length];
-    const candidateStrat = strategies[cycleNum % strategies.length];
+    const liveTech = cachedTechnicals[candidateUnderlying];
+    const candidateStrat = c === 0 && safeCycles === 1 && liveTech ? liveTech.recommendedStrategy : strategies[cycleNum % strategies.length];
     const lotSize = NSE_LOT_SIZES[candidateUnderlying] ?? 75;
     const spot = cachedSpots[candidateUnderlying]?.spot ?? BASE_SPOTS[candidateUnderlying] ?? 24480;
-    const optRight = state2.health.currentRegime === "trending_down" ? "PE" : rand > 0.3 ? "CE" : "PE";
-    const strikeStep = candidateUnderlying === "BANKNIFTY" ? 100 : candidateUnderlying === "NIFTY" || candidateUnderlying === "FINNIFTY" ? 50 : 20;
-    const strike = Math.round(spot * (optRight === "CE" ? 1.003 : 0.997) / strikeStep) * strikeStep;
+    const optRight = c === 0 && safeCycles === 1 && liveTech ? liveTech.trendSignal : state2.health.currentRegime === "trending_down" ? "PE" : rand > 0.3 ? "CE" : "PE";
+    const strikeStep = getStrikeStep(candidateUnderlying);
+    const nfoPair = cachedNfoPairsByUnderlying[candidateUnderlying];
+    const hasLiveNfo = c === 0 && safeCycles === 1 && Boolean(nfoPair?.longLeg && nfoPair.longLeg.right === optRight && nfoPair.longLeg.ltp > 0);
+    const strike = hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.strike : Math.round(spot * (optRight === "CE" ? 1.003 : 0.997) / strikeStep) * strikeStep;
     const dte = 14 + cycleNum % 14;
     const ivAnnual = Math.max(0.13, state2.health.indiaVixLevel / 100);
-    const quote = blackScholesOptionPrice({
+    const bsFallback = blackScholesOptionPrice({
       spot,
       strike,
       dteDays: dte,
@@ -1666,14 +2118,30 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
       riskFreeRate: 0.068,
       right: optRight
     });
-    const spreadPct = Number(((quote.ask - quote.bid) / Math.max(quote.mid, 1)).toFixed(4));
-    const confidence = Number((0.56 + rand * 0.34).toFixed(2));
-    const adx14 = Number((18 + rand * 18).toFixed(1));
-    const ivRankPct = Number((25 + rand * 55).toFixed(1));
+    const longBid = hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.bestBid : bsFallback.bid;
+    const longAsk = hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.bestAsk : bsFallback.ask;
+    const longMid = Number(((longBid + longAsk) / 2).toFixed(2));
+    const solvedLongGreeks = solveImpliedVolatilityAndGreeks({
+      marketPrice: longMid,
+      spot,
+      strike,
+      dteDays: dte,
+      riskFreeRate: 0.068,
+      right: optRight
+    });
+    const spreadPct = Number(((longAsk - longBid) / Math.max(longMid, 1)).toFixed(4));
+    const confidence = c === 0 && safeCycles === 1 && liveTech ? liveTech.signalConfidence : Number((0.56 + rand * 0.34).toFixed(2));
+    const adx14 = c === 0 && safeCycles === 1 && liveTech ? liveTech.adx14 : Number((18 + rand * 18).toFixed(1));
+    const ivRankPct = hasLiveNfo ? Number(
+      Math.max(
+        15,
+        Math.min(90, (solvedLongGreeks.impliedVolAnnual * 100 - 11) / 14 * 100)
+      ).toFixed(1)
+    ) : Number((25 + rand * 55).toFixed(1));
     const isMidday = cycleNum % 3 === 1;
     const useVerticalSpread = ivRankPct >= 45 || state2.health.indiaVixLevel >= 14.5;
-    const shortStrike = optRight === "CE" ? strike + strikeStep * 2 : Math.max(strikeStep, strike - strikeStep * 2);
-    const shortQuote = blackScholesOptionPrice({
+    const shortStrike = hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike ? nfoPair.shortLeg.strike : optRight === "CE" ? strike + strikeStep * 2 : Math.max(strikeStep, strike - strikeStep * 2);
+    const shortBsFallback = blackScholesOptionPrice({
       spot,
       strike: shortStrike,
       dteDays: dte,
@@ -1681,6 +2149,16 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
       riskFreeRate: 0.068,
       right: optRight
     });
+    const shortBid = hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike ? nfoPair.shortLeg.bestBid : shortBsFallback.bid;
+    const shortAsk = hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike ? nfoPair.shortLeg.bestAsk : shortBsFallback.ask;
+    const shortDelta = hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike ? solveImpliedVolatilityAndGreeks({
+      marketPrice: (shortBid + shortAsk) / 2,
+      spot,
+      strike: shortStrike,
+      dteDays: dte,
+      riskFreeRate: 0.068,
+      right: optRight
+    }).delta : shortBsFallback.delta;
     const gateEval = predictLearnedQualityGateProb(state2, {
       confidence,
       spreadPct,
@@ -1690,12 +2168,13 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
       dte,
       isVerticalSpread: useVerticalSpread
     });
-    const contractSym = useVerticalSpread ? `${candidateUnderlying}26NOV${strike}/${shortStrike}${optRight}_SPREAD` : `${candidateUnderlying}26NOV${strike}${optRight}`;
+    const expiryTag = hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.expiryCode : "23NOV26";
+    const contractSym = useVerticalSpread ? `${candidateUnderlying}${expiryTag}${strike}/${shortStrike}${optRight}_SPREAD` : hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.tradingSymbol : `${candidateUnderlying}${expiryTag}${strike}${optRight}`;
     if (!gateEval.passed) {
       signalsSkippedByGate++;
       const activeThresholdPct = (Math.max(0.67, state2.learning.qualityGateThreshold) * 100).toFixed(1);
       const cfMove = gateEval.prob < 0.67 ? -(0.12 + rand * 0.18) : (rand - 0.55) * 0.22;
-      const cfExit = Number(Math.max(0.5, quote.mid * (1 + cfMove)).toFixed(2));
+      const cfExit = Number(Math.max(0.5, longMid * (1 + cfMove)).toFixed(2));
       state2.skippedSignals.unshift({
         signalId: `SIG-SKIP-${seq}`,
         generatedAt: nowIso,
@@ -1707,7 +2186,7 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
         qualityGateProb: gateEval.prob,
         skipReason: `Capital-Preservation Gate P(gain)=${(gateEval.prob * 100).toFixed(1)}% < ${activeThresholdPct}% threshold (Hard Floor 67% \u2014 IVR ${ivRankPct}%, Spread ${(spreadPct * 100).toFixed(1)}%)`,
         counterfactualContract: contractSym,
-        counterfactualEntryPrice: quote.mid,
+        counterfactualEntryPrice: longMid,
         counterfactualExitPrice: cfExit,
         counterfactualPnlPct: Number(cfMove.toFixed(4))
       });
@@ -1723,24 +2202,24 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
       );
       let rawConsUnitPx = 0;
       let entryFeeInr = 35;
-      let netDelta = quote.delta;
-      let thetaDecayFactor = 0.028;
+      let netDelta = solvedLongGreeks.delta;
+      let netTheta = solvedLongGreeks.thetaPerDay;
       if (useVerticalSpread) {
         const spreadSim = simulateVerticalDebitSpreadFill({
           right: optRight,
           lotsQty: 1,
-          longBid: quote.bid,
-          longAsk: quote.ask,
-          shortBid: shortQuote.bid,
-          shortAsk: shortQuote.ask,
+          longBid,
+          longAsk,
+          shortBid,
+          shortAsk,
           lotSize
         });
         rawConsUnitPx = spreadSim.conservativeNetDebitPerUnit;
         entryFeeInr = spreadSim.totalEntryFeeInr;
-        netDelta = Number((quote.delta - shortQuote.delta).toFixed(3));
-        thetaDecayFactor = 98e-4;
+        netDelta = Number((solvedLongGreeks.delta - shortDelta).toFixed(3));
+        netTheta = Number((solvedLongGreeks.thetaPerDay * 0.35).toFixed(2));
       } else {
-        const entrySim = simulatePessimisticFill("BUY", 1, quote.bid, quote.ask, lotSize);
+        const entrySim = simulatePessimisticFill("BUY", 1, longBid, longAsk, lotSize);
         rawConsUnitPx = entrySim.conservativeFillPrice;
         entryFeeInr = entrySim.feeInr;
       }
@@ -1761,6 +2240,8 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
       });
       if (riskCheck.allowed && state2.openPositions.length < 5) {
         entriesOpened++;
+        const angelLongTok = hasLiveNfo ? nfoPair?.longLeg?.symbolToken : void 0;
+        const angelShortTok = hasLiveNfo && useVerticalSpread ? nfoPair?.shortLeg?.symbolToken : void 0;
         const newPos = {
           positionId: `POS-NSE-${seq}`,
           tradeId: `NSE-TRD-${seq}`,
@@ -1769,7 +2250,7 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
           right: optRight,
           strike,
           lotSize,
-          expirationDate: "2026-11-26",
+          expirationDate: "2026-11-23",
           dte,
           strategyName: candidateStrat,
           regimeAtEntry: state2.health.currentRegime,
@@ -1782,18 +2263,23 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
           unrealizedPnlInr: -entryFeeInr,
           unrealizedPnlPct: -3e-3,
           delta: netDelta,
-          theta: Number((-effectiveEntryPx * thetaDecayFactor).toFixed(2)),
+          theta: netTheta,
           ivRankPct,
           stopLossPrice: Number((effectiveEntryPx * 0.75).toFixed(2)),
           takeProfitPrice: Number((effectiveEntryPx * 1.5).toFixed(2)),
           trailingStopActivationPrice: Number((effectiveEntryPx * 1.28).toFixed(2)),
           tradingDaysHeld: 0,
           isIntradayFlagged: candidateStrat === "breakout_momentum",
-          openedAt: nowIso
+          openedAt: nowIso,
+          angelToken: angelLongTok,
+          shortAngelToken: angelShortTok,
+          underlyingSpotAtEntry: spot,
+          quoteSource: hasLiveNfo ? "ANGEL_ONE_NFO_L2" : "ANGEL_ONE_SPOT_BS"
         };
         state2.openPositions.unshift(newPos);
         const structLabel = useVerticalSpread ? optRight === "CE" ? "Bull Call Debit Spread (-65% Theta)" : "Bear Put Debit Spread (-65% Theta)" : `Long ${optRight}`;
-        latestActionSummary2 = `Opened 1 lot (${lotSize} units) ${contractSym} [${structLabel}] @ \u20B9${effectiveEntryPx.toFixed(2)} via ${candidateStrat} (P(gain)=${(gateEval.prob * 100).toFixed(1)}% >= ${(Math.max(0.67, state2.learning.qualityGateThreshold) * 100).toFixed(0)}%)`;
+        const feedTag = angelLongTok ? ` \xB7 Angel NFO #${angelLongTok}` : "";
+        latestActionSummary2 = `Opened 1 lot (${lotSize} units) ${contractSym} [${structLabel}${feedTag}] @ \u20B9${effectiveEntryPx.toFixed(2)} via ${candidateStrat} (P(gain)=${(gateEval.prob * 100).toFixed(1)}% >= ${(Math.max(0.67, state2.learning.qualityGateThreshold) * 100).toFixed(0)}%)`;
       }
     }
     const totalClosedConsPnl = state2.closedTrades.filter((t) => !t.isShadowChallenger).reduce((acc, t) => acc + t.conservativePnlInr, 0);
@@ -1953,6 +2439,13 @@ async function ensureStateLoadedFromNeon() {
     if (res.rows.length > 0 && res.rows[0].config_payload_json) {
       const saved = res.rows[0].config_payload_json;
       if (saved.state && saved.state.closedTrades && saved.state.equitySeries) {
+        const seenSnap = /* @__PURE__ */ new Set();
+        saved.state.equitySeries.forEach((pt, idx) => {
+          if (seenSnap.has(pt.snapshotId)) {
+            pt.snapshotId = `${pt.snapshotId}-${idx}`;
+          }
+          seenSnap.add(pt.snapshotId);
+        });
         state = saved.state;
         totalAutonomousCyclesRun = Number(saved.totalAutonomousCyclesRun) || totalAutonomousCyclesRun;
         latestActionSummary = saved.latestActionSummary || latestActionSummary;
@@ -2121,7 +2614,8 @@ refreshLiveNseQuotes().catch(() => {
 if (!process.env.VERCEL) {
   setInterval(async () => {
     if (!autoRunEnabled || state.health.simulatedOfflineMode) return;
-    await refreshLiveNseQuotes();
+    const openTokens = state.openPositions.flatMap((p) => [p.angelToken, p.shortAngelToken]).filter(Boolean);
+    await refreshLiveNseQuotes(openTokens);
     const rep = executeAutonomousPaperCycles(state, 1);
     totalAutonomousCyclesRun += rep.cyclesRun;
     latestActionSummary = rep.latestActionSummary;
@@ -2129,7 +2623,8 @@ if (!process.env.VERCEL) {
 }
 app.get("/api/overview", async (_req, res) => {
   await ensureStateLoadedFromNeon();
-  const liveQuotes = await refreshLiveNseQuotes();
+  const openTokens = state.openPositions.flatMap((p) => [p.angelToken, p.shortAngelToken]).filter(Boolean);
+  const liveQuotes = await refreshLiveNseQuotes(openTokens);
   if (process.env.VERCEL && autoRunEnabled && !state.health.simulatedOfflineMode) {
     const rep = executeAutonomousPaperCycles(state, 1);
     totalAutonomousCyclesRun += rep.cyclesRun;

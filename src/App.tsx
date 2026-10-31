@@ -730,6 +730,13 @@ export default function App() {
                           {q.changePct >= 0 ? '+' : ''}
                           {q.changePct.toFixed(2)}%
                         </div>
+                        {(q.rsi14 || q.nfoOptionLtp) && (
+                          <div className="text-[9px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                            {q.nfoOptionLtp
+                              ? `NFO ₹${q.nfoOptionLtp.toFixed(1)}`
+                              : `RSI ${q.rsi14?.toFixed(0)} · ADX ${q.adx14?.toFixed(0)}`}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

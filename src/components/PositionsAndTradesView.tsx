@@ -105,6 +105,7 @@ export const PositionsAndTradesView: React.FC<PositionsAndTradesViewProps> = ({
                       <div>{pos.contractSymbol}</div>
                       <div className="text-[11px] font-sans font-normal text-slate-500 dark:text-slate-400">
                         {pos.underlying} · {pos.strike} {pos.right} · Exp {pos.expirationDate}
+                        {pos.angelToken ? ` · Angel NFO #${pos.angelToken}` : ' · Angel Spot + BS'}
                       </div>
                     </td>
                     <td className="py-3 px-3 font-sans text-slate-600 dark:text-slate-300">
