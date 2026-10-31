@@ -113,10 +113,9 @@ export const LearningAndHealthView: React.FC<LearningAndHealthViewProps> = ({
             </span>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-            Anti-overfitting guard: Uses L2-regularized Logistic Regression until &gt;={' '}
-            {learning.tradesNeededForGbdt} closed NSE trades ({learning.closedTradesCount}/
-            {learning.tradesNeededForGbdt} currently), trained strictly via time-ordered walk-forward
-            splits.
+            {learning.closedTradesCount >= 200 || learning.championVersion.includes('gbdt')
+              ? `200-Trade Statistical Milestone Active (${learning.closedTradesCount}/200 closed NSE trades): ${learning.championVersion} (${learning.modelType}) is live, capturing non-linear Vertical Spread × INDIA VIX and Midday × Spread interactions.`
+              : `Anti-overfitting guard: Uses L2-regularized Logistic Regression until >= 200 closed NSE trades (${learning.closedTradesCount}/200 completed · ${learning.tradesNeededForGbdt} more needed), trained strictly via time-ordered walk-forward splits.`}
           </p>
 
           <div className="space-y-2.5 text-xs">
