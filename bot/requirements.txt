@@ -1,0 +1,15 @@
+# Python 3.11+ dependencies for Oracle Cloud Always Free VM
+# Tested on both Ampere A1 (aarch64) and AMD VM.Standard.E2.1.Micro (x86_64, 1 GB RAM)
+alpaca-py==0.33.1
+APScheduler==3.10.4
+numpy==1.26.4
+pandas==2.2.3
+pandas-market-calendars==4.4.1
+psycopg[binary,pool]==3.2.3
+PyYAML==6.0.2
+requests==2.32.3
+scikit-learn==1.5.2
+scipy==1.14.1
+python-dotenv==1.0.1
+tzdata==2024.2
+pytest==8.3.3

@@ -1,0 +1,42 @@
+# ============================================================================
+# /deploy/aegis-options-bot.service
+# Systemd unit for Oracle Cloud Always Free VM (Ubuntu 22.04 / 24.04)
+# Indian NSE F&O Paper-Trading Bot (Asia/Kolkata IST)
+# Supports both Ampere A1 (aarch64) and AMD VM.Standard.E2.1.Micro (1 GB RAM)
+# ============================================================================
+
+[Unit]
+Description=AegisQuant Indian NSE F&O Self-Learning Options Paper Bot (PAPER ONLY)
+After=network-online.target chrony.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aegisbot
+Group=aegisbot
+WorkingDirectory=/opt/aegis-options-bot/bot
+EnvironmentFile=/etc/aegis-bot/bot.env
+Environment="PYTHONUNBUFFERED=1"
+Environment="TZ=Asia/Kolkata"
+
+ExecStart=/opt/aegis-options-bot/bot/.venv/bin/python -m src.main --config /opt/aegis-options-bot/bot/config.yaml
+
+# Auto-restart on crash; start on boot
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Memory discipline so AMD VM.Standard.E2.1.Micro (1 GB RAM + 2 GB swap) stays stable
+MemoryHigh=360M
+MemoryMax=450M
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/aegis-bot /var/log/aegis-bot
+
+[Install]
+WantedBy=multi-user.target

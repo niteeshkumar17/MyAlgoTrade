@@ -1,0 +1,182 @@
+# ============================================================================
+# AegisQuant Self-Learning Options Paper-Trading Bot — Master Configuration
+# Primary Market: INDIA (NSE F&O — NIFTY, BANKNIFTY, FINNIFTY & Liquid Stock Options)
+# Every tunable parameter lives here. Never hardcode thresholds in strategy code.
+# ============================================================================
+
+system:
+  bot_id: "aegis-nse-oracle-vm-01"
+  market_region: "INDIA_NSE"       # "INDIA_NSE" (default) | "US_OPRA"
+  timezone: "Asia/Kolkata"         # IST (UTC+05:30), 09:15 - 15:30 IST
+  exchange_calendar: "XBOM"        # Indian exchange calendar (NSE/BSE holidays)
+  decision_cycle_minutes: 5        # Configurable 1 to 15 minutes during 09:15-15:30 IST
+  heartbeat_interval_seconds: 60
+  dry_run: false                   # When true, runs full pipeline with mock/live quotes but logs dry-run fills
+  memory_budget_mb: 380            # Target ceiling for Oracle AMD E2.1.Micro (1 GB RAM + 2 GB swap)
+  random_seed: 42
+
+broker:
+  provider: "indian_nse_paper"     # "indian_nse_paper" (Primary) | "alpaca_paper"
+  # HARD PAPER-ONLY GUARD: Bot refuses to boot unless paper_trading_only is true
+  # and endpoint is in the approved paper/sandbox whitelist (zero live order paths).
+  paper_trading_only: true
+  nse_paper_endpoint: "https://paper-sandbox.nseindia-sim.local"
+  alpaca_base_url: "https://paper-api.alpaca.markets"
+  currency: "INR"
+  starting_equity_inr: 1000000.0   # ₹10,00,000 (₹10 Lakhs virtual paper capital)
+  data_feed: "nse_indicative_free" # Free NSE option chain / SmartAPI / Dhan indicative feed
+  max_quote_age_seconds: 180       # Reject stale quotes older than 3 minutes
+  api_max_retries: 4
+  api_backoff_base_seconds: 1.5
+
+universe:
+  benchmarks:
+    market_index: "NIFTY"
+    volatility_vix_proxy: "INDIA_VIX"
+  symbols:
+    - "NIFTY"
+    - "BANKNIFTY"
+    - "FINNIFTY"
+    - "RELIANCE"
+    - "TCS"
+    - "HDFCBANK"
+    - "INFY"
+    - "ICICIBANK"
+    - "SBIN"
+  # Standard NSE F&O Lot Sizes (Contracts are traded in fixed lot multiples)
+  nse_lot_sizes:
+    NIFTY: 75
+    BANKNIFTY: 30
+    FINNIFTY: 65
+    RELIANCE: 500
+    TCS: 175
+    HDFCBANK: 550
+    INFY: 400
+    ICICIBANK: 700
+    SBIN: 750
+  # Quarterly Q2/Q3 corporate results blackout dates (YYYY-MM-DD); skip entry if results fall inside holding window
+  earnings_blackout_dates:
+    RELIANCE: ["2026-10-28", "2027-01-22"]
+    TCS: ["2026-10-15", "2027-01-14"]
+    HDFCBANK: ["2026-10-26", "2027-01-20"]
+    INFY: ["2026-10-22", "2027-01-18"]
+    ICICIBANK: ["2026-10-31", "2027-01-25"]
+    SBIN: ["2026-11-04", "2027-02-03"]
+
+fill_simulation:
+  # Conservative internal ledger model for NSE F&O:
+  # Buy at mid + (spread_slippage_fraction * spread)
+  # Sell at mid - (spread_slippage_fraction * spread)
+  # Plus ₹35/lot per leg covering ₹20 flat brokerage + STT + NSE exchange turnover + SEBI + GST
+  spread_slippage_fraction: 0.35
+  fee_per_lot_inr: 35.0
+  reject_zero_bid: true
+
+contract_selection:
+  min_dte: 7                       # Supports NSE weekly & monthly index/stock expiries
+  max_dte: 45
+  hard_floor_dte: 4                # Never enter a contract with DTE < 4 (avoid expiry-day gamma traps)
+  target_dte: 18
+  min_abs_delta: 0.35
+  max_abs_delta: 0.55
+  target_abs_delta: 0.45
+  max_spread_pct_of_mid: 0.08      # Spread <= 8% of mid price
+  min_open_interest: 500           # Minimum OI in lots / contracts
+  min_daily_volume: 100
+  max_iv_rank_pct: 85.0            # Skip extreme IV rank (>85%) to avoid post-event IV crush
+  min_iv_rank_pct: 10.0
+  estimated_holding_window_days: 5
+  phase2_vertical_debit_spreads: true   # Enabled: defined-risk bull call / bear put debit spreads when VIX >= 14.5 or IVR >= 45%
+  vertical_spread_min_vix: 14.5
+  vertical_spread_min_iv_rank_pct: 45.0
+  short_leg_target_abs_delta: 0.25      # Sell ~0.25 delta OTM leg in same expiry to cut Theta decay by ~65%
+
+regime_detector:
+  ema_fast_period: 20
+  ema_slow_period: 50
+  realized_vol_window_days: 20
+  high_vol_annualized_threshold: 0.24
+  india_vix_high_threshold: 20.0   # INDIA VIX >= 20 classifies as high_volatility
+  adx_trend_threshold: 22.0
+
+strategies:
+  min_entry_confidence: 0.68         # Capital-preservation floor: require >= 68% composite strategy confidence
+  trend_following:
+    enabled: true
+    allowed_regimes: ["trending_up", "trending_down"]
+    ema_fast: 20
+    ema_slow: 50
+    min_adx: 24.0
+    require_vwap_alignment: true
+  mean_reversion:
+    enabled: true
+    allowed_regimes: ["range"]
+    rsi_period: 14
+    rsi_oversold: 26.0
+    rsi_overbought: 74.0
+    bollinger_period: 20
+    bollinger_std: 2.0
+    max_adx: 19.0
+  breakout_momentum:
+    enabled: true
+    allowed_regimes: ["trending_up", "trending_down", "high_volatility"]
+    lookback_bars: 20
+    min_volume_multiple: 1.6
+    min_atr_expansion_ratio: 1.18
+
+exits:
+  # Evaluated in strict priority order during 09:15 - 15:30 IST:
+  # 1. Force close DTE <= 1 (before NSE expiry day 3:30 PM physical/STT trap)
+  # 2. Intraday flatten 15 min before market close (15:15 IST)
+  # 3. Hard stop loss (-25% of entry premium — tightened for capital preservation)
+  # 4. Breakeven-lock floor (+2.5% net once MFE reaches +18% so winners never turn into losses)
+  # 5. Take profit (+50% of entry premium)
+  # 6. Trailing stop (-12% from peak mark once MFE >= +28%)
+  # 7. Time stop (held > 5 trading days or DTE <= 3) & Signal reversal exit
+  force_close_dte: 1
+  intraday_flatten_minutes_before_close: 15
+  stop_loss_pct: -0.25
+  breakeven_lock_activate_pct: 0.18
+  breakeven_lock_floor_pct: 0.025
+  take_profit_pct: 0.50
+  trail_activation_profit_pct: 0.28
+  trail_distance_pct: 0.12
+  max_hold_trading_days: 5
+  time_stop_dte: 3
+  enable_signal_reversal_exit: true
+
+risk_limits:
+  max_risk_per_trade_pct_equity: 0.012    # Max 1.2% of ₹10L equity (₹12,000) risked per trade for capital preservation
+  max_open_positions: 5
+  max_total_premium_pct_equity: 0.20      # Max 20% of equity (₹2,00,000) in open option premium at once
+  max_positions_per_underlying: 2
+  daily_loss_limit_pct_equity: 0.025      # -2.5% daily loss (₹25,000) -> halt new entries for the day
+  max_drawdown_kill_switch_pct: 0.10      # -10.0% drawdown from peak (₹1,00,000) -> pause bot + red banner
+
+learning:
+  min_bucket_sample_size: 30              # Anti-overfitting: >= 30 trades before adapting a bucket
+  gradient_boosting_min_trades: 200       # Unlock & promote GBDT ensemble at 200 closed trades
+  quality_gate_min_prob_profit: 0.68      # Recommended Capital-Preservation Gate: P(net gain) >= 68%
+  quality_gate_hard_floor_prob: 0.67      # Hard safety floor: never enter or auto-tune below 67%
+  l2_regularization_c: 1.0
+  bandit_min_allocation_floor: 0.05       # 5% minimum floor so no strategy x regime x underlying is starved
+  parameter_tuning:
+    max_weekly_change_pct: 0.10           # Max +/- 10% change per weekly cycle
+    bootstrap_iterations: 1000
+    bootstrap_confidence_level: 0.90
+  champion_challenger:
+    min_shadow_trades_to_promote: 50
+    min_expectancy_improvement_inr: 350.0
+
+backtest:
+  risk_free_rate_annual: 0.068            # India 91-day T-Bill / RBI repo benchmark (~6.8%)
+  iv_multiplier_from_hv: 1.18             # Clearly labeled Black-Scholes IV approximation multiplier
+  walk_forward_train_days: 120
+  walk_forward_test_days: 30
+
+storage:
+  sqlite_outbox_path: "/var/lib/aegis-bot/outbox.sqlite3"
+  csv_backup_dir: "/var/lib/aegis-bot/backups"
+  log_file_path: "/var/log/aegis-bot/bot.jsonl"
+  log_max_bytes: 10485760                 # 10 MB per log file
+  log_backup_count: 5

@@ -1,0 +1,6 @@
+{
+  "name": "AegisQuant Options Paper-Trading Bot & Control Plane",
+  "description": "Self-learning long call/put paper-trading options bot for Oracle Cloud Always Free VM, Neon Postgres, and Vercel with pessimistic fill simulation, Thompson sampling bandit allocation, and walk-forward backtesting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
