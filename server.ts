@@ -2,6 +2,7 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import pg from 'pg';
 import {
   buildInitialQuantState,
   QuantSystemState,
@@ -23,11 +24,93 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const state: QuantSystemState = buildInitialQuantState();
+let state: QuantSystemState = buildInitialQuantState();
 let autoRunEnabled = true;
 let latestActionSummary =
   'Autonomous NSE Paper Engine active — scanning NIFTY, BANKNIFTY, FINNIFTY & Stock Options every cycle.';
 let totalAutonomousCyclesRun = 1;
+
+// Optional Neon Postgres persistence pool (supports DATABASE_URL_RW, DATABASE_URL, or DATABASE_URL_RO)
+const rawDbUrl =
+  process.env.DATABASE_URL_RW ||
+  process.env.DATABASE_URL ||
+  process.env.DATABASE_URL_RO ||
+  '';
+const dbPool = rawDbUrl
+  ? new pg.Pool({
+      connectionString: rawDbUrl,
+      max: 2,
+      idleTimeoutMillis: 10000,
+      connectionTimeoutMillis: 4000,
+    })
+  : null;
+let stateLoadedFromDb = false;
+
+async function ensureStateLoadedFromNeon(): Promise<void> {
+  if (!dbPool || stateLoadedFromDb) return;
+  stateLoadedFromDb = true;
+  try {
+    const res = await dbPool.query(
+      "SELECT config_payload_json FROM config_history WHERE config_version_id = 'LIVE_STATE_CHECKPOINT' LIMIT 1"
+    );
+    if (res.rows.length > 0 && res.rows[0].config_payload_json) {
+      const saved = res.rows[0].config_payload_json;
+      if (saved.state && saved.state.closedTrades && saved.state.equitySeries) {
+        state = saved.state;
+        totalAutonomousCyclesRun = Number(saved.totalAutonomousCyclesRun) || totalAutonomousCyclesRun;
+        latestActionSummary = saved.latestActionSummary || latestActionSummary;
+        autoRunEnabled = saved.autoRunEnabled ?? true;
+      }
+    }
+  } catch {
+    // Non-fatal: continue with in-memory state if table/role is read-only or unreachable
+  }
+}
+
+async function persistStateToNeon(): Promise<void> {
+  if (!dbPool) return;
+  try {
+    const payload = JSON.stringify({
+      state,
+      totalAutonomousCyclesRun,
+      latestActionSummary,
+      autoRunEnabled,
+    });
+    await dbPool.query(
+      `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
+       VALUES ('LIVE_STATE_CHECKPOINT', NOW(), TRUE, $1, $2::jsonb, $3)
+       ON CONFLICT (config_version_id) DO UPDATE SET
+         applied_at = NOW(),
+         previous_champion_id = EXCLUDED.previous_champion_id,
+         config_payload_json = EXCLUDED.config_payload_json,
+         change_summary = EXCLUDED.change_summary`,
+      [
+        state.control.activeChampionVersion,
+        payload,
+        latestActionSummary.slice(0, 240),
+      ]
+    );
+    await dbPool.query(
+      `INSERT INTO bot_health (bot_id, heartbeat_at, last_cycle_at, last_cycle_status, market_open, current_regime, last_db_write_at)
+       VALUES ($1, NOW(), NOW(), $2, $3, $4, NOW())
+       ON CONFLICT (bot_id) DO UPDATE SET
+         heartbeat_at = NOW(),
+         last_cycle_at = NOW(),
+         last_cycle_status = EXCLUDED.last_cycle_status,
+         market_open = EXCLUDED.market_open,
+         current_regime = EXCLUDED.current_regime,
+         last_db_write_at = NOW()`,
+      [
+        state.health.botId || 'aegis-nse-mumbai-bom1',
+        state.health.lastCycleStatus || 'OK',
+        Boolean(state.health.marketOpen),
+        state.health.currentRegime || 'trending_up',
+      ]
+    );
+  } catch {
+    // Ignore write error if connected strictly with web_ro read-only role
+  }
+}
 
 const REPO_FILES_LIST = [
   'README.md',
@@ -174,11 +257,13 @@ if (!process.env.VERCEL) {
 
 // 1. GET /api/overview
 app.get('/api/overview', async (_req, res) => {
+  await ensureStateLoadedFromNeon();
   const liveQuotes = await refreshLiveNseQuotes();
   if (process.env.VERCEL && autoRunEnabled && !state.health.simulatedOfflineMode) {
     const rep = executeAutonomousPaperCycles(state, 1);
     totalAutonomousCyclesRun += rep.cyclesRun;
     latestActionSummary = rep.latestActionSummary;
+    await persistStateToNeon();
   }
   const perf = computePerformanceMetrics(state);
   const unrealizedInr = Number(
@@ -263,17 +348,28 @@ app.get('/api/learning', (_req, res) => {
   });
 });
 
-// 6. GET /api/health
-app.get('/api/health', (_req, res) => {
+// 6. GET /api/health (Also triggers autonomous cycle on Vercel when pinged by UptimeRobot every 5m)
+app.get('/api/health', async (_req, res) => {
+  await ensureStateLoadedFromNeon();
+  if (process.env.VERCEL && autoRunEnabled && !state.health.simulatedOfflineMode) {
+    await refreshLiveNseQuotes();
+    const rep = executeAutonomousPaperCycles(state, 1);
+    totalAutonomousCyclesRun += rep.cyclesRun;
+    latestActionSummary = rep.latestActionSummary;
+    await persistStateToNeon();
+  }
   const offlineCheck = isBotOfflineDuringMarketHours(
     state.health.heartbeatAt,
     state.health.marketOpen
   );
   res.json({
+    status: 'ok',
     health: state.health,
     control: state.control,
     heartbeatAgeMinutes: offlineCheck.ageMinutes,
     isOffline: offlineCheck.isOffline,
+    totalAutonomousCyclesRun,
+    latestActionSummary,
   });
 });
 
