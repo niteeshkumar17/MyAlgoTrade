@@ -37,8 +37,11 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data, format
     if (visibleCurves.brokerPaper) allValues.push(d.brokerPaperEquityInr);
     if (visibleCurves.nifty) allValues.push(d.niftyBenchmarkEquityInr);
   }
-  const minVal = Math.min(...allValues, 985000) * 0.998;
-  const maxVal = Math.max(...allValues, 1020000) * 1.002;
+  const rawMin = allValues.length > 0 ? Math.min(...allValues) : 985000;
+  const rawMax = allValues.length > 0 ? Math.max(...allValues) : 1020000;
+  const pad = Math.max((rawMax - rawMin) * 0.08, 2500);
+  const minVal = Math.max(0, rawMin - pad);
+  const maxVal = rawMax + pad;
   const valSpan = Math.max(maxVal - minVal, 1000);
 
   const getX = (i: number) =>

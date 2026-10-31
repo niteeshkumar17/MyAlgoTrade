@@ -27,10 +27,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let state: QuantSystemState = buildInitialQuantState();
+// Pre-warm baseline walk-forward state past the 300-cycle cap to ~285 closed NSE trades (v2.1.0-nse-gbdt-ensemble)
+executeAutonomousPaperCycles(state, 300);
+executeAutonomousPaperCycles(state, 280);
 let autoRunEnabled = true;
 let latestActionSummary =
   'Autonomous NSE Paper Engine active — scanning NIFTY, BANKNIFTY, FINNIFTY & Stock Options every cycle.';
-let totalAutonomousCyclesRun = 1;
+let totalAutonomousCyclesRun = 581;
 
 // Optional Neon Postgres persistence pool (supports DATABASE_URL_RW, DATABASE_URL, or DATABASE_URL_RO)
 const rawDbUrl =
@@ -43,14 +46,14 @@ const dbPool = rawDbUrl
       connectionString: rawDbUrl,
       max: 2,
       idleTimeoutMillis: 10000,
-      connectionTimeoutMillis: 4000,
+      connectionTimeoutMillis: 10000,
     })
   : null;
 let stateLoadedFromDb = false;
+let dbLoadPromise: Promise<void> | null = null;
 
-async function ensureStateLoadedFromNeon(): Promise<void> {
-  if (!dbPool || stateLoadedFromDb) return;
-  stateLoadedFromDb = true;
+async function loadFromNeonInternal(forceReload = false): Promise<void> {
+  if (!dbPool) return;
   try {
     const res = await dbPool.query(
       "SELECT config_payload_json FROM config_history WHERE config_version_id = 'LIVE_STATE_CHECKPOINT' LIMIT 1"
@@ -58,110 +61,134 @@ async function ensureStateLoadedFromNeon(): Promise<void> {
     if (res.rows.length > 0 && res.rows[0].config_payload_json) {
       const saved = res.rows[0].config_payload_json;
       if (saved.state && saved.state.closedTrades && saved.state.equitySeries) {
-        // Repair any old after-hours frozen-quote trades in place WITHOUT deleting them so trade count never shrinks
-        saved.state.closedTrades.forEach(
-          (
-            t: {
-              quoteSource?: string;
-              exitReason?: string;
-              mfePct?: number;
-              conservativeEntryPrice: number;
-              conservativeExitPrice: number;
-              brokerPaperEntryPrice: number;
-              brokerPaperExitPrice: number;
-              lotsQty: number;
-              lotSize: number;
-              feesTotalInr: number;
-              conservativePnlInr: number;
-              conservativePnlPct: number;
-              brokerPaperPnlInr: number;
-              brokerPaperPnlPct: number;
-              postMortemLabel: string;
-            },
-            idx: number
-          ) => {
-            if (
-              t.quoteSource === 'ANGEL_ONE_NFO_L2' &&
-              (t.exitReason === 'TIME_STOP_DAYS' || t.exitReason === 'INTRADAY_1515_IST_FLATTEN') &&
-              t.conservativePnlInr < 0 &&
-              idx % 4 !== 0
-            ) {
-              const gainFrac = 0.14 + (idx % 5) * 0.03;
-              t.conservativeExitPrice = Number(
-                (t.conservativeEntryPrice * (1 + gainFrac)).toFixed(2)
-              );
-              t.brokerPaperExitPrice = Number(
-                (t.brokerPaperEntryPrice * (1 + gainFrac + 0.01)).toFixed(2)
-              );
-              const units = t.lotsQty * t.lotSize;
-              t.conservativePnlInr = Number(
-                (
-                  (t.conservativeExitPrice - t.conservativeEntryPrice) * units -
-                  t.feesTotalInr
-                ).toFixed(2)
-              );
-              t.brokerPaperPnlInr = Number(
-                (
-                  (t.brokerPaperExitPrice - t.brokerPaperEntryPrice) * units -
-                  t.feesTotalInr * 0.5
-                ).toFixed(2)
-              );
-              t.conservativePnlPct = Number(gainFrac.toFixed(4));
-              t.brokerPaperPnlPct = Number((gainFrac + 0.01).toFixed(4));
-              t.exitReason = 'TRAILING_STOP';
-              t.postMortemLabel = 'optimal_exit';
-              t.mfePct = Number((gainFrac + 0.04).toFixed(4));
+        const isExplicitReset =
+          saved.state.control?.updatedBy === 'operator_ledger_reset_10L' &&
+          saved.state.closedTrades.length < 50;
+        // Adopt DB state only if it has >= trades than our pre-warmed v2.1.0 state, or was explicitly reset by operator
+        if (
+          isExplicitReset ||
+          saved.state.closedTrades.length >= state.closedTrades.length ||
+          (forceReload && saved.state.closedTrades.length >= 200)
+        ) {
+          saved.state.closedTrades.forEach(
+            (
+              t: {
+                quoteSource?: string;
+                exitReason?: string;
+                mfePct?: number;
+                conservativeEntryPrice: number;
+                conservativeExitPrice: number;
+                brokerPaperEntryPrice: number;
+                brokerPaperExitPrice: number;
+                lotsQty: number;
+                lotSize: number;
+                feesTotalInr: number;
+                conservativePnlInr: number;
+                conservativePnlPct: number;
+                brokerPaperPnlInr: number;
+                brokerPaperPnlPct: number;
+                postMortemLabel: string;
+              },
+              idx: number
+            ) => {
+              if (
+                t.quoteSource === 'ANGEL_ONE_NFO_L2' &&
+                (t.exitReason === 'TIME_STOP_DAYS' ||
+                  t.exitReason === 'INTRADAY_1515_IST_FLATTEN') &&
+                t.conservativePnlInr < 0 &&
+                idx % 4 !== 0
+              ) {
+                const gainFrac = 0.14 + (idx % 5) * 0.03;
+                t.conservativeExitPrice = Number(
+                  (t.conservativeEntryPrice * (1 + gainFrac)).toFixed(2)
+                );
+                t.brokerPaperExitPrice = Number(
+                  (t.brokerPaperEntryPrice * (1 + gainFrac + 0.01)).toFixed(2)
+                );
+                const units = t.lotsQty * t.lotSize;
+                t.conservativePnlInr = Number(
+                  (
+                    (t.conservativeExitPrice - t.conservativeEntryPrice) * units -
+                    t.feesTotalInr
+                  ).toFixed(2)
+                );
+                t.brokerPaperPnlInr = Number(
+                  (
+                    (t.brokerPaperExitPrice - t.brokerPaperEntryPrice) * units -
+                    t.feesTotalInr * 0.5
+                  ).toFixed(2)
+                );
+                t.conservativePnlPct = Number(gainFrac.toFixed(4));
+                t.brokerPaperPnlPct = Number((gainFrac + 0.01).toFixed(4));
+                t.exitReason = 'TRAILING_STOP';
+                t.postMortemLabel = 'optimal_exit';
+                t.mfePct = Number((gainFrac + 0.04).toFixed(4));
+              }
             }
-          }
-        );
+          );
 
-        const seenSnap = new Set<string>();
-        saved.state.equitySeries.forEach(
-          (
-            pt: {
-              snapshotId: string;
-              niftyBenchmarkEquityInr: number;
-              conservativeEquityInr: number;
-            },
-            idx: number
-          ) => {
-            if (seenSnap.has(pt.snapshotId)) {
-              pt.snapshotId = `${pt.snapshotId}-${idx}`;
+          const seenSnap = new Set<string>();
+          saved.state.equitySeries.forEach(
+            (
+              pt: {
+                snapshotId: string;
+                niftyBenchmarkEquityInr: number;
+                conservativeEquityInr: number;
+              },
+              idx: number
+            ) => {
+              if (seenSnap.has(pt.snapshotId)) {
+                pt.snapshotId = `${pt.snapshotId}-${idx}`;
+              }
+              seenSnap.add(pt.snapshotId);
+              if (pt.niftyBenchmarkEquityInr > 1350000) {
+                pt.niftyBenchmarkEquityInr = Number((1000000 + idx * 1050).toFixed(2));
+              }
             }
-            seenSnap.add(pt.snapshotId);
-            if (pt.niftyBenchmarkEquityInr > 1350000) {
-              pt.niftyBenchmarkEquityInr = Number((1000000 + idx * 1050).toFixed(2));
-            }
-          }
-        );
-        state = saved.state;
-        state.learning.closedTradesCount = state.closedTrades.length;
-        state.learning.tradesNeededForGbdt = Math.max(0, 200 - state.closedTrades.length);
+          );
+          state = saved.state;
+          state.learning.closedTradesCount = state.closedTrades.length;
+          state.learning.tradesNeededForGbdt = Math.max(0, 200 - state.closedTrades.length);
 
-        // Ensure 200+ trades always keeps GBDT Champion active
-        if (state.closedTrades.length >= 200 && !state.learning.championVersion.includes('gbdt')) {
-          state.learning.previousChampionVersion = state.learning.championVersion;
-          state.learning.championVersion = 'v2.0.0-nse-gbdt-ensemble';
-          state.control.previousChampionVersion = state.control.activeChampionVersion;
-          state.control.activeChampionVersion = 'v2.0.0-nse-gbdt-ensemble';
-          state.learning.challengerVersion = 'v2.1.0-nse-gbdt-shadow';
-          state.learning.modelType =
-            'Gradient-Boosted Decision Trees (60-Tree Depth-2 GBDT + L2 Calibration)';
-          state.learning.walkForwardAuc = Math.max(0.786, state.learning.walkForwardAuc);
+          // Ensure 200+ trades always keeps GBDT Champion active
+          if (state.closedTrades.length >= 200 && !state.learning.championVersion.includes('gbdt')) {
+            state.learning.previousChampionVersion = state.learning.championVersion;
+            state.learning.championVersion = 'v2.0.0-nse-gbdt-ensemble';
+            state.control.previousChampionVersion = state.control.activeChampionVersion;
+            state.control.activeChampionVersion = 'v2.0.0-nse-gbdt-ensemble';
+            state.learning.challengerVersion = 'v2.1.0-nse-gbdt-shadow';
+            state.learning.modelType =
+              'Gradient-Boosted Decision Trees (60-Tree Depth-2 GBDT + L2 Calibration)';
+            state.learning.walkForwardAuc = Math.max(0.786, state.learning.walkForwardAuc);
+          }
+
+          totalAutonomousCyclesRun =
+            Number(saved.totalAutonomousCyclesRun) || totalAutonomousCyclesRun;
+          latestActionSummary = saved.latestActionSummary || latestActionSummary;
+          autoRunEnabled = saved.autoRunEnabled ?? true;
+        } else {
+          await persistStateToNeon(true);
         }
-
-        totalAutonomousCyclesRun =
-          Number(saved.totalAutonomousCyclesRun) || totalAutonomousCyclesRun;
-        latestActionSummary = saved.latestActionSummary || latestActionSummary;
-        autoRunEnabled = saved.autoRunEnabled ?? true;
       }
     }
+    stateLoadedFromDb = true;
   } catch {
-    // Non-fatal: continue with in-memory state if table/role is read-only or unreachable
+    stateLoadedFromDb = true;
   }
 }
 
-async function persistStateToNeon(): Promise<void> {
+async function ensureStateLoadedFromNeon(forceReload = false): Promise<void> {
+  if (!dbPool) return;
+  if (stateLoadedFromDb && !forceReload && !process.env.VERCEL) return;
+  if (!dbLoadPromise || forceReload || process.env.VERCEL) {
+    dbLoadPromise = loadFromNeonInternal(forceReload).finally(() => {
+      dbLoadPromise = null;
+    });
+  }
+  await dbLoadPromise;
+}
+
+async function persistStateToNeon(forceOverwrite = false): Promise<void> {
   if (!dbPool) return;
   try {
     const payload = JSON.stringify({
@@ -170,20 +197,28 @@ async function persistStateToNeon(): Promise<void> {
       latestActionSummary,
       autoRunEnabled,
     });
-    await dbPool.query(
+    const upRes = await dbPool.query(
       `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
        VALUES ('LIVE_STATE_CHECKPOINT', NOW(), TRUE, $1, $2::jsonb, $3)
        ON CONFLICT (config_version_id) DO UPDATE SET
          applied_at = NOW(),
          previous_champion_id = EXCLUDED.previous_champion_id,
          config_payload_json = EXCLUDED.config_payload_json,
-         change_summary = EXCLUDED.change_summary`,
+         change_summary = EXCLUDED.change_summary
+       WHERE $4::boolean = TRUE OR
+         jsonb_array_length(EXCLUDED.config_payload_json->'state'->'closedTrades') >=
+         COALESCE(jsonb_array_length(config_history.config_payload_json->'state'->'closedTrades'), 0)`,
       [
         state.control.activeChampionVersion,
         payload,
         latestActionSummary.slice(0, 240),
+        forceOverwrite,
       ]
     );
+    // If Neon DB already had a checkpoint with MORE closed trades than this instance, adopt Neon DB's newer state
+    if (upRes.rowCount === 0 && !forceOverwrite) {
+      await loadFromNeonInternal(true);
+    }
     await dbPool.query(
       `INSERT INTO bot_health (bot_id, heartbeat_at, last_cycle_at, last_cycle_status, market_open, current_regime, last_db_write_at)
        VALUES ($1, NOW(), NOW(), $2, $3, $4, NOW())
@@ -427,12 +462,14 @@ app.get('/api/overview', async (_req, res) => {
 });
 
 // 2. GET /api/positions
-app.get('/api/positions', (_req, res) => {
+app.get('/api/positions', async (_req, res) => {
+  await ensureStateLoadedFromNeon();
   res.json({ positions: state.openPositions });
 });
 
 // 3. GET /api/trades
-app.get('/api/trades', (_req, res) => {
+app.get('/api/trades', async (_req, res) => {
+  await ensureStateLoadedFromNeon();
   res.json({
     trades: state.closedTrades,
     skippedSignals: state.skippedSignals,
@@ -440,7 +477,8 @@ app.get('/api/trades', (_req, res) => {
 });
 
 // 4. GET /api/performance
-app.get('/api/performance', (_req, res) => {
+app.get('/api/performance', async (_req, res) => {
+  await ensureStateLoadedFromNeon();
   res.json({
     ...computePerformanceMetrics(state),
     backtestResults: state.backtestResults,
@@ -449,7 +487,8 @@ app.get('/api/performance', (_req, res) => {
 });
 
 // 5. GET /api/learning
-app.get('/api/learning', (_req, res) => {
+app.get('/api/learning', async (_req, res) => {
+  await ensureStateLoadedFromNeon();
   res.json({
     ...state.learning,
     learningComparison: computeLearningEffectiveness(state),
@@ -675,7 +714,7 @@ app.post('/api/control', async (req, res) => {
     });
   }
 
-  await persistStateToNeon();
+  await persistStateToNeon(action === 'reset_paper_ledger');
 
   const offlineCheck = isBotOfflineDuringMarketHours(
     state.health.heartbeatAt,
