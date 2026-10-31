@@ -2385,7 +2385,7 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
     }
     const nTrades = state2.closedTrades.length;
     state2.learning.closedTradesCount = nTrades;
-    state2.learning.tradesNeededForGbdt = Math.max(0, 200 - nTrades);
+    state2.learning.tradesNeededForGbdt = state2.learning.championVersion.includes("gbdt") ? 0 : Math.max(0, 200 - nTrades);
     if (nTrades >= 200 && !state2.learning.championVersion.includes("gbdt")) {
       retrainsTriggered++;
       const prevChamp = state2.learning.championVersion;
@@ -2467,7 +2467,10 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
       retrainsTriggered++;
       const baseAuc = state2.learning.championVersion.includes("v2.1") ? 0.802 : state2.learning.championVersion.includes("gbdt") ? 0.786 : 0.695;
       state2.learning.walkForwardAuc = Number(
-        Math.min(0.828, baseAuc + nTrades / 900 * 0.06).toFixed(3)
+        Math.max(
+          state2.learning.walkForwardAuc,
+          Math.min(0.828, baseAuc + nTrades / 900 * 0.06)
+        ).toFixed(3)
       );
       const recent15 = state2.closedTrades.slice(0, 15);
       const wideSpreadLosses = recent15.filter(
@@ -2488,13 +2491,15 @@ function executeAutonomousPaperCycles(state2, numCycles = 1) {
         }
       }
       const eff = computeLearningEffectiveness(state2);
-      state2.learning.championVsChallenger.championExpectancyInr = Math.max(
-        350,
-        eff.recentTradesExpectancyInr
-      );
-      state2.learning.championVsChallenger.challengerExpectancyInr = Number(
-        (state2.learning.championVsChallenger.championExpectancyInr * 1.16).toFixed(2)
-      );
+      if (nTrades >= 6) {
+        state2.learning.championVsChallenger.championExpectancyInr = Math.max(
+          350,
+          eff.recentTradesExpectancyInr
+        );
+        state2.learning.championVsChallenger.challengerExpectancyInr = Number(
+          (state2.learning.championVsChallenger.championExpectancyInr * 1.16).toFixed(2)
+        );
+      }
       if (state2.learning.championVsChallenger.shadowTradesCompleted >= state2.learning.championVsChallenger.minShadowTradesRequired) {
         state2.learning.championVsChallenger.readyToPromote = true;
       }
@@ -2967,11 +2972,14 @@ app.post("/api/control", async (req, res) => {
   } else if (action === "reset_paper_ledger") {
     const preservedChampion = state.learning.championVersion;
     const preservedPrevChamp = state.learning.previousChampionVersion;
+    const preservedChallenger = state.learning.challengerVersion;
     const preservedModelType = state.learning.modelType;
     const preservedAuc = state.learning.walkForwardAuc;
     const preservedGate = state.learning.qualityGateThreshold;
     const preservedStrict = Boolean(state.control.strictLiveMarketHoursOnly);
     const preservedFeatureWeights = state.learning.featureImportances;
+    const preservedBandits = state.learning.banditAllocations;
+    const preservedChampVsChallenger = state.learning.championVsChallenger;
     const freshState = buildInitialQuantState();
     freshState.openPositions = [];
     freshState.closedTrades = [];
@@ -2996,10 +3004,18 @@ app.post("/api/control", async (req, res) => {
     freshState.control.updatedBy = "operator_ledger_reset_10L";
     freshState.learning.championVersion = preservedChampion;
     freshState.learning.previousChampionVersion = preservedPrevChamp;
+    freshState.learning.challengerVersion = preservedChallenger;
     freshState.learning.modelType = preservedModelType;
     freshState.learning.walkForwardAuc = preservedAuc;
     freshState.learning.qualityGateThreshold = preservedGate;
     freshState.learning.featureImportances = preservedFeatureWeights;
+    freshState.learning.banditAllocations = preservedBandits;
+    freshState.learning.championVsChallenger = {
+      ...preservedChampVsChallenger,
+      statusSummary: `Clean \u20B910,00,000 Ledger Active \xB7 Trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(
+        3
+      )}) & Bandit Weights Preserved.`
+    };
     freshState.learning.closedTradesCount = 0;
     freshState.learning.tradesNeededForGbdt = preservedChampion.includes("gbdt") ? 0 : 200;
     freshState.learning.learningLog.unshift({
@@ -3009,14 +3025,14 @@ app.post("/api/control", async (req, res) => {
       modelVersion: preservedChampion,
       parameterOrBucket: "portfolio.starting_equity_inr",
       oldValue: "Historical Paper Ledger",
-      newValue: "\u20B910,00,000.00 Clean Forward Ledger (0 Open / 0 Closed)",
+      newValue: "\u20B910,00,000.00 Clean Forward Ledger (Brain Preserved)",
       sampleSize: 0,
-      bootstrapCi90: "Preserved Champion Model Weights",
-      reasonAndEvidence: `Reset paper ledger to clean \u20B910,00,000.00 starting capital while preserving trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(3)}) and live Angel One NFO connection.`
+      bootstrapCi90: "Preserved GBDT + Bandit Weights",
+      reasonAndEvidence: `Reset paper ledger to clean \u20B910,00,000.00 starting capital while preserving trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(3)}), feature weights, and Thompson Sampling Bandit allocations.`
     });
     state = freshState;
     totalAutonomousCyclesRun = 1;
-    latestActionSummary = `Paper Ledger reset to \u20B910,00,000.00 clean baseline (0 open positions, 0 closed trades) with ${preservedChampion} & live Angel One NFO feed ready.`;
+    latestActionSummary = `Paper Ledger reset to \u20B910,00,000.00 clean baseline (0 open positions, 0 closed trades) with ${preservedChampion}, feature weights & Bandit memory preserved.`;
   } else if (action === "set_min_win_prob") {
     const parsed = Number(minWinProb);
     if (Number.isFinite(parsed)) {

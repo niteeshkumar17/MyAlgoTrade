@@ -565,11 +565,14 @@ app.post('/api/control', async (req, res) => {
   } else if (action === 'reset_paper_ledger') {
     const preservedChampion = state.learning.championVersion;
     const preservedPrevChamp = state.learning.previousChampionVersion;
+    const preservedChallenger = state.learning.challengerVersion;
     const preservedModelType = state.learning.modelType;
     const preservedAuc = state.learning.walkForwardAuc;
     const preservedGate = state.learning.qualityGateThreshold;
     const preservedStrict = Boolean(state.control.strictLiveMarketHoursOnly);
     const preservedFeatureWeights = state.learning.featureImportances;
+    const preservedBandits = state.learning.banditAllocations;
+    const preservedChampVsChallenger = state.learning.championVsChallenger;
 
     const freshState = buildInitialQuantState();
     freshState.openPositions = [];
@@ -595,10 +598,18 @@ app.post('/api/control', async (req, res) => {
     freshState.control.updatedBy = 'operator_ledger_reset_10L';
     freshState.learning.championVersion = preservedChampion;
     freshState.learning.previousChampionVersion = preservedPrevChamp;
+    freshState.learning.challengerVersion = preservedChallenger;
     freshState.learning.modelType = preservedModelType;
     freshState.learning.walkForwardAuc = preservedAuc;
     freshState.learning.qualityGateThreshold = preservedGate;
     freshState.learning.featureImportances = preservedFeatureWeights;
+    freshState.learning.banditAllocations = preservedBandits;
+    freshState.learning.championVsChallenger = {
+      ...preservedChampVsChallenger,
+      statusSummary: `Clean ₹10,00,000 Ledger Active · Trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(
+        3
+      )}) & Bandit Weights Preserved.`,
+    };
     freshState.learning.closedTradesCount = 0;
     freshState.learning.tradesNeededForGbdt = preservedChampion.includes('gbdt') ? 0 : 200;
     freshState.learning.learningLog.unshift({
@@ -608,15 +619,15 @@ app.post('/api/control', async (req, res) => {
       modelVersion: preservedChampion,
       parameterOrBucket: 'portfolio.starting_equity_inr',
       oldValue: 'Historical Paper Ledger',
-      newValue: '₹10,00,000.00 Clean Forward Ledger (0 Open / 0 Closed)',
+      newValue: '₹10,00,000.00 Clean Forward Ledger (Brain Preserved)',
       sampleSize: 0,
-      bootstrapCi90: 'Preserved Champion Model Weights',
-      reasonAndEvidence: `Reset paper ledger to clean ₹10,00,000.00 starting capital while preserving trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(3)}) and live Angel One NFO connection.`,
+      bootstrapCi90: 'Preserved GBDT + Bandit Weights',
+      reasonAndEvidence: `Reset paper ledger to clean ₹10,00,000.00 starting capital while preserving trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(3)}), feature weights, and Thompson Sampling Bandit allocations.`,
     });
 
     state = freshState;
     totalAutonomousCyclesRun = 1;
-    latestActionSummary = `Paper Ledger reset to ₹10,00,000.00 clean baseline (0 open positions, 0 closed trades) with ${preservedChampion} & live Angel One NFO feed ready.`;
+    latestActionSummary = `Paper Ledger reset to ₹10,00,000.00 clean baseline (0 open positions, 0 closed trades) with ${preservedChampion}, feature weights & Bandit memory preserved.`;
   } else if (action === 'set_min_win_prob') {
     const parsed = Number(minWinProb);
     if (Number.isFinite(parsed)) {

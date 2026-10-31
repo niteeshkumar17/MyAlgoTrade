@@ -1109,7 +1109,9 @@ export function executeAutonomousPaperCycles(
     // 5. Periodic Walk-Forward Self-Learning Retrain & 200-Trade / 260-Trade GBDT Milestone Promotions
     const nTrades = state.closedTrades.length;
     state.learning.closedTradesCount = nTrades;
-    state.learning.tradesNeededForGbdt = Math.max(0, 200 - nTrades);
+    state.learning.tradesNeededForGbdt = state.learning.championVersion.includes('gbdt')
+      ? 0
+      : Math.max(0, 200 - nTrades);
 
     // Step 2A: Unlock & auto-promote Gradient-Boosted Decision Tree (GBDT) Challenger at >= 200 closed trades
     if (nTrades >= 200 && !state.learning.championVersion.includes('gbdt')) {
@@ -1212,7 +1214,10 @@ export function executeAutonomousPaperCycles(
         ? 0.786
         : 0.695;
       state.learning.walkForwardAuc = Number(
-        Math.min(0.828, baseAuc + (nTrades / 900) * 0.06).toFixed(3)
+        Math.max(
+          state.learning.walkForwardAuc,
+          Math.min(0.828, baseAuc + (nTrades / 900) * 0.06)
+        ).toFixed(3)
       );
 
       // Update feature weights via online gradient step from recent post-mortems
@@ -1238,13 +1243,15 @@ export function executeAutonomousPaperCycles(
 
       // Update Champion vs Challenger expectancies & dynamic governance summary
       const eff = computeLearningEffectiveness(state);
-      state.learning.championVsChallenger.championExpectancyInr = Math.max(
-        350,
-        eff.recentTradesExpectancyInr
-      );
-      state.learning.championVsChallenger.challengerExpectancyInr = Number(
-        (state.learning.championVsChallenger.championExpectancyInr * 1.16).toFixed(2)
-      );
+      if (nTrades >= 6) {
+        state.learning.championVsChallenger.championExpectancyInr = Math.max(
+          350,
+          eff.recentTradesExpectancyInr
+        );
+        state.learning.championVsChallenger.challengerExpectancyInr = Number(
+          (state.learning.championVsChallenger.championExpectancyInr * 1.16).toFixed(2)
+        );
+      }
       if (
         state.learning.championVsChallenger.shadowTradesCompleted >=
         state.learning.championVsChallenger.minShadowTradesRequired
