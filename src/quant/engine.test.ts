@@ -332,5 +332,62 @@ test('Angel One NFO option parser, 5-minute OHLCV technical indicators, and IV/G
   assert.equal(ind.trendSignal, 'CE');
 });
 
+test('NSE IST market hours check and Option Expiration Payoff Curve compute accurate profiles', async () => {
+  const { computeOptionPayoffCurve, isNseMarketHoursIst } = await import('./engine');
+
+  // Wednesday 11:00 IST (05:30 UTC) -> Open
+  const wedOpenUtc = new Date('2026-11-04T05:30:00Z');
+  const openStatus = isNseMarketHoursIst(wedOpenUtc);
+  assert.equal(openStatus.isOpen, true);
+
+  // Saturday 11:00 IST -> Closed
+  const satClosedUtc = new Date('2026-10-31T05:30:00Z');
+  const closedStatus = isNseMarketHoursIst(satClosedUtc);
+  assert.equal(closedStatus.isOpen, false);
+
+  const payoff = computeOptionPayoffCurve(
+    {
+      positionId: 'POS-TEST-1',
+      tradeId: 'TRD-TEST-1',
+      contractSymbol: 'NIFTY23NOV2623000/23150CE_SPREAD',
+      underlying: 'NIFTY',
+      right: 'CE',
+      strike: 23000,
+      lotSize: 75,
+      expirationDate: '2026-11-23',
+      dte: 18,
+      strategyName: 'trend_following',
+      regimeAtEntry: 'trending_up',
+      lotsQty: 1,
+      conservativeEntryPrice: 54.0,
+      brokerPaperEntryPrice: 53.2,
+      currentMarkPrice: 68.5,
+      peakMarkPrice: 71.0,
+      troughMarkPrice: 52.0,
+      unrealizedPnlInr: 1017.5,
+      unrealizedPnlPct: 0.24,
+      delta: 0.28,
+      theta: -0.45,
+      ivRankPct: 52.0,
+      stopLossPrice: 37.8,
+      takeProfitPrice: 81.0,
+      trailingStopActivationPrice: 69.1,
+      tradingDaysHeld: 2,
+      isIntradayFlagged: false,
+      openedAt: '2026-10-31T04:00:00Z',
+      angelToken: '53925',
+    },
+    23055
+  );
+
+  assert.equal(payoff.isSpread, true);
+  assert.equal(payoff.longStrike, 23000);
+  assert.equal(payoff.shortStrike, 23150);
+  assert.equal(payoff.points.length, 21);
+  assert.equal(payoff.maxProfitInr > 0, true);
+  assert.equal(payoff.maxLossInr < 0, true);
+});
+
+
 
 

@@ -58,6 +58,11 @@ export default function App() {
         lastQuoteFetchAt: string | null;
         lastError: string | null;
       };
+      istMarketStatus?: {
+        isOpen: boolean;
+        istTimeFormatted: string;
+        reason: string;
+      };
       learningComparison: {
         earlyTradesExpectancyInr: number;
         recentTradesExpectancyInr: number;
@@ -286,6 +291,27 @@ export default function App() {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'rollback_champion' }),
+    });
+    await fetchAllTelemetry();
+  };
+
+  const handleToggleStrictMarketHours = async (strictOnly: boolean) => {
+    await fetch('/api/control', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action: 'toggle_strict_market_hours',
+        strictLiveMarketHoursOnly: strictOnly,
+      }),
+    });
+    await fetchAllTelemetry();
+  };
+
+  const handleResetPaperLedger = async () => {
+    await fetch('/api/control', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'reset_paper_ledger' }),
     });
     await fetchAllTelemetry();
   };
@@ -558,6 +584,29 @@ export default function App() {
                     }`}
                   >
                     Auto-Run (8s Tick): {autoRunActive ? 'ACTIVE' : 'PAUSED'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleToggleStrictMarketHours(
+                        !overviewData.control.strictLiveMarketHoursOnly
+                      )
+                    }
+                    className={`px-3 py-1.5 text-xs font-medium rounded border transition-colors whitespace-nowrap shrink-0 ${
+                      overviewData.control.strictLiveMarketHoursOnly
+                        ? 'bg-amber-500/15 border-amber-500 text-amber-700 dark:text-amber-300 font-semibold'
+                        : 'border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    Strict NSE Hours (09:15–15:30 IST):{' '}
+                    {overviewData.control.strictLiveMarketHoursOnly ? 'ON' : 'OFF (24/7)'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResetPaperLedger}
+                    className="px-3 py-1.5 text-xs font-medium border border-blue-500/50 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 rounded transition-colors whitespace-nowrap shrink-0"
+                  >
+                    Reset Ledger (₹10,00,000)
                   </button>
                   <button
                     type="button"
@@ -964,6 +1013,7 @@ export default function App() {
             openPositions={positions}
             closedTrades={trades}
             skippedSignals={skippedSignals}
+            liveQuotes={overviewData?.liveRunner?.liveQuotes}
             formatTimestamp={formatTimestamp}
           />
         )}
@@ -990,6 +1040,8 @@ export default function App() {
             onPromoteChallenger={handlePromoteChallenger}
             onRollbackChampion={handleRollbackChampion}
             onToggleSimulateOffline={handleToggleSimulateOffline}
+            onToggleStrictMarketHours={handleToggleStrictMarketHours}
+            onResetPaperLedger={handleResetPaperLedger}
           />
         )}
 

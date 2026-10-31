@@ -1,17 +1,20 @@
 import React, { useMemo, useState } from 'react';
 import {
   ClosedOptionTrade,
+  computeOptionPayoffCurve,
   formatInr,
   OpenOptionPosition,
   PostMortemLabel,
   SkippedSignalCounterfactual,
   StrategyName,
 } from '../quant/engine';
+import { LiveSpotQuote } from '../quant/livePaperRunner';
 
 interface PositionsAndTradesViewProps {
   openPositions: OpenOptionPosition[];
   closedTrades: ClosedOptionTrade[];
   skippedSignals: SkippedSignalCounterfactual[];
+  liveQuotes?: Record<string, LiveSpotQuote>;
   formatTimestamp: (iso: string) => string;
 }
 
@@ -30,6 +33,7 @@ export const PositionsAndTradesView: React.FC<PositionsAndTradesViewProps> = ({
   openPositions,
   closedTrades,
   skippedSignals,
+  liveQuotes,
   formatTimestamp,
 }) => {
   const [subTab, setSubTab] = useState<'trades' | 'counterfactuals'>('trades');
@@ -37,6 +41,22 @@ export const PositionsAndTradesView: React.FC<PositionsAndTradesViewProps> = ({
   const [postMortemFilter, setPostMortemFilter] = useState<'ALL' | PostMortemLabel>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'closedAt' | 'conservativePnlInr' | 'dteAtEntry'>('closedAt');
+  const [selectedPositionId, setSelectedPositionId] = useState<string | null>(null);
+
+  const activePosition = useMemo(() => {
+    if (openPositions.length === 0) return null;
+    if (selectedPositionId) {
+      const found = openPositions.find((p) => p.positionId === selectedPositionId);
+      if (found) return found;
+    }
+    return openPositions[0];
+  }, [openPositions, selectedPositionId]);
+
+  const activePayoff = useMemo(() => {
+    if (!activePosition) return null;
+    const liveSpot = liveQuotes?.[activePosition.underlying]?.spot;
+    return computeOptionPayoffCurve(activePosition, liveSpot);
+  }, [activePosition, liveQuotes]);
 
   const filteredTrades = useMemo(() => {
     return closedTrades
@@ -70,7 +90,7 @@ export const PositionsAndTradesView: React.FC<PositionsAndTradesViewProps> = ({
               Open NSE F&amp;O Paper Positions ({openPositions.length} / 5 Max Cap)
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Marks reflect Conservative Simulation exit values (mid - 35% of bid-ask spread) · Evaluated every 5 minutes during 09:15–15:30 IST
+              Marks reflect Conservative Simulation exit values (mid - 35% of bid-ask spread) · Click any position row below to inspect its Live Option Chain &amp; Expiration Payoff Curve
             </p>
           </div>
           <div className="text-xs font-mono tabular-nums text-slate-600 dark:text-slate-400">
@@ -78,70 +98,345 @@ export const PositionsAndTradesView: React.FC<PositionsAndTradesViewProps> = ({
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 font-medium">
-                <th className="py-2.5 pr-4">NSE Contract</th>
-                <th className="py-2.5 px-3">Strategy · Regime</th>
-                <th className="py-2.5 px-3 text-right">Lots (Units)</th>
-                <th className="py-2.5 px-3 text-right">Cons Entry</th>
-                <th className="py-2.5 px-3 text-right">Current Mark</th>
-                <th className="py-2.5 px-3 text-right">Unrealized P&amp;L (₹)</th>
-                <th className="py-2.5 px-3 text-right">Delta / Theta</th>
-                <th className="py-2.5 px-3 text-right">DTE</th>
-                <th className="py-2.5 pl-3 text-right">Stop (-30%) / Target (+50%)</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800/70 font-mono tabular-nums">
-              {openPositions.map((pos, idx) => {
-                const isPos = pos.unrealizedPnlInr >= 0;
-                return (
-                  <tr
-                    key={`${pos.positionId}-${idx}`}
-                    className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
-                  >
-                    <td className="py-3 pr-4 font-semibold text-slate-900 dark:text-slate-100">
-                      <div>{pos.contractSymbol}</div>
-                      <div className="text-[11px] font-sans font-normal text-slate-500 dark:text-slate-400">
-                        {pos.underlying} · {pos.strike} {pos.right} · Exp {pos.expirationDate}
-                        {pos.angelToken ? ` · Angel NFO #${pos.angelToken}` : ' · Angel Spot + BS'}
-                      </div>
-                    </td>
-                    <td className="py-3 px-3 font-sans text-slate-600 dark:text-slate-300">
-                      {pos.strategyName} · {pos.regimeAtEntry}
-                    </td>
-                    <td className="py-3 px-3 text-right">
-                      {pos.lotsQty}L ({pos.lotsQty * pos.lotSize})
-                    </td>
-                    <td className="py-3 px-3 text-right">
-                      ₹{pos.conservativeEntryPrice.toFixed(2)}
-                    </td>
-                    <td className="py-3 px-3 text-right">₹{pos.currentMarkPrice.toFixed(2)}</td>
-                    <td
-                      className={`py-3 px-3 text-right font-semibold ${
-                        isPos
-                          ? 'text-emerald-600 dark:text-emerald-400'
-                          : 'text-rose-600 dark:text-rose-400'
+        {openPositions.length === 0 ? (
+          <div className="py-8 text-center border border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-xs text-slate-500 font-mono">
+            0 Open Positions — Waiting for next NSE signal passing Capital-Preservation Gate (P(gain) &ge; 68%).
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 font-medium">
+                  <th className="py-2.5 pr-4">NSE Contract</th>
+                  <th className="py-2.5 px-3">Strategy · Regime</th>
+                  <th className="py-2.5 px-3 text-right">Lots (Units)</th>
+                  <th className="py-2.5 px-3 text-right">Cons Entry</th>
+                  <th className="py-2.5 px-3 text-right">Current Mark</th>
+                  <th className="py-2.5 px-3 text-right">Unrealized P&amp;L (₹)</th>
+                  <th className="py-2.5 px-3 text-right">Delta / Theta</th>
+                  <th className="py-2.5 px-3 text-right">DTE</th>
+                  <th className="py-2.5 pl-3 text-right">Stop (-30%) / Target (+50%)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800/70 font-mono tabular-nums">
+                {openPositions.map((pos, idx) => {
+                  const isPos = pos.unrealizedPnlInr >= 0;
+                  const isSelected = activePosition?.positionId === pos.positionId;
+                  return (
+                    <tr
+                      key={`${pos.positionId}-${idx}`}
+                      onClick={() => setSelectedPositionId(pos.positionId)}
+                      className={`cursor-pointer transition-colors ${
+                        isSelected
+                          ? 'bg-emerald-500/10 dark:bg-emerald-500/10'
+                          : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
                       }`}
                     >
-                      {formatInr(pos.unrealizedPnlInr, true)} (
-                      {isPos ? '+' : ''}
-                      {(pos.unrealizedPnlPct * 100).toFixed(1)}%)
-                    </td>
-                    <td className="py-3 px-3 text-right text-slate-600 dark:text-slate-300">
-                      Δ {pos.delta.toFixed(2)} / Θ {pos.theta.toFixed(2)}
-                    </td>
-                    <td className="py-3 px-3 text-right">{pos.dte}d</td>
-                    <td className="py-3 pl-3 text-right text-slate-600 dark:text-slate-400">
-                      ₹{pos.stopLossPrice.toFixed(2)} / ₹{pos.takeProfitPrice.toFixed(2)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      <td className="py-3 pr-4 font-semibold text-slate-900 dark:text-slate-100">
+                        <div className="flex items-center gap-2">
+                          <span>{pos.contractSymbol}</span>
+                          {isSelected && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-600 text-white font-sans font-medium">
+                              INSPECTING PAYOFF
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] font-sans font-normal text-slate-500 dark:text-slate-400">
+                          {pos.underlying} · {pos.strike} {pos.right} · Exp {pos.expirationDate}
+                          {pos.angelToken ? ` · Angel NFO #${pos.angelToken}` : ' · Angel Spot + BS'}
+                        </div>
+                      </td>
+                      <td className="py-3 px-3 font-sans text-slate-600 dark:text-slate-300">
+                        {pos.strategyName} · {pos.regimeAtEntry}
+                      </td>
+                      <td className="py-3 px-3 text-right">
+                        {pos.lotsQty}L ({pos.lotsQty * pos.lotSize})
+                      </td>
+                      <td className="py-3 px-3 text-right">
+                        ₹{pos.conservativeEntryPrice.toFixed(2)}
+                      </td>
+                      <td className="py-3 px-3 text-right">₹{pos.currentMarkPrice.toFixed(2)}</td>
+                      <td
+                        className={`py-3 px-3 text-right font-semibold ${
+                          isPos
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : 'text-rose-600 dark:text-rose-400'
+                        }`}
+                      >
+                        {formatInr(pos.unrealizedPnlInr, true)} (
+                        {isPos ? '+' : ''}
+                        {(pos.unrealizedPnlPct * 100).toFixed(1)}%)
+                      </td>
+                      <td className="py-3 px-3 text-right text-slate-600 dark:text-slate-300">
+                        Δ {pos.delta.toFixed(2)} / Θ {pos.theta.toFixed(2)}
+                      </td>
+                      <td className="py-3 px-3 text-right">{pos.dte}d</td>
+                      <td className="py-3 pl-3 text-right text-slate-600 dark:text-slate-400">
+                        ₹{pos.stopLossPrice.toFixed(2)} / ₹{pos.takeProfitPrice.toFixed(2)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Option 3: Interactive Live Angel One NFO Option Chain & Expiration Payoff Visualizer */}
+        {activePosition && activePayoff && (
+          <div className="mt-6 pt-6 border-t border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  Live Angel One NFO Option Chain &amp; Expiration Payoff Visualizer —{' '}
+                  <span className="font-mono text-emerald-600 dark:text-emerald-400">
+                    {activePosition.contractSymbol}
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {activePayoff.structureName} · Underlying Spot:{' '}
+                  <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                    ₹{activePayoff.currentSpot.toLocaleString('en-IN')}
+                  </span>{' '}
+                  · {activePayoff.totalUnits} Units ({activePosition.lotsQty} Lot ×{' '}
+                  {activePosition.lotSize})
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {openPositions.map((p) => (
+                  <button
+                    key={p.positionId}
+                    type="button"
+                    onClick={() => setSelectedPositionId(p.positionId)}
+                    className={`px-2.5 py-1 text-xs font-mono rounded border transition-colors ${
+                      p.positionId === activePosition.positionId
+                        ? 'bg-emerald-600 text-white border-emerald-600 font-semibold'
+                        : 'bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {p.underlying} {p.strike}
+                    {p.right}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 4-Card Payoff & Greeks Summary Strip */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs font-mono tabular-nums">
+              <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800">
+                <div className="text-[11px] font-sans text-slate-500">
+                  Breakeven Spot at Expiry
+                </div>
+                <div className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-1">
+                  ₹{activePayoff.breakevenSpot.toLocaleString('en-IN')} (
+                  {activePayoff.distanceToBreakevenPct >= 0 ? '+' : ''}
+                  {activePayoff.distanceToBreakevenPct}% vs Spot)
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  Long Strike: {activePayoff.longStrike}
+                  {activePayoff.shortStrike ? ` · Short Hedge: ${activePayoff.shortStrike}` : ''}
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800">
+                <div className="text-[11px] font-sans text-slate-500">
+                  Max Profit / Max Defined Risk
+                </div>
+                <div className="text-sm font-bold mt-1">
+                  <span className="text-emerald-600 dark:text-emerald-400">
+                    {formatInr(activePayoff.maxProfitInr, true)}
+                  </span>{' '}
+                  /{' '}
+                  <span className="text-rose-600 dark:text-rose-400">
+                    {formatInr(activePayoff.maxLossInr, true)}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  Reward:Risk {activePayoff.riskRewardRatio.toFixed(2)}:1 · Roundtrip Fee ₹
+                  {activePayoff.roundtripFeesInr}
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800">
+                <div className="text-[11px] font-sans text-slate-500">
+                  Live Greeks &amp; Decay Protection
+                </div>
+                <div className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-1">
+                  Δ {activePosition.delta.toFixed(3)} · Θ ₹{activePosition.theta.toFixed(2)}/day
+                </div>
+                <div className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1">
+                  IV Rank: {activePosition.ivRankPct.toFixed(1)}% ·{' '}
+                  {activePayoff.isSpread ? '-65% Theta Spread Hedge' : 'Single-Leg Directional'}
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800">
+                <div className="text-[11px] font-sans text-slate-500">
+                  Angel One NFO Orderbook Source
+                </div>
+                <div className="text-sm font-bold text-blue-600 dark:text-blue-400 mt-1">
+                  {activePosition.angelToken
+                    ? `Angel NFO #${activePosition.angelToken}`
+                    : 'Angel Spot + Solved IV'}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  Entry ₹{activePosition.conservativeEntryPrice.toFixed(2)} · Mark ₹
+                  {activePosition.currentMarkPrice.toFixed(2)} · Breakeven Lock @ ₹
+                  {(activePosition.conservativeEntryPrice * 1.18).toFixed(2)}
+                </div>
+              </div>
+            </div>
+
+            {/* Interactive SVG Expiration Payoff Diagram */}
+            {(() => {
+              const pts = activePayoff.points;
+              const minPnl = Math.min(...pts.map((p) => p.netPnlInr), -1000);
+              const maxPnl = Math.max(...pts.map((p) => p.netPnlInr), 1000);
+              const rangePnl = Math.max(1, maxPnl - minPnl);
+              const svgW = 860;
+              const svgH = 210;
+              const padX = 56;
+              const padY = 24;
+              const plotW = svgW - padX * 2;
+              const plotH = svgH - padY * 2;
+
+              const toX = (idx: number) => padX + (idx / Math.max(1, pts.length - 1)) * plotW;
+              const toY = (pnl: number) => padY + ((maxPnl - pnl) / rangePnl) * plotH;
+              const zeroY = Math.max(padY, Math.min(padY + plotH, toY(0)));
+
+              const polylinePoints = pts
+                .map((p, idx) => `${toX(idx).toFixed(1)},${toY(p.netPnlInr).toFixed(1)}`)
+                .join(' ');
+              const areaPoints = `${toX(0).toFixed(1)},${zeroY.toFixed(1)} ${polylinePoints} ${toX(
+                pts.length - 1
+              ).toFixed(1)},${zeroY.toFixed(1)}`;
+              const curIdx = pts.findIndex((p) => p.isCurrentSpot);
+              const curX = curIdx >= 0 ? toX(curIdx) : toX(10);
+              const curY = curIdx >= 0 ? toY(pts[curIdx].netPnlInr) : zeroY;
+
+              return (
+                <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2 text-[11px] font-mono text-slate-500">
+                    <span>
+                      EXPIRATION PAYOFF DIAGRAM (SPOT -5.0% TO +5.0% · NET OF SLIPPAGE &amp; ₹
+                      {activePayoff.roundtripFeesInr} FEES)
+                    </span>
+                    <span className="flex items-center gap-4">
+                      <span className="text-emerald-500 font-semibold">● Profit Zone (&gt; ₹0)</span>
+                      <span className="text-rose-500 font-semibold">
+                        ● Defined Max Risk ({formatInr(activePayoff.maxLossInr)})
+                      </span>
+                      <span className="text-blue-400 font-semibold">
+                        ◆ Current Spot (₹{activePayoff.currentSpot.toLocaleString('en-IN')})
+                      </span>
+                    </span>
+                  </div>
+
+                  <svg
+                    viewBox={`0 0 ${svgW} ${svgH}`}
+                    className="w-full h-48 overflow-visible"
+                    role="img"
+                    aria-label={`Expiration payoff diagram for ${activePosition.contractSymbol}`}
+                  >
+                    {/* Zero P&L horizontal line */}
+                    <line
+                      x1={padX}
+                      y1={zeroY}
+                      x2={svgW - padX}
+                      y2={zeroY}
+                      stroke="currentColor"
+                      className="text-slate-300 dark:text-slate-700"
+                      strokeDasharray="4 4"
+                      strokeWidth="1"
+                    />
+                    <text
+                      x={padX - 6}
+                      y={zeroY + 3}
+                      textAnchor="end"
+                      className="fill-slate-400 text-[10px] font-mono"
+                    >
+                      ₹0
+                    </text>
+
+                    {/* Current Spot vertical dashed marker */}
+                    <line
+                      x1={curX}
+                      y1={padY}
+                      x2={curX}
+                      y2={svgH - padY}
+                      stroke="#3b82f6"
+                      strokeDasharray="3 3"
+                      strokeWidth="1.2"
+                    />
+
+                    {/* Shaded payoff polygon */}
+                    <polygon points={areaPoints} fill="rgba(16, 185, 129, 0.12)" />
+
+                    {/* Payoff line */}
+                    <polyline
+                      fill="none"
+                      stroke="#10b981"
+                      strokeWidth="2.5"
+                      points={polylinePoints}
+                    />
+
+                    {/* Data points and labels */}
+                    {pts.map((pt, idx) => {
+                      const cx = toX(idx);
+                      const cy = toY(pt.netPnlInr);
+                      const showLabel = idx % 4 === 0 || pt.isCurrentSpot;
+                      return (
+                        <g key={pt.spot}>
+                          <circle
+                            cx={cx}
+                            cy={cy}
+                            r={pt.isCurrentSpot ? 4.5 : 2.5}
+                            fill={
+                              pt.isCurrentSpot
+                                ? '#3b82f6'
+                                : pt.netPnlInr >= 0
+                                ? '#10b981'
+                                : '#f43f5e'
+                            }
+                          />
+                          {showLabel && (
+                            <>
+                              <text
+                                x={cx}
+                                y={svgH - 4}
+                                textAnchor="middle"
+                                className="fill-slate-500 dark:fill-slate-400 text-[9px] font-mono"
+                              >
+                                {pt.spot.toLocaleString('en-IN', { maximumFractionDigits: 0 })} (
+                                {pt.movePct >= 0 ? '+' : ''}
+                                {pt.movePct}%)
+                              </text>
+                              <text
+                                x={cx}
+                                y={Math.max(12, cy - 8)}
+                                textAnchor="middle"
+                                className={`text-[9px] font-mono ${
+                                  pt.netPnlInr >= 0
+                                    ? 'fill-emerald-600 dark:fill-emerald-400'
+                                    : 'fill-rose-500 dark:fill-rose-400'
+                                }`}
+                              >
+                                {pt.netPnlInr >= 0 ? '+' : ''}₹{Math.round(pt.netPnlInr)}
+                              </text>
+                            </>
+                          )}
+                        </g>
+                      );
+                    })}
+
+                    {/* Current Spot Callout */}
+                    <circle cx={curX} cy={curY} r={5} fill="#3b82f6" />
+                  </svg>
+                </div>
+              );
+            })()}
+          </div>
+        )}
       </section>
 
       {/* Section 2: Closed Trade Journal & Counterfactual Skipped Signals */}

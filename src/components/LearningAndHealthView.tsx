@@ -10,6 +10,8 @@ interface LearningAndHealthViewProps {
   onPromoteChallenger: () => Promise<void>;
   onRollbackChampion: () => Promise<void>;
   onToggleSimulateOffline: (makeOffline: boolean) => Promise<void>;
+  onToggleStrictMarketHours: (strictOnly: boolean) => Promise<void>;
+  onResetPaperLedger: () => Promise<void>;
 }
 
 export const LearningAndHealthView: React.FC<LearningAndHealthViewProps> = ({
@@ -20,6 +22,8 @@ export const LearningAndHealthView: React.FC<LearningAndHealthViewProps> = ({
   onPromoteChallenger,
   onRollbackChampion,
   onToggleSimulateOffline,
+  onToggleStrictMarketHours,
+  onResetPaperLedger,
 }) => {
   return (
     <div className="space-y-8">
@@ -277,7 +281,29 @@ export const LearningAndHealthView: React.FC<LearningAndHealthViewProps> = ({
             </div>
           </div>
 
-          <div className="pt-2">
+          <div className="pt-2 space-y-2">
+            <button
+              type="button"
+              onClick={() => onToggleStrictMarketHours(!control.strictLiveMarketHoursOnly)}
+              className={`w-full px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
+                control.strictLiveMarketHoursOnly
+                  ? 'bg-amber-500/15 border-amber-500 text-amber-600 dark:text-amber-300 font-semibold'
+                  : 'border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              {control.strictLiveMarketHoursOnly
+                ? 'Strict Live NSE Hours (09:15–15:30 IST): ON (Click for 24/7)'
+                : 'Enable Strict Live NSE Hours Only (09:15–15:30 IST)'}
+            </button>
+
+            <button
+              type="button"
+              onClick={onResetPaperLedger}
+              className="w-full px-3 py-2 text-xs font-medium rounded-lg border border-blue-500/50 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 transition-colors"
+            >
+              Reset Paper Ledger to ₹10,00,000 (Keep {learning.championVersion})
+            </button>
+
             <button
               type="button"
               onClick={() => onToggleSimulateOffline(!health.isOffline)}

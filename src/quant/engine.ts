@@ -900,3 +900,182 @@ export function computeTechnicalIndicatorsFromCandles(
   };
 }
 
+/**
+ * 11. Check if current timestamp is within active NSE F&O trading hours (Mon–Fri, 09:15–15:30 IST)
+ */
+export function isNseMarketHoursIst(nowDate: Date = new Date()): {
+  isOpen: boolean;
+  istTimeFormatted: string;
+  reason: string;
+} {
+  // Convert to IST (UTC + 5h 30m = +330 minutes)
+  const utcMs = nowDate.getTime() + nowDate.getTimezoneOffset() * 60000;
+  const istDate = new Date(utcMs + 330 * 60000);
+  const day = istDate.getDay(); // 0 = Sun, 6 = Sat
+  const hours = istDate.getHours();
+  const minutes = istDate.getMinutes();
+  const totalMins = hours * 60 + minutes;
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const istTimeFormatted = `${dayNames[day]} ${String(hours).padStart(2, '0')}:${String(
+    minutes
+  ).padStart(2, '0')} IST`;
+
+  if (day === 0 || day === 6) {
+    return {
+      isOpen: false,
+      istTimeFormatted,
+      reason: `NSE Weekend Closed (${istTimeFormatted}) — Market opens Mon 09:15 IST`,
+    };
+  }
+  if (totalMins < 9 * 60 + 15) {
+    return {
+      isOpen: false,
+      istTimeFormatted,
+      reason: `Pre-Open Session (${istTimeFormatted}) — NSE F&O opens at 09:15 IST`,
+    };
+  }
+  if (totalMins > 15 * 60 + 30) {
+    return {
+      isOpen: false,
+      istTimeFormatted,
+      reason: `Post-Close Session (${istTimeFormatted}) — NSE F&O closed at 15:30 IST`,
+    };
+  }
+  return {
+    isOpen: true,
+    istTimeFormatted,
+    reason: `NSE F&O Live Session Active (${istTimeFormatted})`,
+  };
+}
+
+export interface PayoffCurvePoint {
+  spot: number;
+  movePct: number;
+  netPnlInr: number;
+  isCurrentSpot: boolean;
+}
+
+export interface OptionPayoffProfile {
+  isSpread: boolean;
+  structureName: string;
+  longStrike: number;
+  shortStrike: number | null;
+  currentSpot: number;
+  breakevenSpot: number;
+  distanceToBreakevenPct: number;
+  netDebitPerUnitInr: number;
+  totalUnits: number;
+  roundtripFeesInr: number;
+  maxLossInr: number;
+  maxProfitInr: number;
+  riskRewardRatio: number;
+  points: PayoffCurvePoint[];
+}
+
+/**
+ * 12. Compute Expiration Payoff Diagram & Defined-Risk Profile for Open NSE Option Position
+ */
+export function computeOptionPayoffCurve(
+  pos: OpenOptionPosition,
+  currentUnderlyingSpot?: number
+): OptionPayoffProfile {
+  const isSpread = pos.contractSymbol.includes('SPREAD');
+  const longStrike = pos.strike;
+  let shortStrike: number | null = null;
+
+  if (isSpread) {
+    const spreadMatch = pos.contractSymbol.match(/(\d+)\/(\d+)(CE|PE)_SPREAD/i);
+    if (spreadMatch) {
+      shortStrike = Number(spreadMatch[2]);
+    } else {
+      const fallbackStep = Math.max(20, Math.round(longStrike * 0.01));
+      shortStrike = pos.right === 'CE' ? longStrike + fallbackStep : longStrike - fallbackStep;
+    }
+  }
+
+  const currentSpot =
+    currentUnderlyingSpot && currentUnderlyingSpot > 0
+      ? currentUnderlyingSpot
+      : pos.underlyingSpotAtEntry && pos.underlyingSpotAtEntry > 0
+      ? pos.underlyingSpotAtEntry
+      : longStrike;
+
+  const totalUnits = pos.lotsQty * pos.lotSize;
+  const netDebitPerUnitInr = pos.conservativeEntryPrice;
+  const roundtripFeesInr = isSpread ? 140 * pos.lotsQty : 70 * pos.lotsQty;
+  const feePerUnit = roundtripFeesInr / Math.max(1, totalUnits);
+
+  const breakevenSpot =
+    pos.right === 'CE'
+      ? Number((longStrike + netDebitPerUnitInr + feePerUnit).toFixed(2))
+      : Number((longStrike - netDebitPerUnitInr - feePerUnit).toFixed(2));
+
+  const distanceToBreakevenPct = Number(
+    (((breakevenSpot - currentSpot) / Math.max(1, currentSpot)) * 100).toFixed(2)
+  );
+
+  const maxLossInr = Number(
+    (-(netDebitPerUnitInr * totalUnits + roundtripFeesInr)).toFixed(2)
+  );
+
+  const spreadWidth =
+    isSpread && shortStrike !== null ? Math.abs(shortStrike - longStrike) : netDebitPerUnitInr * 2.5;
+  const maxProfitInr = Number(
+    Math.max(
+      Math.abs(maxLossInr) * 0.5,
+      (spreadWidth - netDebitPerUnitInr) * totalUnits - roundtripFeesInr
+    ).toFixed(2)
+  );
+  const riskRewardRatio = Number(
+    (maxProfitInr / Math.max(1, Math.abs(maxLossInr))).toFixed(2)
+  );
+
+  const structureName = isSpread
+    ? pos.right === 'CE'
+      ? 'Bull Call Vertical Debit Spread (-65% Theta)'
+      : 'Bear Put Vertical Debit Spread (-65% Theta)'
+    : `Single-Leg Long ${pos.right === 'CE' ? 'Call (CE)' : 'Put (PE)'}`;
+
+  const points: PayoffCurvePoint[] = [];
+  for (let step = -10; step <= 10; step++) {
+    const movePct = Number((step * 0.5).toFixed(2)); // -5.0% to +5.0%
+    const spot = Number((currentSpot * (1 + movePct / 100)).toFixed(2));
+    const longIntrinsic =
+      pos.right === 'CE' ? Math.max(0, spot - longStrike) : Math.max(0, longStrike - spot);
+    const shortIntrinsic =
+      isSpread && shortStrike !== null
+        ? pos.right === 'CE'
+          ? Math.max(0, spot - shortStrike)
+          : Math.max(0, shortStrike - spot)
+        : 0;
+    const netIntrinsicPerUnit = Math.max(0, longIntrinsic - shortIntrinsic);
+    const netPnlInr = Number(
+      ((netIntrinsicPerUnit - netDebitPerUnitInr) * totalUnits - roundtripFeesInr).toFixed(2)
+    );
+    points.push({
+      spot,
+      movePct,
+      netPnlInr,
+      isCurrentSpot: step === 0,
+    });
+  }
+
+  return {
+    isSpread,
+    structureName,
+    longStrike,
+    shortStrike,
+    currentSpot,
+    breakevenSpot,
+    distanceToBreakevenPct,
+    netDebitPerUnitInr,
+    totalUnits,
+    roundtripFeesInr,
+    maxLossInr,
+    maxProfitInr,
+    riskRewardRatio,
+    points,
+  };
+}
+
+

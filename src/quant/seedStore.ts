@@ -43,6 +43,7 @@ export interface QuantSystemState {
     dailyLossHaltActive: boolean;
     activeChampionVersion: string;
     previousChampionVersion: string;
+    strictLiveMarketHoursOnly?: boolean;
     updatedAt: string;
     updatedBy: string;
   };
@@ -576,6 +577,7 @@ export function buildInitialQuantState(): QuantSystemState {
       dailyLossHaltActive: false,
       activeChampionVersion: 'v1.3.0-nse-walkforward',
       previousChampionVersion: 'v1.2.0-nse-walkforward',
+      strictLiveMarketHoursOnly: false,
       updatedAt: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
       updatedBy: 'bot_rw (Oracle VM systemd)',
     },

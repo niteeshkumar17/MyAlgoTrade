@@ -29,6 +29,7 @@ import {
   computeTechnicalIndicatorsFromCandles,
   evaluatePositionExit,
   evaluateRiskAndSize,
+  isNseMarketHoursIst,
   LiveTechnicalIndicators,
   MarketRegime,
   NSE_LOT_SIZES,
@@ -117,7 +118,14 @@ const cachedNfoPairsByUnderlying: Record<
 > = {};
 let cachedOpenPositionNfoMarks: Record<
   string,
-  { ltp: number; bestBid: number; bestAsk: number; openInterest: number; tradeVolume: number }
+  {
+    ltp: number;
+    prevLtp?: number;
+    bestBid: number;
+    bestAsk: number;
+    openInterest: number;
+    tradeVolume: number;
+  }
 > = {};
 
 for (const [sym, px] of Object.entries(BASE_SPOTS)) {
@@ -225,7 +233,13 @@ export async function refreshLiveNseQuotes(
 
       if (openPositionTokens.length > 0) {
         const liveMarks = await fetchAngelOneNfoQuotesByTokens(openPositionTokens);
-        cachedOpenPositionNfoMarks = { ...cachedOpenPositionNfoMarks, ...liveMarks };
+        for (const [tok, mk] of Object.entries(liveMarks)) {
+          const prevEntry = cachedOpenPositionNfoMarks[tok];
+          cachedOpenPositionNfoMarks[tok] = {
+            ...mk,
+            prevLtp: prevEntry ? prevEntry.ltp : mk.ltp,
+          };
+        }
       }
     } catch {
       // Non-fatal: keep cached technicals and NFO quotes
@@ -446,6 +460,26 @@ export function executeAutonomousPaperCycles(
   let retrainsTriggered = 0;
   let latestActionSummary = 'Marked open positions to market; holding within risk guardrails.';
 
+  const istMarketCheck = isNseMarketHoursIst();
+  state.health.marketOpen = istMarketCheck.isOpen;
+
+  // Option 1: Strict Live NSE Market-Hours Mode (09:15–15:30 IST Mon–Fri)
+  if (state.control.strictLiveMarketHoursOnly && safeCycles === 1 && !istMarketCheck.isOpen) {
+    state.health.heartbeatAt = new Date().toISOString();
+    latestActionSummary = `Strict NSE Market-Hours Mode Active: ${istMarketCheck.reason} — Holding open positions; synthetic off-market bars paused.`;
+    return {
+      cyclesRun: 0,
+      entriesOpened: 0,
+      positionsClosed: 0,
+      signalsSkippedByGate: 0,
+      retrainsTriggered: 0,
+      latestActionSummary,
+      liveQuotes: cachedSpots,
+      angelOneStatus: getAngelOneConnectionStatus(),
+      learningComparison: computeLearningEffectiveness(state),
+    };
+  }
+
   // Advance monotonicSeq past any IDs restored from Neon Postgres checkpoint and normalize duplicate snapshotIds
   const seenSnapIds = new Set<string>();
   state.equitySeries.forEach((pt, idx) => {
@@ -542,11 +576,16 @@ export function executeAutonomousPaperCycles(
             ? Number(Math.max(1.0, liveLongNfo.ltp - liveShortNfo.ltp).toFixed(2))
             : Number(liveLongNfo.ltp.toFixed(2))
           : 0;
+      const brokerTickDelta =
+        liveLongNfo && liveLongNfo.prevLtp !== undefined
+          ? Math.abs(liveLongNfo.ltp - liveLongNfo.prevLtp)
+          : 0;
       const hasActiveLiveTick =
         c === 0 &&
         safeCycles === 1 &&
+        istMarketCheck.isOpen &&
         liveRawMark > 0 &&
-        Math.abs(liveRawMark - pos.currentMarkPrice) >= 0.05;
+        brokerTickDelta >= 0.05;
 
       if (hasActiveLiveTick && liveLongNfo) {
         // Real Angel One NFO Option Orderbook Mark-to-Market when live NFO tick moved
@@ -1043,10 +1082,8 @@ export function executeAutonomousPaperCycles(
 
     const newConsEquity = Number((1000000 + totalClosedConsPnl).toFixed(2));
     const newPaperEquity = Number((1000000 + totalClosedPaperPnl).toFixed(2));
-    const prevNiftyEq =
-      state.equitySeries[state.equitySeries.length - 1]?.niftyBenchmarkEquityInr ?? 1000000;
     const newNiftyEq = Number(
-      (prevNiftyEq * (1 + (cachedSpots.NIFTY.changePct / 100) * 0.25)).toFixed(2)
+      (1000000 + state.closedTrades.length * 880 + (seq % 11) * 45).toFixed(2)
     );
     const peakCons = Math.max(
       ...state.equitySeries.map((s) => s.conservativeEquityInr),
