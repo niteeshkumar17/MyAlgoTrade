@@ -57,6 +57,13 @@ async function ensureStateLoadedFromNeon(): Promise<void> {
     if (res.rows.length > 0 && res.rows[0].config_payload_json) {
       const saved = res.rows[0].config_payload_json;
       if (saved.state && saved.state.closedTrades && saved.state.equitySeries) {
+        const seenSnap = new Set<string>();
+        saved.state.equitySeries.forEach((pt: { snapshotId: string }, idx: number) => {
+          if (seenSnap.has(pt.snapshotId)) {
+            pt.snapshotId = `${pt.snapshotId}-${idx}`;
+          }
+          seenSnap.add(pt.snapshotId);
+        });
         state = saved.state;
         totalAutonomousCyclesRun = Number(saved.totalAutonomousCyclesRun) || totalAutonomousCyclesRun;
         latestActionSummary = saved.latestActionSummary || latestActionSummary;

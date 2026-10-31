@@ -94,11 +94,11 @@ export const PositionsAndTradesView: React.FC<PositionsAndTradesViewProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800/70 font-mono tabular-nums">
-              {openPositions.map((pos) => {
+              {openPositions.map((pos, idx) => {
                 const isPos = pos.unrealizedPnlInr >= 0;
                 return (
                   <tr
-                    key={pos.positionId}
+                    key={`${pos.positionId}-${idx}`}
                     className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
                   >
                     <td className="py-3 pr-4 font-semibold text-slate-900 dark:text-slate-100">
@@ -278,11 +278,11 @@ export const PositionsAndTradesView: React.FC<PositionsAndTradesViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800/70">
-                  {filteredTrades.slice(0, 25).map((t) => {
+                  {filteredTrades.slice(0, 25).map((t, idx) => {
                     const isWin = t.conservativePnlInr > 0;
                     return (
                       <tr
-                        key={t.tradeId}
+                        key={`${t.tradeId}-${idx}`}
                         className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
                       >
                         <td className="py-3 pr-3">
@@ -359,10 +359,10 @@ export const PositionsAndTradesView: React.FC<PositionsAndTradesViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800/70">
-                {skippedSignals.map((sig) => {
+                {skippedSignals.map((sig, idx) => {
                   const savedLoss = sig.counterfactualPnlPct < 0;
                   return (
-                    <tr key={sig.signalId}>
+                    <tr key={`${sig.signalId}-${idx}`}>
                       <td className="py-3 pr-4 font-mono tabular-nums">
                         <div className="font-semibold text-slate-900 dark:text-slate-100">
                           {sig.signalId}

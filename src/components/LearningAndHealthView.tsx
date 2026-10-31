@@ -202,9 +202,9 @@ export const LearningAndHealthView: React.FC<LearningAndHealthViewProps> = ({
             Learning Audit Log (Bounded ±10% Saturday 10:00 IST Tuning &amp; Promotions)
           </h3>
           <div className="divide-y divide-slate-200 dark:divide-slate-800/70">
-            {learning.learningLog.map((entry) => (
+            {learning.learningLog.map((entry, idx) => (
               <div
-                key={entry.logId}
+                key={`${entry.logId}-${idx}`}
                 className="py-3.5 first:pt-1 last:pb-1 text-xs space-y-1"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px] text-slate-500">

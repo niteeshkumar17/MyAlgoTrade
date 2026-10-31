@@ -198,7 +198,7 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data, format
             const bandW = plotW / data.length;
             return (
               <rect
-                key={pt.snapshotId}
+                key={`${pt.snapshotId}-${i}`}
                 x={getX(i) - bandW / 2}
                 y={padTop}
                 width={Math.max(bandW, 4)}

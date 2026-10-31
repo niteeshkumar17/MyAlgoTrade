@@ -354,6 +354,22 @@ export function executeAutonomousPaperCycles(
   let retrainsTriggered = 0;
   let latestActionSummary = 'Marked open positions to market; holding within risk guardrails.';
 
+  // Advance monotonicSeq past any IDs restored from Neon Postgres checkpoint and normalize duplicate snapshotIds
+  const seenSnapIds = new Set<string>();
+  state.equitySeries.forEach((pt, idx) => {
+    const match = pt.snapshotId.match(/(\d+)/);
+    if (match) {
+      const n = Number(match[1]);
+      if (Number.isFinite(n) && n >= monotonicSeq) {
+        monotonicSeq = n + 1;
+      }
+    }
+    if (seenSnapIds.has(pt.snapshotId)) {
+      pt.snapshotId = `${pt.snapshotId}-${idx}`;
+    }
+    seenSnapIds.add(pt.snapshotId);
+  });
+
   for (let c = 0; c < safeCycles; c++) {
     const seq = ++monotonicSeq;
     const nowIso = new Date().toISOString();
