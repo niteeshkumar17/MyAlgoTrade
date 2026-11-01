@@ -23,11 +23,11 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data, format
   }
 
   const width = 920;
-  const height = 290;
-  const padLeft = 86;
-  const padRight = 24;
-  const padTop = 20;
-  const padBottom = 34;
+  const height = 300;
+  const padLeft = 78;
+  const padRight = 20;
+  const padTop = 18;
+  const padBottom = 30;
   const plotW = width - padLeft - padRight;
   const plotH = height - padTop - padBottom;
 
@@ -44,10 +44,8 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data, format
   const maxVal = rawMax + pad;
   const valSpan = Math.max(maxVal - minVal, 800);
 
-  const getX = (i: number) =>
-    padLeft + (i / Math.max(data.length - 1, 1)) * plotW;
-  const getY = (v: number) =>
-    padTop + plotH - ((v - minVal) / valSpan) * plotH;
+  const getX = (i: number) => padLeft + (i / Math.max(data.length - 1, 1)) * plotW;
+  const getY = (v: number) => padTop + plotH - ((v - minVal) / valSpan) * plotH;
 
   const buildPath = (extractor: (pt: EquitySnapshotPoint) => number) =>
     data
@@ -58,6 +56,7 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data, format
       .join(' ');
 
   const consPath = buildPath((d) => d.conservativeEquityInr);
+  const consAreaPath = `${consPath} L${getX(data.length - 1).toFixed(1)},${(padTop + plotH).toFixed(1)} L${padLeft.toFixed(1)},${(padTop + plotH).toFixed(1)} Z`;
   const paperPath = buildPath((d) => d.brokerPaperEquityInr);
   const niftyPath = buildPath((d) => d.niftyBenchmarkEquityInr);
 
@@ -66,60 +65,60 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data, format
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="inline-flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-slate-800/80">
           <button
             type="button"
             onClick={() =>
               setVisibleCurves((prev) => ({ ...prev, conservative: !prev.conservative }))
             }
-            className={`px-3 py-1.5 text-xs font-medium rounded border transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
               visibleCurves.conservative
-                ? 'bg-blue-600/10 border-blue-500 text-blue-700 dark:text-blue-300'
-                : 'border-slate-200 dark:border-slate-800 text-slate-500'
+                ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-xs'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
             }`}
           >
-            Conservative Sim (Headline: mid ± 35% spread + ₹35/lot fee)
+            Net Equity (After Slippage &amp; Fees)
           </button>
           <button
             type="button"
             onClick={() =>
               setVisibleCurves((prev) => ({ ...prev, brokerPaper: !prev.brokerPaper }))
             }
-            className={`px-3 py-1.5 text-xs font-medium rounded border transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
               visibleCurves.brokerPaper
-                ? 'bg-emerald-600/10 border-emerald-500 text-emerald-700 dark:text-emerald-300'
-                : 'border-slate-200 dark:border-slate-800 text-slate-500'
+                ? 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-xs'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
             }`}
           >
-            Paper Broker Fills (Optimistic Mid Fills)
+            Gross Paper Fills
           </button>
           <button
             type="button"
             onClick={() => setVisibleCurves((prev) => ({ ...prev, nifty: !prev.nifty }))}
-            className={`px-3 py-1.5 text-xs font-medium rounded border transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-3 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
               visibleCurves.nifty
-                ? 'bg-slate-500/10 border-slate-400 text-slate-700 dark:text-slate-300'
-                : 'border-slate-200 dark:border-slate-800 text-slate-500'
+                ? 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 shadow-xs'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
             }`}
           >
-            NIFTY 50 Buy-and-Hold Benchmark
+            NIFTY 50 Benchmark
           </button>
         </div>
 
         {activePoint && (
-          <div className="flex flex-wrap items-center gap-3 text-xs font-mono tabular-nums text-slate-600 dark:text-slate-300">
+          <div className="flex flex-wrap items-center gap-2.5 text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
             <span>{formatTimestamp(activePoint.recordedAt)}</span>
             <span aria-hidden="true">·</span>
             <span className="text-blue-600 dark:text-blue-400 font-semibold">
-              Cons: {formatInr(activePoint.conservativeEquityInr)}
+              Net: {formatInr(activePoint.conservativeEquityInr)}
             </span>
             <span aria-hidden="true">·</span>
             <span className="text-emerald-600 dark:text-emerald-400">
-              Paper: {formatInr(activePoint.brokerPaperEquityInr)}
+              Gross: {formatInr(activePoint.brokerPaperEquityInr)}
             </span>
             <span aria-hidden="true">·</span>
-            <span>NIFTY 50: {formatInr(activePoint.niftyBenchmarkEquityInr)}</span>
+            <span>NIFTY: {formatInr(activePoint.niftyBenchmarkEquityInr)}</span>
           </div>
         )}
       </div>
@@ -129,9 +128,16 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data, format
           viewBox={`0 0 ${width} ${height}`}
           className="w-full h-72 select-none"
           role="img"
-          aria-label="Equity Curve comparing Conservative Simulation, Paper Broker, and NIFTY 50 Benchmark"
+          aria-label="Equity Curve comparing Net Conservative Equity, Gross Paper Fills, and NIFTY 50 Benchmark"
           onMouseLeave={() => setHoverIdx(null)}
         >
+          <defs>
+            <linearGradient id="netEquityFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.22" />
+              <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.0" />
+            </linearGradient>
+          </defs>
+
           {yTicks.map((val, idx) => {
             const y = getY(val);
             return (
@@ -142,14 +148,14 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data, format
                   x2={width - padRight}
                   y2={y}
                   stroke="currentColor"
-                  className="text-slate-200 dark:text-slate-800"
+                  className="text-slate-200/80 dark:text-slate-800/80"
                   strokeDasharray="3 3"
                 />
                 <text
-                  x={padLeft - 8}
+                  x={padLeft - 10}
                   y={y + 4}
                   textAnchor="end"
-                  className="fill-slate-500 dark:fill-slate-400 text-[11px] font-mono"
+                  className="fill-slate-400 dark:fill-slate-500 text-[11px] font-mono tabular-nums"
                 >
                   ₹{Math.round(val).toLocaleString('en-IN')}
                 </text>
@@ -162,7 +168,7 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data, format
               d={niftyPath}
               fill="none"
               stroke="#64748b"
-              strokeWidth="1.75"
+              strokeWidth="1.5"
               strokeDasharray="4 4"
             />
           )}
@@ -172,18 +178,16 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data, format
               d={paperPath}
               fill="none"
               stroke="#10b981"
-              strokeWidth="2"
-              strokeOpacity="0.85"
+              strokeWidth="1.75"
+              strokeOpacity="0.75"
             />
           )}
 
           {visibleCurves.conservative && (
-            <path
-              d={consPath}
-              fill="none"
-              stroke="#3b82f6"
-              strokeWidth="2.75"
-            />
+            <>
+              <path d={consAreaPath} fill="url(#netEquityFill)" />
+              <path d={consPath} fill="none" stroke="#3b82f6" strokeWidth="2.5" />
+            </>
           )}
 
           {hoverIdx !== null && (
@@ -194,6 +198,7 @@ export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data, format
               y2={height - padBottom}
               stroke="#94a3b8"
               strokeWidth="1"
+              strokeDasharray="2 2"
             />
           )}
 

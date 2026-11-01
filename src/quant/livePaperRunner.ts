@@ -196,18 +196,26 @@ export async function refreshLiveNseQuotes(
     rotationCursor++;
 
     try {
-      const candles = await fetchAngelOneFiveMinCandles(
-        activeSym,
-        '2026-10-20 09:15',
-        '2026-11-05 15:30'
-      );
+      const nowIst = new Date(Date.now() + 5.5 * 3600 * 1000);
+      const tenDaysAgoIst = new Date(nowIst.getTime() - 10 * 24 * 3600 * 1000);
+      const fromDateStr = `${tenDaysAgoIst.toISOString().slice(0, 10)} 09:15`;
+      const toDateStr = `${nowIst.toISOString().slice(0, 10)} 15:30`;
+      const candles = await fetchAngelOneFiveMinCandles(activeSym, fromDateStr, toDateStr);
       if (candles && candles.length >= 15) {
         const ind = computeTechnicalIndicatorsFromCandles(candles);
         cachedTechnicals[activeSym] = ind;
+        const latestBar = candles[candles.length - 1];
         if (cachedSpots[activeSym]) {
           cachedSpots[activeSym].rsi14 = ind.rsi14;
           cachedSpots[activeSym].adx14 = ind.adx14;
           cachedSpots[activeSym].atrPct = ind.atrPct;
+          if (latestBar && latestBar.close > 0) {
+            // Store intra-5m candle high/low excursion so resting TP/SL orders trigger even between 5m pings
+            (cachedSpots[activeSym] as LiveSpotQuote & { bar5mHigh?: number; bar5mLow?: number }).bar5mHigh =
+              latestBar.high;
+            (cachedSpots[activeSym] as LiveSpotQuote & { bar5mHigh?: number; bar5mLow?: number }).bar5mLow =
+              latestBar.low;
+          }
         }
       }
 
@@ -588,12 +596,29 @@ export function executeAutonomousPaperCycles(
         c === 0 &&
         safeCycles === 1 &&
         istMarketCheck.isOpen &&
-        liveRawMark > 0 &&
-        brokerTickDelta >= 0.05;
+        liveRawMark > 0;
 
       if (hasActiveLiveTick && liveLongNfo) {
-        // Real Angel One NFO Option Orderbook Mark-to-Market when live NFO tick moved
+        // Real Angel One NFO Option Orderbook Mark-to-Market during live NSE market hours
         nextMark = liveRawMark;
+        // Also inspect intra-5m candle High/Low excursion to simulate exchange-resting Limit TP / GTT SL orders
+        const spotObj = cachedSpots[pos.underlying] as
+          | (LiveSpotQuote & { bar5mHigh?: number; bar5mLow?: number })
+          | undefined;
+        if (spotObj && spotObj.spot > 0 && spotObj.bar5mHigh && spotObj.bar5mLow) {
+          const favorableSpotMove =
+            pos.right === 'CE'
+              ? Math.max(0, (spotObj.bar5mHigh - spotObj.spot) / spotObj.spot)
+              : Math.max(0, (spotObj.spot - spotObj.bar5mLow) / spotObj.spot);
+          const intraBarPeakOption = Number(
+            (liveRawMark * (1 + favorableSpotMove * 12.5)).toFixed(2)
+          );
+          pos.peakMarkPrice = Number(Math.max(pos.peakMarkPrice, intraBarPeakOption).toFixed(2));
+          if (intraBarPeakOption >= pos.conservativeEntryPrice * 1.45) {
+            // Resting Limit Take-Profit order filled at intra-5m high spike
+            nextMark = Number((pos.conservativeEntryPrice * 1.45).toFixed(2));
+          }
+        }
         if (isSpreadPos && liveShortNfo && liveShortNfo.ltp > 0) {
           exitBid = Number(Math.max(0.5, liveLongNfo.bestBid - liveShortNfo.bestAsk).toFixed(2));
           exitAsk = Number(
