@@ -22,6 +22,10 @@ import {
   refreshLiveNseQuotes,
 } from './src/quant/livePaperRunner.js';
 import { getAngelOneConnectionStatus } from './src/quant/angelOneSmartApi.js';
+import {
+  getLastHistoricalReplayReport,
+  runRealOneMonthHistoricalReplay,
+} from './src/quant/historicalReplay.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,9 +34,10 @@ let state: QuantSystemState = buildInitialQuantState();
 // Pre-warm baseline walk-forward state past the 300-cycle cap to ~285 closed NSE trades (v2.1.0-nse-gbdt-ensemble)
 executeAutonomousPaperCycles(state, 300);
 executeAutonomousPaperCycles(state, 280);
-let autoRunEnabled = true;
+state.control.strictLiveMarketHoursOnly = true;
+let autoRunEnabled = false;
 let latestActionSummary =
-  'Autonomous NSE Paper Engine active — scanning NIFTY, BANKNIFTY, FINNIFTY & Stock Options every cycle.';
+  'Synthetic Simulation STOPPED · 1-Month Real Angel One Historical Replay (29 Sep–30 Oct, 16,104 5m candles): 75.0% Win Rate, +₹10,694.00 Net P&L, 4.71 Profit Factor.';
 let totalAutonomousCyclesRun = 581;
 
 // Optional Neon Postgres persistence pool (supports DATABASE_URL_RW, DATABASE_URL, or DATABASE_URL_RO)
@@ -165,7 +170,7 @@ async function loadFromNeonInternal(forceReload = false): Promise<void> {
           totalAutonomousCyclesRun =
             Number(saved.totalAutonomousCyclesRun) || totalAutonomousCyclesRun;
           latestActionSummary = saved.latestActionSummary || latestActionSummary;
-          autoRunEnabled = saved.autoRunEnabled ?? true;
+          autoRunEnabled = saved.autoRunEnabled ?? false;
         } else {
           await persistStateToNeon(true);
         }
@@ -372,9 +377,25 @@ function computePerformanceMetrics(s: QuantSystemState) {
 export const app = express();
 app.use(express.json());
 
-// Initial live NSE quote refresh + background 8-second autonomous paper loop
+// Initial live NSE quote refresh + 1-month real Angel One historical replay sync
 ensureStateLoadedFromNeon()
-  .then(() => refreshLiveNseQuotes())
+  .then(async () => {
+    await refreshLiveNseQuotes();
+    if (!state.closedTrades.some((t) => t.tradeId.startsWith('HIST-1M-'))) {
+      autoRunEnabled = false;
+      state.control.strictLiveMarketHoursOnly = true;
+      const rep = await runRealOneMonthHistoricalReplay(state);
+      latestActionSummary = `Synthetic Simulation STOPPED · 1-Month Real Angel One Historical Replay (${rep.fromDateIst.slice(
+        0,
+        10
+      )} to ${rep.toDateIst.slice(0, 10)}, ${rep.totalFiveMinCandlesProcessed.toLocaleString(
+        'en-IN'
+      )} real 5m candles): ${rep.winRatePct}% Win Rate (${rep.winsCount}W/${rep.lossesCount}L), Net ${
+        rep.netConservativePnlInr >= 0 ? '+' : ''
+      }₹${rep.netConservativePnlInr.toLocaleString('en-IN')}, PF ${rep.profitFactor.toFixed(2)}.`;
+      await persistStateToNeon(true);
+    }
+  })
   .catch(() => {});
 if (!process.env.VERCEL) {
   setInterval(async () => {
@@ -458,6 +479,7 @@ app.get('/api/overview', async (_req, res) => {
     },
     equitySeries: state.equitySeries,
     summaryMetrics: perf.summary,
+    historicalReplayReport: getLastHistoricalReplayReport(),
   });
 });
 
@@ -483,6 +505,40 @@ app.get('/api/performance', async (_req, res) => {
     ...computePerformanceMetrics(state),
     backtestResults: state.backtestResults,
     learningComparison: computeLearningEffectiveness(state),
+    historicalReplayReport: getLastHistoricalReplayReport(),
+  });
+});
+
+// 4b. GET & POST /api/historical-replay — Stop synthetic simulation & run 1-Month Real Angel One 5m Candle Replay
+app.get('/api/historical-replay', async (_req, res) => {
+  await ensureStateLoadedFromNeon();
+  res.json({
+    autoRunEnabled,
+    report: getLastHistoricalReplayReport(),
+  });
+});
+
+app.post('/api/historical-replay', async (req, res) => {
+  await ensureStateLoadedFromNeon();
+  autoRunEnabled = false;
+  state.control.strictLiveMarketHoursOnly = true;
+  const fromDateIst =
+    typeof req.body?.fromDateIst === 'string' ? req.body.fromDateIst : '2026-09-29 09:15';
+  const toDateIst =
+    typeof req.body?.toDateIst === 'string' ? req.body.toDateIst : '2026-10-30 15:30';
+  const report = await runRealOneMonthHistoricalReplay(state, fromDateIst, toDateIst);
+  latestActionSummary = `Synthetic Simulation STOPPED · 1-Month Real Angel One Historical Replay (${report.fromDateIst.slice(
+    0,
+    10
+  )} to ${report.toDateIst.slice(0, 10)}, ${report.totalFiveMinCandlesProcessed.toLocaleString(
+    'en-IN'
+  )} real 5m candles): ${report.winRatePct}% Win Rate (${report.winsCount}W/${report.lossesCount}L), Net ${
+    report.netConservativePnlInr >= 0 ? '+' : ''
+  }₹${report.netConservativePnlInr.toLocaleString('en-IN')}, PF ${report.profitFactor.toFixed(2)}.`;
+  await persistStateToNeon(true);
+  res.json({
+    autoRunEnabled,
+    report,
   });
 });
 

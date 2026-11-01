@@ -1,0 +1,643 @@
+- generic [ref=e3]:
+  - region "Paper Trading Safety Disclosure" [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e8]: PAPER TRADING - NOT REAL MONEY
+      - generic [aria-hidden] [ref=e9]: ·
+      - generic [ref=e10]: Indian NSE F&O (NIFTY / BANKNIFTY / FINNIFTY / Stock Options) · Read-Only Web Role (web_ro) · ₹0/mo Oracle VM + Neon + Vercel
+    - generic [ref=e11]: "SEBI Honesty Notice: ~90% of individual F&O traders lose money; paper results typically overstate live performance."
+  - banner [ref=e12]:
+    - link "AegisQuant NSE" [ref=e13] [cursor=pointer]:
+      - /url: "#overview"
+    - navigation "Primary Navigation" [ref=e14]:
+      - button "Overview" [ref=e15]
+      - button "Positions & Trades" [active] [ref=e16]
+      - button "Performance & Backtest" [ref=e17]
+      - button "Learning & Health" [ref=e18]
+      - button "Bot & Deploy Files" [ref=e19]
+    - button "Pause New Entries" [ref=e21]
+  - generic [ref=e24]:
+    - generic [ref=e25]:
+      - generic [ref=e26]:
+        - text: "Status:"
+        - strong [ref=e27]: Running (NSE Paper)
+      - generic [aria-hidden] [ref=e28]: ·
+      - generic [ref=e29]: "Regime: trending_up"
+      - generic [aria-hidden] [ref=e30]: ·
+      - generic [ref=e31]: "INDIA VIX: 13.64"
+      - generic [aria-hidden] [ref=e32]: ·
+      - generic [ref=e33]: "NIFTY 50: 23,113.88"
+      - generic [aria-hidden] [ref=e34]: ·
+      - generic [ref=e35]: "Sample Size: 71 of 200 trades needed for a meaningful read"
+    - generic [ref=e36]:
+      - button "Simulate Offline (>10m Heartbeat)" [ref=e37]
+      - 'button "Timezone: Asia/Kolkata (IST)" [ref=e38]'
+      - button "Switch to Light Mode" [ref=e42]: Light Theme
+  - main [ref=e49]:
+    - generic [ref=e53]:
+      - generic [ref=e54]:
+        - generic [ref=e55]:
+          - generic [ref=e56]:
+            - heading "Open NSE F&O Paper Positions (3 / 5 Max Cap)" [level=2] [ref=e57]
+            - paragraph [ref=e58]: Marks reflect Conservative Simulation exit values (mid - 35% of bid-ask spread) · Evaluated every 5 minutes during 09:15–15:30 IST
+          - generic [ref=e59]: "Max Risk/Trade: 1.5% Equity (₹15,000) · Max Total Premium: 25.0% Equity"
+        - table [ref=e61]:
+          - rowgroup [ref=e62]:
+            - row [ref=e63]:
+              - columnheader "NSE Contract" [ref=e64]
+              - columnheader "Strategy · Regime" [ref=e65]
+              - columnheader "Lots (Units)" [ref=e66]
+              - columnheader "Cons Entry" [ref=e67]
+              - columnheader "Current Mark" [ref=e68]
+              - columnheader "Unrealized P&L (₹)" [ref=e69]
+              - columnheader "Delta / Theta" [ref=e70]
+              - columnheader "DTE" [ref=e71]
+              - columnheader "Stop (-30%) / Target (+50%)" [ref=e72]
+          - rowgroup [ref=e73]:
+            - row [ref=e74]:
+              - cell "FINNIFTY26NOV24050CE FINNIFTY · 24050 CE · Exp 2026-11-26" [ref=e75]:
+                - generic [ref=e76]: FINNIFTY26NOV24050CE
+                - generic [ref=e77]: FINNIFTY · 24050 CE · Exp 2026-11-26
+              - cell "breakout_momentum · trending_up" [ref=e78]
+              - cell "1L (65)" [ref=e79]
+              - cell "₹161.54" [ref=e80]
+              - cell "₹161.54" [ref=e81]
+              - cell "-₹35.00 (-0.3%)" [ref=e82]
+              - cell "Δ 0.54 / Θ -4.52" [ref=e83]
+              - cell "27d" [ref=e84]
+              - cell "₹121.16 / ₹242.31" [ref=e85]
+            - row [ref=e86]:
+              - cell "NIFTY26NOV22850/22750PE_SPREAD NIFTY · 22850 PE · Exp 2026-11-26" [ref=e87]:
+                - generic [ref=e88]: NIFTY26NOV22850/22750PE_SPREAD
+                - generic [ref=e89]: NIFTY · 22850 PE · Exp 2026-11-26
+              - cell "trend_following · trending_down" [ref=e90]
+              - cell "1L (75)" [ref=e91]
+              - cell "₹45.63" [ref=e92]
+              - cell "₹48.30" [ref=e93]
+              - cell "+₹29.50 (+0.8%)" [ref=e94]
+              - cell "Δ -0.05 / Θ -0.45" [ref=e95]
+              - cell "25d" [ref=e96]
+              - cell "₹34.22 / ₹68.45" [ref=e97]
+            - row [ref=e98]:
+              - cell "INFY26NOV1180PE INFY · 1180 PE · Exp 2026-11-26" [ref=e99]:
+                - generic [ref=e100]: INFY26NOV1180PE
+                - generic [ref=e101]: INFY · 1180 PE · Exp 2026-11-26
+              - cell "trend_following · trending_down" [ref=e102]
+              - cell "1L (400)" [ref=e103]
+              - cell "₹14.28" [ref=e104]
+              - cell "₹20.73" [ref=e105]
+              - cell "+₹2,438.00 (+42.4%)" [ref=e106]
+              - cell "Δ -0.42 / Θ -0.40" [ref=e107]
+              - cell "26d" [ref=e108]
+              - cell "₹10.71 / ₹21.42" [ref=e109]
+      - generic [ref=e110]:
+        - generic [ref=e111]:
+          - generic [ref=e112]:
+            - heading "Trade Journal, Post-Mortem Labels & Counterfactual Log" [level=2] [ref=e113]
+            - paragraph [ref=e114]: Every closed NSE trade is labeled automatically; skipped signals are tracked counterfactually so the ML quality gate avoids survivorship bias
+          - generic [ref=e115]:
+            - button "Closed Trades (71)" [ref=e116]
+            - button "Counterfactual Skipped Signals (9)" [ref=e117]
+        - generic [ref=e118]:
+          - generic [ref=e119]:
+            - generic [ref=e120]:
+              - generic [ref=e121]: Search NSE Underlying or Thesis
+              - textbox "Search NSE Underlying or Thesis" [ref=e122]:
+                - /placeholder: e.g. NIFTY, BANKNIFTY, RELIANCE...
+            - generic [ref=e123]:
+              - generic [ref=e124]: Filter by Strategy
+              - combobox "Filter by Strategy" [ref=e125]:
+                - option "All Strategies" [selected]
+                - option "trend_following"
+                - option "mean_reversion"
+                - option "breakout_momentum"
+            - generic [ref=e126]:
+              - generic [ref=e127]: Filter by Post-Mortem Diagnosis
+              - combobox "Filter by Post-Mortem Diagnosis" [ref=e128]:
+                - option "All Post-Mortems" [selected]
+                - option "Optimal Exit"
+                - option "Wrong Direction"
+                - option "Theta / INDIA VIX Crush"
+                - option "Stopped Out Then Reversed"
+                - option "Winner Given Back"
+                - option "Bad Fill (Wide Spread)"
+                - option "Wrong Regime"
+            - generic [ref=e129]:
+              - generic [ref=e130]: Sort By
+              - combobox "Sort By" [ref=e131]:
+                - option "Closed Time (Newest First)" [selected]
+                - option "Conservative P&L ₹ (Highest First)"
+                - option "DTE at Entry"
+          - table [ref=e133]:
+            - rowgroup [ref=e134]:
+              - row [ref=e135]:
+                - columnheader "Trade / NSE Contract" [ref=e136]
+                - columnheader "Strategy · Regime" [ref=e137]
+                - columnheader "Cons Entry → Exit" [ref=e138]
+                - columnheader "Conservative P&L (₹)" [ref=e139]
+                - columnheader "Paper Broker P&L (₹)" [ref=e140]
+                - columnheader "MAE / MFE" [ref=e141]
+                - columnheader "Exit Reason · Post-Mortem Label" [ref=e142]
+            - rowgroup [ref=e143]:
+              - row [ref=e144]:
+                - cell "FINNIFTY26NOV23900PE NSE-TRD-1071 · 31 Oct, 12:07 IST · 1L (65/lot) · DTE 19 · Δ -0.42" [ref=e145]:
+                  - generic [ref=e146]: FINNIFTY26NOV23900PE
+                  - generic [ref=e147]: NSE-TRD-1071 · 31 Oct, 12:07 IST · 1L (65/lot) · DTE 19 · Δ -0.42
+                - cell "mean_reversion · range Single-Leg PE on FINNIFTY (mean_reversion) approved by Quality Gate v1.3.0-nse-walkforward" [ref=e148]:
+                  - generic [ref=e149]: mean_reversion · range
+                  - generic [ref=e150]: Single-Leg PE on FINNIFTY (mean_reversion) approved by Quality Gate v1.3.0-nse-walkforward
+                - cell "₹132.28 → ₹206.22 Spread 2.8% · Charges ₹70" [ref=e151]:
+                  - text: ₹132.28 → ₹206.22
+                  - generic [ref=e152]: Spread 2.8% · Charges ₹70
+                - cell "+₹4,736.10 +54.9%" [ref=e153]:
+                  - text: +₹4,736.10
+                  - generic [ref=e154]: +54.9%
+                - cell "+₹5,003.05 58.8%" [ref=e155]:
+                  - text: +₹5,003.05
+                  - generic [ref=e156]: 58.8%
+                - cell "-20.3% / +56.8%" [ref=e157]
+                - 'cell "TAKE_PROFIT · optimal_exit Closed Single-Leg PE via TAKE_PROFIT (optimal_exit): Cons ₹132.28 -> ₹206.22 (Net +₹4736.10)." [ref=e158]':
+                  - generic [ref=e159]: TAKE_PROFIT · optimal_exit
+                  - generic [ref=e160]: "Closed Single-Leg PE via TAKE_PROFIT (optimal_exit): Cons ₹132.28 -> ₹206.22 (Net +₹4736.10)."
+              - row [ref=e161]:
+                - cell "RELIANCE26NOV1180/1220CE_SPREAD NSE-TRD-1070 · 31 Oct, 12:07 IST · 1L (500/lot) · DTE 15 · Δ 0.349" [ref=e162]:
+                  - generic [ref=e163]: RELIANCE26NOV1180/1220CE_SPREAD
+                  - generic [ref=e164]: NSE-TRD-1070 · 31 Oct, 12:07 IST · 1L (500/lot) · DTE 15 · Δ 0.349
+                - cell "trend_following · trending_up Bull Call Spread (-65% Theta) on RELIANCE (trend_following) approved by Quality Gate v1.3.0-nse-walkforward" [ref=e165]:
+                  - generic [ref=e166]: trend_following · trending_up
+                  - generic [ref=e167]: Bull Call Spread (-65% Theta) on RELIANCE (trend_following) approved by Quality Gate v1.3.0-nse-walkforward
+                - cell "₹9.75 → ₹14.93 Spread 2.9% · Charges ₹140" [ref=e168]:
+                  - text: ₹9.75 → ₹14.93
+                  - generic [ref=e169]: Spread 2.9% · Charges ₹140
+                - cell "+₹2,450.00 +49.5%" [ref=e170]:
+                  - text: +₹2,450.00
+                  - generic [ref=e171]: +49.5%
+                - cell "+₹2,705.00 56.1%" [ref=e172]:
+                  - text: +₹2,705.00
+                  - generic [ref=e173]: 56.1%
+                - cell "-14.3% / +54.1%" [ref=e174]
+                - 'cell "TAKE_PROFIT · optimal_exit Closed Bull Call Spread (-65% Theta) via TAKE_PROFIT (optimal_exit): Cons ₹9.75 -> ₹14.93 (Net +₹2450.00)." [ref=e175]':
+                  - generic [ref=e176]: TAKE_PROFIT · optimal_exit
+                  - generic [ref=e177]: "Closed Bull Call Spread (-65% Theta) via TAKE_PROFIT (optimal_exit): Cons ₹9.75 -> ₹14.93 (Net +₹2450.00)."
+              - row [ref=e178]:
+                - cell "NIFTY26NOV22900/22800PE_SPREAD NSE-TRD-1069 · 31 Oct, 12:07 IST · 1L (75/lot) · DTE 16 · Δ -0.057" [ref=e179]:
+                  - generic [ref=e180]: NIFTY26NOV22900/22800PE_SPREAD
+                  - generic [ref=e181]: NSE-TRD-1069 · 31 Oct, 12:07 IST · 1L (75/lot) · DTE 16 · Δ -0.057
+                - cell "trend_following · trending_down Bear Put Spread (-65% Theta) on NIFTY (trend_following) approved by Quality Gate v1.3.0-nse-walkforward" [ref=e182]:
+                  - generic [ref=e183]: trend_following · trending_down
+                  - generic [ref=e184]: Bear Put Spread (-65% Theta) on NIFTY (trend_following) approved by Quality Gate v1.3.0-nse-walkforward
+                - cell "₹44.14 → ₹66.77 Spread 2.8% · Charges ₹140" [ref=e185]:
+                  - text: ₹44.14 → ₹66.77
+                  - generic [ref=e186]: Spread 2.8% · Charges ₹140
+                - cell "+₹1,557.25 +46.1%" [ref=e187]:
+                  - text: +₹1,557.25
+                  - generic [ref=e188]: +46.1%
+                - cell "+₹1,772.25 54.1%" [ref=e189]:
+                  - text: +₹1,772.25
+                  - generic [ref=e190]: 54.1%
+                - cell "0.0% / +52.2%" [ref=e191]
+                - 'cell "TAKE_PROFIT · optimal_exit Closed Bear Put Spread (-65% Theta) via TAKE_PROFIT (optimal_exit): Cons ₹44.14 -> ₹66.77 (Net +₹1557.25)." [ref=e192]':
+                  - generic [ref=e193]: TAKE_PROFIT · optimal_exit
+                  - generic [ref=e194]: "Closed Bear Put Spread (-65% Theta) via TAKE_PROFIT (optimal_exit): Cons ₹44.14 -> ₹66.77 (Net +₹1557.25)."
+              - row [ref=e195]:
+                - cell "FINNIFTY26NOV24100/24200CE_SPREAD NSE-TRD-1068 · 31 Oct, 12:06 IST · 1L (65/lot) · DTE 23 · Δ 0.046" [ref=e196]:
+                  - generic [ref=e197]: FINNIFTY26NOV24100/24200CE_SPREAD
+                  - generic [ref=e198]: NSE-TRD-1068 · 31 Oct, 12:06 IST · 1L (65/lot) · DTE 23 · Δ 0.046
+                - cell "breakout_momentum · trending_up Bull Call Spread (-65% Theta) on FINNIFTY (breakout_momentum) approved by Quality Gate v1.3.0-nse-walkforward" [ref=e199]:
+                  - generic [ref=e200]: breakout_momentum · trending_up
+                  - generic [ref=e201]: Bull Call Spread (-65% Theta) on FINNIFTY (breakout_momentum) approved by Quality Gate v1.3.0-nse-walkforward
+                - cell "₹55.41 → ₹90.96 Spread 2.8% · Charges ₹140" [ref=e202]:
+                  - text: ₹55.41 → ₹90.96
+                  - generic [ref=e203]: Spread 2.8% · Charges ₹140
+                - cell "+₹2,170.75 +59.1%" [ref=e204]:
+                  - text: +₹2,170.75
+                  - generic [ref=e205]: +59.1%
+                - cell "+₹2,395.90 67.2%" [ref=e206]:
+                  - text: +₹2,395.90
+                  - generic [ref=e207]: 67.2%
+                - cell "0.0% / +65.2%" [ref=e208]
+                - 'cell "TAKE_PROFIT · optimal_exit Closed Bull Call Spread (-65% Theta) via TAKE_PROFIT (optimal_exit): Cons ₹55.41 -> ₹90.96 (Net +₹2170.75)." [ref=e209]':
+                  - generic [ref=e210]: TAKE_PROFIT · optimal_exit
+                  - generic [ref=e211]: "Closed Bull Call Spread (-65% Theta) via TAKE_PROFIT (optimal_exit): Cons ₹55.41 -> ₹90.96 (Net +₹2170.75)."
+              - row [ref=e212]:
+                - cell "RELIANCE26NOV1360CE NSE-TRD-1067 · 31 Oct, 12:06 IST · 1L (500/lot) · DTE 19 · Δ 0.46" [ref=e213]:
+                  - generic [ref=e214]: RELIANCE26NOV1360CE
+                  - generic [ref=e215]: NSE-TRD-1067 · 31 Oct, 12:06 IST · 1L (500/lot) · DTE 19 · Δ 0.46
+                - cell "trend_following · trending_up Single-Leg CE on RELIANCE (trend_following) approved by Quality Gate v1.3.0-nse-walkforward" [ref=e216]:
+                  - generic [ref=e217]: trend_following · trending_up
+                  - generic [ref=e218]: Single-Leg CE on RELIANCE (trend_following) approved by Quality Gate v1.3.0-nse-walkforward
+                - cell "₹22.72 → ₹23.45 Spread 2.8% · Charges ₹70" [ref=e219]:
+                  - text: ₹22.72 → ₹23.45
+                  - generic [ref=e220]: Spread 2.8% · Charges ₹70
+                - cell "+₹295.00 +2.6%" [ref=e221]:
+                  - text: +₹295.00
+                  - generic [ref=e222]: +2.6%
+                - cell "+₹575.00 5.1%" [ref=e223]:
+                  - text: +₹575.00
+                  - generic [ref=e224]: 5.1%
+                - cell "-4.2% / +27.7%" [ref=e225]
+                - 'cell "TRAILING_STOP · winner_given_back Closed Single-Leg CE via TRAILING_STOP (winner_given_back): Cons ₹22.72 -> ₹23.45 (Net +₹295.00)." [ref=e226]':
+                  - generic [ref=e227]: TRAILING_STOP · winner_given_back
+                  - generic [ref=e228]: "Closed Single-Leg CE via TRAILING_STOP (winner_given_back): Cons ₹22.72 -> ₹23.45 (Net +₹295.00)."
+              - row [ref=e229]:
+                - cell "NIFTY26NOV24500CE NSE-TRD-1066 · 31 Oct, 12:05 IST · 1L (75/lot) · DTE 20 · Δ 0.49" [ref=e230]:
+                  - generic [ref=e231]: NIFTY26NOV24500CE
+                  - generic [ref=e232]: NSE-TRD-1066 · 31 Oct, 12:05 IST · 1L (75/lot) · DTE 20 · Δ 0.49
+                - cell "trend_following · trending_up Single-Leg CE on NIFTY (trend_following) approved by Quality Gate v1.3.0-nse-walkforward" [ref=e233]:
+                  - generic [ref=e234]: trend_following · trending_up
+                  - generic [ref=e235]: Single-Leg CE on NIFTY (trend_following) approved by Quality Gate v1.3.0-nse-walkforward
+                - cell "₹147.94 → ₹163.80 Spread 2.8% · Charges ₹70" [ref=e236]:
+                  - text: ₹147.94 → ₹163.80
+                  - generic [ref=e237]: Spread 2.8% · Charges ₹70
+                - cell "+₹1,119.50 +10.1%" [ref=e238]:
+                  - text: +₹1,119.50
+                  - generic [ref=e239]: +10.1%
+                - cell "+₹1,401.75 12.8%" [ref=e240]:
+                  - text: +₹1,401.75
+                  - generic [ref=e241]: 12.8%
+                - cell "-5.0% / +31.5%" [ref=e242]
+                - 'cell "TRAILING_STOP · optimal_exit Closed Single-Leg CE via TRAILING_STOP (optimal_exit): Cons ₹147.94 -> ₹163.80 (Net +₹1119.50)." [ref=e243]':
+                  - generic [ref=e244]: TRAILING_STOP · optimal_exit
+                  - generic [ref=e245]: "Closed Single-Leg CE via TRAILING_STOP (optimal_exit): Cons ₹147.94 -> ₹163.80 (Net +₹1119.50)."
+              - row [ref=e246]:
+                - cell "BANKNIFTY26NOV52000CE NSE-TRD-1065 · 31 Oct, 12:05 IST · 1L (30/lot) · DTE 18 · Δ 0.47" [ref=e247]:
+                  - generic [ref=e248]: BANKNIFTY26NOV52000CE
+                  - generic [ref=e249]: NSE-TRD-1065 · 31 Oct, 12:05 IST · 1L (30/lot) · DTE 18 · Δ 0.47
+                - cell "breakout_momentum · trending_up Single-Leg CE on BANKNIFTY (breakout_momentum) approved by Quality Gate v1.3.0-nse-walkforward" [ref=e250]:
+                  - generic [ref=e251]: breakout_momentum · trending_up
+                  - generic [ref=e252]: Single-Leg CE on BANKNIFTY (breakout_momentum) approved by Quality Gate v1.3.0-nse-walkforward
+                - cell "₹344.34 → ₹520.20 Spread 2.8% · Charges ₹70" [ref=e253]:
+                  - text: ₹344.34 → ₹520.20
+                  - generic [ref=e254]: Spread 2.8% · Charges ₹70
+                - cell "+₹5,205.80 +50.2%" [ref=e255]:
+                  - text: +₹5,205.80
+                  - generic [ref=e256]: +50.2%
+                - cell "+₹5,508.30 53.8%" [ref=e257]:
+                  - text: +₹5,508.30
+                  - generic [ref=e258]: 53.8%
+                - cell "-3.8% / +52.0%" [ref=e259]
+                - 'cell "TAKE_PROFIT · optimal_exit Closed Single-Leg CE via TAKE_PROFIT (optimal_exit): Cons ₹344.34 -> ₹520.20 (Net +₹5205.80)." [ref=e260]':
+                  - generic [ref=e261]: TAKE_PROFIT · optimal_exit
+                  - generic [ref=e262]: "Closed Single-Leg CE via TAKE_PROFIT (optimal_exit): Cons ₹344.34 -> ₹520.20 (Net +₹5205.80)."
+              - row [ref=e263]:
+                - cell "NIFTY26NOV24550CE NSE-TRD-1064 · 29 Oct, 13:20 IST · 1L (75/lot) · DTE 14 · Δ 0.5" [ref=e264]:
+                  - generic [ref=e265]: NIFTY26NOV24550CE
+                  - generic [ref=e266]: NSE-TRD-1064 · 29 Oct, 13:20 IST · 1L (75/lot) · DTE 14 · Δ 0.5
+                - cell "breakout_momentum · trending_up 20-bar range breakout + Volume 2.25x avg + ATR expansion" [ref=e267]:
+                  - generic [ref=e268]: breakout_momentum · trending_up
+                  - generic [ref=e269]: 20-bar range breakout + Volume 2.25x avg + ATR expansion
+                - cell "₹172.53 → ₹222.93 Spread 2.4% · Charges ₹70" [ref=e270]:
+                  - text: ₹172.53 → ₹222.93
+                  - generic [ref=e271]: Spread 2.4% · Charges ₹70
+                - cell "+₹3,710.00 +28.6%" [ref=e272]:
+                  - text: +₹3,710.00
+                  - generic [ref=e273]: +28.6%
+                - cell "+₹4,026.00 31.4%" [ref=e274]:
+                  - text: +₹4,026.00
+                  - generic [ref=e275]: 31.4%
+                - cell "-3.9% / +33.6%" [ref=e276]
+                - cell "TRAILING_STOP · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e277]:
+                  - generic [ref=e278]: TRAILING_STOP · optimal_exit
+                  - generic [ref=e279]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e280]:
+                - cell "SBIN26NOV840CE NSE-TRD-1063 · 28 Oct, 20:25 IST · 1L (750/lot) · DTE 8 · Δ 0.39" [ref=e281]:
+                  - generic [ref=e282]: SBIN26NOV840CE
+                  - generic [ref=e283]: NSE-TRD-1063 · 28 Oct, 20:25 IST · 1L (750/lot) · DTE 8 · Δ 0.39
+                - cell "trend_following · trending_up EMA20 > EMA50 aligned + Spot > VWAP + ADX(14)=32.2 in trending_up" [ref=e284]:
+                  - generic [ref=e285]: trend_following · trending_up
+                  - generic [ref=e286]: EMA20 > EMA50 aligned + Spot > VWAP + ADX(14)=32.2 in trending_up
+                - cell "₹19.32 → ₹24.87 Spread 3.6% · Charges ₹70" [ref=e287]:
+                  - text: ₹19.32 → ₹24.87
+                  - generic [ref=e288]: Spread 3.6% · Charges ₹70
+                - cell "+₹4,092.50 +28.2%" [ref=e289]:
+                  - text: +₹4,092.50
+                  - generic [ref=e290]: +28.2%
+                - cell "+₹4,575.00 32.0%" [ref=e291]:
+                  - text: +₹4,575.00
+                  - generic [ref=e292]: 32.0%
+                - cell "-0.7% / +38.5%" [ref=e293]
+                - cell "TRAILING_STOP · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e294]:
+                  - generic [ref=e295]: TRAILING_STOP · optimal_exit
+                  - generic [ref=e296]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e297]:
+                - cell "ICICIBANK26NOV1270CE NSE-TRD-1062 · 27 Oct, 22:41 IST · 1L (700/lot) · DTE 18 · Δ 0.45" [ref=e298]:
+                  - generic [ref=e299]: ICICIBANK26NOV1270CE
+                  - generic [ref=e300]: NSE-TRD-1062 · 27 Oct, 22:41 IST · 1L (700/lot) · DTE 18 · Δ 0.45
+                - cell "breakout_momentum · high_volatility 20-bar range breakout + Volume 1.73x avg + ATR expansion" [ref=e301]:
+                  - generic [ref=e302]: breakout_momentum · high_volatility
+                  - generic [ref=e303]: 20-bar range breakout + Volume 1.73x avg + ATR expansion
+                - cell "₹20.67 → ₹24.82 Spread 4.5% · Charges ₹70" [ref=e304]:
+                  - text: ₹20.67 → ₹24.82
+                  - generic [ref=e305]: Spread 4.5% · Charges ₹70
+                - cell "+₹2,835.00 +19.6%" [ref=e306]:
+                  - text: +₹2,835.00
+                  - generic [ref=e307]: +19.6%
+                - cell "+₹3,402.00 23.9%" [ref=e308]:
+                  - text: +₹3,402.00
+                  - generic [ref=e309]: 23.9%
+                - cell "-10.0% / +26.8%" [ref=e310]
+                - cell "TAKE_PROFIT · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e311]:
+                  - generic [ref=e312]: TAKE_PROFIT · optimal_exit
+                  - generic [ref=e313]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e314]:
+                - cell "INFY26NOV1820CE NSE-TRD-1061 · 27 Oct, 03:18 IST · 1L (400/lot) · DTE 15 · Δ 0.43" [ref=e315]:
+                  - generic [ref=e316]: INFY26NOV1820CE
+                  - generic [ref=e317]: NSE-TRD-1061 · 27 Oct, 03:18 IST · 1L (400/lot) · DTE 15 · Δ 0.43
+                - cell "mean_reversion · range RSI(14)=27.4 extreme + Bollinger re-entry inside low-ADX range" [ref=e318]:
+                  - generic [ref=e319]: mean_reversion · range
+                  - generic [ref=e320]: RSI(14)=27.4 extreme + Bollinger re-entry inside low-ADX range
+                - cell "₹32.54 → ₹44.99 Spread 5.1% · Charges ₹70" [ref=e321]:
+                  - text: ₹32.54 → ₹44.99
+                  - generic [ref=e322]: Spread 5.1% · Charges ₹70
+                - cell "+₹4,910.00 +37.6%" [ref=e323]:
+                  - text: +₹4,910.00
+                  - generic [ref=e324]: +37.6%
+                - cell "+₹5,532.00 43.3%" [ref=e325]:
+                  - text: +₹5,532.00
+                  - generic [ref=e326]: 43.3%
+                - cell "-4.8% / +42.6%" [ref=e327]
+                - cell "TRAILING_STOP · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e328]:
+                  - generic [ref=e329]: TRAILING_STOP · optimal_exit
+                  - generic [ref=e330]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e331]:
+                - cell "HDFCBANK26NOV1780CE NSE-TRD-1060 · 26 Oct, 05:06 IST · 1L (550/lot) · DTE 24 · Δ 0.38" [ref=e332]:
+                  - generic [ref=e333]: HDFCBANK26NOV1780CE
+                  - generic [ref=e334]: NSE-TRD-1060 · 26 Oct, 05:06 IST · 1L (550/lot) · DTE 24 · Δ 0.38
+                - cell "mean_reversion · range RSI(14)=27.4 extreme + Bollinger re-entry inside low-ADX range" [ref=e335]:
+                  - generic [ref=e336]: mean_reversion · range
+                  - generic [ref=e337]: RSI(14)=27.4 extreme + Bollinger re-entry inside low-ADX range
+                - cell "₹21.42 → ₹18.14 Spread 3.2% · Charges ₹70" [ref=e338]:
+                  - text: ₹21.42 → ₹18.14
+                  - generic [ref=e339]: Spread 3.2% · Charges ₹70
+                - cell "-₹1,874.00 -15.9%" [ref=e340]:
+                  - text: "-₹1,874.00"
+                  - generic [ref=e341]: "-15.9%"
+                - cell "-₹1,556.50 -13.4%" [ref=e342]:
+                  - text: "-₹1,556.50"
+                  - generic [ref=e343]: "-13.4%"
+                - cell "-18.9% / +16.1%" [ref=e344]
+                - cell "SIGNAL_REVERSAL · wrong_direction Underlying failed to follow through on 5m trigger; directional thesis invalidated before target." [ref=e345]:
+                  - generic [ref=e346]: SIGNAL_REVERSAL · wrong_direction
+                  - generic [ref=e347]: Underlying failed to follow through on 5m trigger; directional thesis invalidated before target.
+              - row [ref=e348]:
+                - cell "TCS26NOV4120CE NSE-TRD-1059 · 25 Oct, 13:52 IST · 1L (175/lot) · DTE 27 · Δ 0.43" [ref=e349]:
+                  - generic [ref=e350]: TCS26NOV4120CE
+                  - generic [ref=e351]: NSE-TRD-1059 · 25 Oct, 13:52 IST · 1L (175/lot) · DTE 27 · Δ 0.43
+                - cell "breakout_momentum · trending_up 20-bar range breakout + Volume 2.34x avg + ATR expansion" [ref=e352]:
+                  - generic [ref=e353]: breakout_momentum · trending_up
+                  - generic [ref=e354]: 20-bar range breakout + Volume 2.34x avg + ATR expansion
+                - cell "₹56.29 → ₹76.06 Spread 2.7% · Charges ₹70" [ref=e355]:
+                  - text: ₹56.29 → ₹76.06
+                  - generic [ref=e356]: Spread 2.7% · Charges ₹70
+                - cell "+₹3,389.75 +34.3%" [ref=e357]:
+                  - text: +₹3,389.75
+                  - generic [ref=e358]: +34.3%
+                - cell "+₹3,676.75 37.7%" [ref=e359]:
+                  - text: +₹3,676.75
+                  - generic [ref=e360]: 37.7%
+                - cell "-0.9% / +47.5%" [ref=e361]
+                - cell "TRAILING_STOP · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e362]:
+                  - generic [ref=e363]: TRAILING_STOP · optimal_exit
+                  - generic [ref=e364]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e365]:
+                - cell "RELIANCE26NOV1360PE NSE-TRD-1058 · 24 Oct, 06:15 IST · 1L (500/lot) · DTE 15 · Δ -0.4" [ref=e366]:
+                  - generic [ref=e367]: RELIANCE26NOV1360PE
+                  - generic [ref=e368]: NSE-TRD-1058 · 24 Oct, 06:15 IST · 1L (500/lot) · DTE 15 · Δ -0.4
+                - cell "trend_following · trending_up EMA20 > EMA50 aligned + Spot > VWAP + ADX(14)=28.4 in trending_up" [ref=e369]:
+                  - generic [ref=e370]: trend_following · trending_up
+                  - generic [ref=e371]: EMA20 > EMA50 aligned + Spot > VWAP + ADX(14)=28.4 in trending_up
+                - cell "₹25.68 → ₹19.18 Spread 4.9% · Charges ₹70" [ref=e372]:
+                  - text: ₹25.68 → ₹19.18
+                  - generic [ref=e373]: Spread 4.9% · Charges ₹70
+                - cell "-₹3,320.00 -25.8%" [ref=e374]:
+                  - text: "-₹3,320.00"
+                  - generic [ref=e375]: "-25.8%"
+                - cell "-₹2,865.00 -22.7%" [ref=e376]:
+                  - text: "-₹2,865.00"
+                  - generic [ref=e377]: "-22.7%"
+                - cell "-29.2% / +21.8%" [ref=e378]
+                - cell "SIGNAL_REVERSAL · wrong_direction Underlying failed to follow through on 5m trigger; directional thesis invalidated before target." [ref=e379]:
+                  - generic [ref=e380]: SIGNAL_REVERSAL · wrong_direction
+                  - generic [ref=e381]: Underlying failed to follow through on 5m trigger; directional thesis invalidated before target.
+              - row [ref=e382]:
+                - cell "FINNIFTY26NOV23850PE NSE-TRD-1057 · 23 Oct, 12:21 IST · 1L (65/lot) · DTE 27 · Δ -0.47" [ref=e383]:
+                  - generic [ref=e384]: FINNIFTY26NOV23850PE
+                  - generic [ref=e385]: NSE-TRD-1057 · 23 Oct, 12:21 IST · 1L (65/lot) · DTE 27 · Δ -0.47
+                - cell "mean_reversion · range RSI(14)=73.2 extreme + Bollinger re-entry inside low-ADX range" [ref=e386]:
+                  - generic [ref=e387]: mean_reversion · range
+                  - generic [ref=e388]: RSI(14)=73.2 extreme + Bollinger re-entry inside low-ADX range
+                - cell "₹126.07 → ₹96.30 Spread 5.5% · Charges ₹70" [ref=e389]:
+                  - text: ₹126.07 → ₹96.30
+                  - generic [ref=e390]: Spread 5.5% · Charges ₹70
+                - cell "-₹2,005.05 -24.4%" [ref=e391]:
+                  - text: "-₹2,005.05"
+                  - generic [ref=e392]: "-24.4%"
+                - cell "-₹1,654.90 -20.6%" [ref=e393]:
+                  - text: "-₹1,654.90"
+                  - generic [ref=e394]: "-20.6%"
+                - cell "-28.3% / +20.7%" [ref=e395]
+                - cell "SIGNAL_REVERSAL · wrong_direction Underlying failed to follow through on 5m trigger; directional thesis invalidated before target." [ref=e396]:
+                  - generic [ref=e397]: SIGNAL_REVERSAL · wrong_direction
+                  - generic [ref=e398]: Underlying failed to follow through on 5m trigger; directional thesis invalidated before target.
+              - row [ref=e399]:
+                - cell "BANKNIFTY26NOV51600CE NSE-TRD-1056 · 22 Oct, 18:38 IST · 1L (30/lot) · DTE 17 · Δ 0.49" [ref=e400]:
+                  - generic [ref=e401]: BANKNIFTY26NOV51600CE
+                  - generic [ref=e402]: NSE-TRD-1056 · 22 Oct, 18:38 IST · 1L (30/lot) · DTE 17 · Δ 0.49
+                - cell "breakout_momentum · trending_up 20-bar range breakout + Volume 1.81x avg + ATR expansion" [ref=e403]:
+                  - generic [ref=e404]: breakout_momentum · trending_up
+                  - generic [ref=e405]: 20-bar range breakout + Volume 1.81x avg + ATR expansion
+                - cell "₹402.32 → ₹559.24 Spread 4.7% · Charges ₹70" [ref=e406]:
+                  - text: ₹402.32 → ₹559.24
+                  - generic [ref=e407]: Spread 4.7% · Charges ₹70
+                - cell "+₹4,637.60 +38.3%" [ref=e408]:
+                  - text: +₹4,637.60
+                  - generic [ref=e409]: +38.3%
+                - cell "+₹5,178.30 43.6%" [ref=e410]:
+                  - text: +₹5,178.30
+                  - generic [ref=e411]: 43.6%
+                - cell "-2.6% / +43.3%" [ref=e412]
+                - cell "TRAILING_STOP · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e413]:
+                  - generic [ref=e414]: TRAILING_STOP · optimal_exit
+                  - generic [ref=e415]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e416]:
+                - cell "NIFTY26NOV24600CE NSE-TRD-1055 · 21 Oct, 19:22 IST · 1L (75/lot) · DTE 16 · Δ 0.47" [ref=e417]:
+                  - generic [ref=e418]: NIFTY26NOV24600CE
+                  - generic [ref=e419]: NSE-TRD-1055 · 21 Oct, 19:22 IST · 1L (75/lot) · DTE 16 · Δ 0.47
+                - cell "mean_reversion · range RSI(14)=27.4 extreme + Bollinger re-entry inside low-ADX range" [ref=e420]:
+                  - generic [ref=e421]: mean_reversion · range
+                  - generic [ref=e422]: RSI(14)=27.4 extreme + Bollinger re-entry inside low-ADX range
+                - cell "₹125.79 → ₹174.53 Spread 5.7% · Charges ₹70" [ref=e423]:
+                  - text: ₹125.79 → ₹174.53
+                  - generic [ref=e424]: Spread 5.7% · Charges ₹70
+                - cell "+₹3,585.50 +37.9%" [ref=e425]:
+                  - text: +₹3,585.50
+                  - generic [ref=e426]: +37.9%
+                - cell "+₹4,108.50 44.4%" [ref=e427]:
+                  - text: +₹4,108.50
+                  - generic [ref=e428]: 44.4%
+                - cell "-4.9% / +42.9%" [ref=e429]
+                - cell "TRAILING_STOP · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e430]:
+                  - generic [ref=e431]: TRAILING_STOP · optimal_exit
+                  - generic [ref=e432]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e433]:
+                - cell "SBIN26NOV860CE NSE-TRD-1054 · 21 Oct, 06:14 IST · 1L (750/lot) · DTE 21 · Δ 0.38" [ref=e434]:
+                  - generic [ref=e435]: SBIN26NOV860CE
+                  - generic [ref=e436]: NSE-TRD-1054 · 21 Oct, 06:14 IST · 1L (750/lot) · DTE 21 · Δ 0.38
+                - cell "mean_reversion · range RSI(14)=27.4 extreme + Bollinger re-entry inside low-ADX range" [ref=e437]:
+                  - generic [ref=e438]: mean_reversion · range
+                  - generic [ref=e439]: RSI(14)=27.4 extreme + Bollinger re-entry inside low-ADX range
+                - cell "₹13.92 → ₹19.40 Spread 4.9% · Charges ₹70" [ref=e440]:
+                  - text: ₹13.92 → ₹19.40
+                  - generic [ref=e441]: Spread 4.9% · Charges ₹70
+                - cell "+₹4,040.00 +38.6%" [ref=e442]:
+                  - text: +₹4,040.00
+                  - generic [ref=e443]: +38.6%
+                - cell "+₹4,537.50 44.2%" [ref=e444]:
+                  - text: +₹4,537.50
+                  - generic [ref=e445]: 44.2%
+                - cell "-2.8% / +43.7%" [ref=e446]
+                - cell "TRAILING_STOP · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e447]:
+                  - generic [ref=e448]: TRAILING_STOP · optimal_exit
+                  - generic [ref=e449]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e450]:
+                - cell "ICICIBANK26NOV1290CE NSE-TRD-1053 · 20 Oct, 04:42 IST · 1L (700/lot) · DTE 11 · Δ 0.43" [ref=e451]:
+                  - generic [ref=e452]: ICICIBANK26NOV1290CE
+                  - generic [ref=e453]: NSE-TRD-1053 · 20 Oct, 04:42 IST · 1L (700/lot) · DTE 11 · Δ 0.43
+                - cell "breakout_momentum · high_volatility 20-bar range breakout + Volume 2.35x avg + ATR expansion" [ref=e454]:
+                  - generic [ref=e455]: breakout_momentum · high_volatility
+                  - generic [ref=e456]: 20-bar range breakout + Volume 2.35x avg + ATR expansion
+                - cell "₹16.60 → ₹21.19 Spread 2.4% · Charges ₹70" [ref=e457]:
+                  - text: ₹16.60 → ₹21.19
+                  - generic [ref=e458]: Spread 2.4% · Charges ₹70
+                - cell "+₹3,143.00 +27.0%" [ref=e459]:
+                  - text: +₹3,143.00
+                  - generic [ref=e460]: +27.0%
+                - cell "+₹3,437.00 29.8%" [ref=e461]:
+                  - text: +₹3,437.00
+                  - generic [ref=e462]: 29.8%
+                - cell "-3.2% / +40.7%" [ref=e463]
+                - cell "TRAILING_STOP · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e464]:
+                  - generic [ref=e465]: TRAILING_STOP · optimal_exit
+                  - generic [ref=e466]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e467]:
+                - cell "INFY26NOV1840CE NSE-TRD-1052 · 19 Oct, 13:32 IST · 1L (400/lot) · DTE 19 · Δ 0.42" [ref=e468]:
+                  - generic [ref=e469]: INFY26NOV1840CE
+                  - generic [ref=e470]: NSE-TRD-1052 · 19 Oct, 13:32 IST · 1L (400/lot) · DTE 19 · Δ 0.42
+                - cell "mean_reversion · range RSI(14)=27.4 extreme + Bollinger re-entry inside low-ADX range" [ref=e471]:
+                  - generic [ref=e472]: mean_reversion · range
+                  - generic [ref=e473]: RSI(14)=27.4 extreme + Bollinger re-entry inside low-ADX range
+                - cell "₹31.47 → ₹42.38 Spread 4.8% · Charges ₹70" [ref=e474]:
+                  - text: ₹31.47 → ₹42.38
+                  - generic [ref=e475]: Spread 4.8% · Charges ₹70
+                - cell "+₹4,294.00 +34.0%" [ref=e476]:
+                  - text: +₹4,294.00
+                  - generic [ref=e477]: +34.0%
+                - cell "+₹4,864.00 39.3%" [ref=e478]:
+                  - text: +₹4,864.00
+                  - generic [ref=e479]: 39.3%
+                - cell "-9.7% / +39.0%" [ref=e480]
+                - cell "TRAILING_STOP · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e481]:
+                  - generic [ref=e482]: TRAILING_STOP · optimal_exit
+                  - generic [ref=e483]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e484]:
+                - cell "HDFCBANK26NOV1700CE NSE-TRD-1051 · 18 Oct, 09:41 IST · 1L (550/lot) · DTE 12 · Δ 0.44" [ref=e485]:
+                  - generic [ref=e486]: HDFCBANK26NOV1700CE
+                  - generic [ref=e487]: NSE-TRD-1051 · 18 Oct, 09:41 IST · 1L (550/lot) · DTE 12 · Δ 0.44
+                - cell "breakout_momentum · high_volatility 20-bar range breakout + Volume 1.80x avg + ATR expansion" [ref=e488]:
+                  - generic [ref=e489]: breakout_momentum · high_volatility
+                  - generic [ref=e490]: 20-bar range breakout + Volume 1.80x avg + ATR expansion
+                - cell "₹24.13 → ₹29.30 Spread 3.4% · Charges ₹70" [ref=e491]:
+                  - text: ₹24.13 → ₹29.30
+                  - generic [ref=e492]: Spread 3.4% · Charges ₹70
+                - cell "+₹2,773.50 +20.8%" [ref=e493]:
+                  - text: +₹2,773.50
+                  - generic [ref=e494]: +20.8%
+                - cell "+₹3,201.00 24.4%" [ref=e495]:
+                  - text: +₹3,201.00
+                  - generic [ref=e496]: 24.4%
+                - cell "-3.6% / +25.8%" [ref=e497]
+                - cell "TAKE_PROFIT · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e498]:
+                  - generic [ref=e499]: TAKE_PROFIT · optimal_exit
+                  - generic [ref=e500]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e501]:
+                - cell "TCS26NOV4140PE NSE-TRD-1050 · 17 Oct, 16:06 IST · 1L (175/lot) · DTE 20 · Δ -0.5" [ref=e502]:
+                  - generic [ref=e503]: TCS26NOV4140PE
+                  - generic [ref=e504]: NSE-TRD-1050 · 17 Oct, 16:06 IST · 1L (175/lot) · DTE 20 · Δ -0.5
+                - cell "breakout_momentum · high_volatility 20-bar range breakout + Volume 1.81x avg + ATR expansion" [ref=e505]:
+                  - generic [ref=e506]: breakout_momentum · high_volatility
+                  - generic [ref=e507]: 20-bar range breakout + Volume 1.81x avg + ATR expansion
+                - cell "₹50.41 → ₹68.21 Spread 4.4% · Charges ₹70" [ref=e508]:
+                  - text: ₹50.41 → ₹68.21
+                  - generic [ref=e509]: Spread 4.4% · Charges ₹70
+                - cell "+₹3,045.00 +34.4%" [ref=e510]:
+                  - text: +₹3,045.00
+                  - generic [ref=e511]: +34.4%
+                - cell "+₹3,433.50 39.5%" [ref=e512]:
+                  - text: +₹3,433.50
+                  - generic [ref=e513]: 39.5%
+                - cell "-4.0% / +43.9%" [ref=e514]
+                - cell "TRAILING_STOP · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e515]:
+                  - generic [ref=e516]: TRAILING_STOP · optimal_exit
+                  - generic [ref=e517]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e518]:
+                - cell "RELIANCE26NOV1380PE NSE-TRD-1049 · 16 Oct, 20:19 IST · 1L (500/lot) · DTE 14 · Δ -0.51" [ref=e519]:
+                  - generic [ref=e520]: RELIANCE26NOV1380PE
+                  - generic [ref=e521]: NSE-TRD-1049 · 16 Oct, 20:19 IST · 1L (500/lot) · DTE 14 · Δ -0.51
+                - cell "trend_following · trending_down EMA20 > EMA50 aligned + Spot > VWAP + ADX(14)=24.7 in trending_down" [ref=e522]:
+                  - generic [ref=e523]: trend_following · trending_down
+                  - generic [ref=e524]: EMA20 > EMA50 aligned + Spot > VWAP + ADX(14)=24.7 in trending_down
+                - cell "₹23.03 → ₹34.32 Spread 5.3% · Charges ₹70" [ref=e525]:
+                  - text: ₹23.03 → ₹34.32
+                  - generic [ref=e526]: Spread 5.3% · Charges ₹70
+                - cell "+₹5,575.00 +48.3%" [ref=e527]:
+                  - text: +₹5,575.00
+                  - generic [ref=e528]: +48.3%
+                - cell "+₹6,185.00 54.7%" [ref=e529]:
+                  - text: +₹6,185.00
+                  - generic [ref=e530]: 54.7%
+                - cell "-3.3% / +53.3%" [ref=e531]
+                - cell "TAKE_PROFIT · optimal_exit Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread." [ref=e532]:
+                  - generic [ref=e533]: TAKE_PROFIT · optimal_exit
+                  - generic [ref=e534]: Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.
+              - row [ref=e535]:
+                - cell "FINNIFTY26NOV23900CE NSE-TRD-1048 · 15 Oct, 18:40 IST · 1L (65/lot) · DTE 20 · Δ 0.46" [ref=e536]:
+                  - generic [ref=e537]: FINNIFTY26NOV23900CE
+                  - generic [ref=e538]: NSE-TRD-1048 · 15 Oct, 18:40 IST · 1L (65/lot) · DTE 20 · Δ 0.46
+                - cell "breakout_momentum · trending_up 20-bar range breakout + Volume 1.88x avg + ATR expansion" [ref=e539]:
+                  - generic [ref=e540]: breakout_momentum · trending_up
+                  - generic [ref=e541]: 20-bar range breakout + Volume 1.88x avg + ATR expansion
+                - cell "₹140.75 → ₹111.25 Spread 4.9% · Charges ₹70" [ref=e542]:
+                  - text: ₹140.75 → ₹111.25
+                  - generic [ref=e543]: Spread 4.9% · Charges ₹70
+                - cell "-₹1,987.50 -21.6%" [ref=e544]:
+                  - text: "-₹1,987.50"
+                  - generic [ref=e545]: "-21.6%"
+                - cell "-₹1,637.35 -18.2%" [ref=e546]:
+                  - text: "-₹1,637.35"
+                  - generic [ref=e547]: "-18.2%"
+                - cell "-24.6% / +19.2%" [ref=e548]
+                - cell "TIME_STOP_DAYS · wrong_direction Underlying failed to follow through on 5m trigger; directional thesis invalidated before target." [ref=e549]:
+                  - generic [ref=e550]: TIME_STOP_DAYS · wrong_direction
+                  - generic [ref=e551]: Underlying failed to follow through on 5m trigger; directional thesis invalidated before target.
+              - row [ref=e552]:
+                - cell "BANKNIFTY26NOV51700CE NSE-TRD-1047 · 15 Oct, 03:50 IST · 1L (30/lot) · DTE 27 · Δ 0.48" [ref=e553]:
+                  - generic [ref=e554]: BANKNIFTY26NOV51700CE
+                  - generic [ref=e555]: NSE-TRD-1047 · 15 Oct, 03:50 IST · 1L (30/lot) · DTE 27 · Δ 0.48
+                - cell "breakout_momentum · high_volatility 20-bar range breakout + Volume 1.69x avg + ATR expansion" [ref=e556]:
+                  - generic [ref=e557]: breakout_momentum · high_volatility
+                  - generic [ref=e558]: 20-bar range breakout + Volume 1.69x avg + ATR expansion
+                - cell "₹293.48 → ₹245.98 Spread 2.2% · Charges ₹70" [ref=e559]:
+                  - text: ₹293.48 → ₹245.98
+                  - generic [ref=e560]: Spread 2.2% · Charges ₹70
+                - cell "-₹1,495.00 -16.9%" [ref=e561]:
+                  - text: "-₹1,495.00"
+                  - generic [ref=e562]: "-16.9%"
+                - cell "-₹1,299.90 -14.9%" [ref=e563]:
+                  - text: "-₹1,299.90"
+                  - generic [ref=e564]: "-14.9%"
+                - cell "-22.4% / +11.8%" [ref=e565]
+                - cell "SIGNAL_REVERSAL · wrong_direction Underlying failed to follow through on 5m trigger; directional thesis invalidated before target." [ref=e566]:
+                  - generic [ref=e567]: SIGNAL_REVERSAL · wrong_direction
+                  - generic [ref=e568]: Underlying failed to follow through on 5m trigger; directional thesis invalidated before target.
+  - contentinfo [ref=e50]:
+    - generic [ref=e51]: AegisQuant Indian NSE F&O Paper-Trading Monorepo · Oracle Cloud Always Free VM (Mumbai/Hyderabad) + Neon Serverless Postgres + Vercel Hobby (₹0/mo)
+    - generic [ref=e52]: "Paper Trading Only (`paper-sandbox.nseindia-sim.local`) · Zero Live Execution Code Paths"

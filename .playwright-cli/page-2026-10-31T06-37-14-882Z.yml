@@ -1,0 +1,213 @@
+- generic [ref=e3]:
+  - region "Paper Trading Safety Disclosure" [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e8]: PAPER TRADING - NOT REAL MONEY
+      - generic [aria-hidden] [ref=e9]: ·
+      - generic [ref=e10]: Indian NSE F&O (NIFTY / BANKNIFTY / FINNIFTY / Stock Options) · Read-Only Web Role (web_ro) · ₹0/mo Oracle VM + Neon + Vercel
+    - generic [ref=e11]: "SEBI Honesty Notice: ~90% of individual F&O traders lose money; paper results typically overstate live performance."
+  - banner [ref=e12]:
+    - link "AegisQuant NSE" [ref=e13] [cursor=pointer]:
+      - /url: "#overview"
+    - navigation "Primary Navigation" [ref=e14]:
+      - button "Overview" [ref=e15]
+      - button "Positions & Trades" [ref=e16]
+      - button "Performance & Backtest" [ref=e17]
+      - button "Learning & Health" [active] [ref=e18]
+      - button "Bot & Deploy Files" [ref=e19]
+    - button "Pause New Entries" [ref=e21]
+  - generic [ref=e24]:
+    - generic [ref=e25]:
+      - generic [ref=e26]:
+        - text: "Status:"
+        - strong [ref=e27]: Running (NSE Paper)
+      - generic [aria-hidden] [ref=e28]: ·
+      - generic [ref=e29]: "Regime: trending_down"
+      - generic [aria-hidden] [ref=e30]: ·
+      - generic [ref=e31]: "INDIA VIX: 13.75"
+      - generic [aria-hidden] [ref=e32]: ·
+      - generic [ref=e33]: "NIFTY 50: 23,058.84"
+      - generic [aria-hidden] [ref=e34]: ·
+      - generic [ref=e35]: "Sample Size: 72 of 200 trades needed for a meaningful read"
+    - generic [ref=e36]:
+      - button "Simulate Offline (>10m Heartbeat)" [ref=e37]
+      - 'button "Timezone: Asia/Kolkata (IST)" [ref=e38]'
+      - button "Switch to Light Mode" [ref=e42]: Light Theme
+  - main [ref=e49]:
+    - generic [ref=e819]:
+      - generic [ref=e820]:
+        - generic [ref=e821]:
+          - generic [ref=e822]:
+            - heading "Champion vs. Challenger (Shadow Mode Governance)" [level=2] [ref=e823]
+            - generic [ref=e824]: "Active: v1.3.0-nse-walkforward · Shadow: v2.0.0-nse-gbdt-ensemble"
+          - paragraph [ref=e825]: Shadow Challenger v1.4.0-nse-shadow has completed 54/50 shadow NSE trades with higher conservative expectancy (+₹640.00 vs +₹485.00/trade) and lower max drawdown (4.1% vs 4.8%). Eligible for promotion.
+          - generic [ref=e826]:
+            - generic [ref=e827]:
+              - generic [ref=e828]: Active Champion (v1.3.0-nse-walkforward)
+              - generic [ref=e829]:
+                - text: "Expectancy:"
+                - generic [ref=e830]: +₹2,432.38/trade
+              - generic [ref=e831]: "Max Drawdown: 4.8%"
+            - generic [ref=e832]:
+              - generic [ref=e833]: Shadow Challenger (v2.0.0-nse-gbdt-ensemble)
+              - generic [ref=e834]:
+                - text: "Expectancy:"
+                - generic [ref=e835]: +₹2,821.56/trade
+              - generic [ref=e836]: "Max Drawdown: 4.1% · Shadow Trades: 62/50"
+          - generic [ref=e837]:
+            - button "Promote Shadow Challenger (v2.0.0-nse-gbdt-ensemble)" [ref=e838]
+            - button "Rollback to Previous Champion (v1.2.0-nse-walkforward)" [ref=e839]
+        - generic [ref=e840]:
+          - generic [ref=e841]:
+            - heading "Trade-Quality Gate (L2 Logistic Regression (Calibrated))" [level=2] [ref=e842]
+            - generic [ref=e843]: "Walk-Forward AUC: 0.700 · Gate Threshold: P(win) >= 68%"
+          - paragraph [ref=e844]: "Anti-overfitting guard: Uses L2-regularized Logistic Regression until >= 128 closed NSE trades (72/128 currently), trained strictly via time-ordered walk-forward splits."
+          - generic [ref=e845]:
+            - generic [ref=e847]:
+              - generic [ref=e848]: signal_confidence
+              - generic [ref=e849]: +1.45 · Composite indicator alignment score (EMA20/50 + VWAP + ADX)
+            - generic [ref=e853]:
+              - generic [ref=e854]: spread_pct_of_mid
+              - generic [ref=e855]: "-1.38 · Penalizes wide NSE option bid-ask spreads (> 4.5% of mid)"
+            - generic [ref=e859]:
+              - generic [ref=e860]: adx_14_trend_strength
+              - generic [ref=e861]: +0.89 · Favors strong directional trend regimes on NIFTY & BANKNIFTY
+            - generic [ref=e865]:
+              - generic [ref=e866]: iv_rank_pct_over_70
+              - generic [ref=e867]: "-1.12 · Avoids buying expensive premium susceptible to INDIA VIX crush"
+            - generic [ref=e871]:
+              - generic [ref=e872]: midday_1015_1330_ist
+              - generic [ref=e873]: "-0.74 · Penalizes low-volume IST midday chop entries (10:15–13:30 IST)"
+            - generic [ref=e877]:
+              - generic [ref=e878]: dte_14_to_28_bucket
+              - generic [ref=e879]: +0.66 · Favors NSE monthly/bi-weekly contracts with lower gamma/theta decay
+      - generic [ref=e882]:
+        - heading "Thompson Sampling Capital-Allocation Bandit (Strategy × Regime × NSE Underlying)" [level=2] [ref=e883]
+        - paragraph [ref=e884]: Enforces >= 30 closed trades per bucket before adapting from uniform prior, and maintains a hard 5.0% minimum allocation floor so no NSE bucket is permanently starved.
+        - table [ref=e886]:
+          - rowgroup [ref=e887]:
+            - row [ref=e888]:
+              - columnheader "Strategy × Regime × NSE Underlying Bucket" [ref=e889]
+              - columnheader "Wins / Losses" [ref=e890]
+              - columnheader "Total Trades" [ref=e891]
+              - columnheader "Bandit Weight" [ref=e892]
+              - columnheader "Risk Budget Mult (Cap 1.0x)" [ref=e893]
+              - columnheader "Adaptation Status" [ref=e894]
+          - rowgroup [ref=e895]:
+            - row [ref=e896]:
+              - cell "trend_following × trending_up × NIFTY (Lot 75)" [ref=e897]
+              - cell "23W / 11L" [ref=e898]
+              - cell "34" [ref=e899]
+              - cell "28.4%" [ref=e900]
+              - cell "0.98x" [ref=e901]
+              - cell "Active Adaptation (34 trades)" [ref=e902]
+            - row [ref=e903]:
+              - cell "breakout_momentum × trending_up × BANKNIFTY (Lot 30)" [ref=e904]
+              - cell "20W / 12L" [ref=e905]
+              - cell "32" [ref=e906]
+              - cell "26.3%" [ref=e907]
+              - cell "0.91x" [ref=e908]
+              - cell "Active Adaptation (32 trades)" [ref=e909]
+            - row [ref=e910]:
+              - cell "mean_reversion × range × FINNIFTY (Lot 65)" [ref=e911]
+              - cell "11W / 8L" [ref=e912]
+              - cell "19" [ref=e913]
+              - cell "24.3%" [ref=e914]
+              - cell "0.84x" [ref=e915]
+              - cell "Warmup Prior (18/30 trades)" [ref=e916]
+            - row [ref=e917]:
+              - cell "trend_following × trending_down × HDFCBANK (Lot 550)" [ref=e918]
+              - cell "9W / 6L" [ref=e919]
+              - cell "15" [ref=e920]
+              - cell "15.5%" [ref=e921]
+              - cell "0.85x" [ref=e922]
+              - cell "Warmup Prior (15/30 trades)" [ref=e923]
+            - row [ref=e924]:
+              - cell "breakout_momentum × high_volatility × RELIANCE (Lot 500)" [ref=e925]
+              - cell "5W / 11L" [ref=e926]
+              - cell "16" [ref=e927]
+              - cell "5.0%" [ref=e928]
+              - cell "0.55x" [ref=e929]
+              - cell "Clamped at 5.0% Exploration Floor" [ref=e930]
+            - row [ref=e931]:
+              - cell "trend_following × trending_up × TCS (Lot 175)" [ref=e932]
+              - cell "8W / 6L" [ref=e933]
+              - cell "14" [ref=e934]
+              - cell "10.0%" [ref=e935]
+              - cell "0.80x" [ref=e936]
+              - cell "Warmup Prior (14/30 trades)" [ref=e937]
+      - generic [ref=e938]:
+        - generic [ref=e939]:
+          - heading "Learning Audit Log (Bounded ±10% Saturday 10:00 IST Tuning & Promotions)" [level=3] [ref=e940]
+          - generic [ref=e941]:
+            - generic [ref=e942]:
+              - generic [ref=e943]:
+                - generic [ref=e944]: LL-LIVE-1025 · WALK_FORWARD_ONLINE_RETRAIN · Model v1.3.0-nse-walkforward
+                - generic [ref=e945]: 31 Oct, 12:07 IST
+              - generic [ref=e946]: "Walk-Forward AUC -> 0.700: N=69 trades → N=72 trades (Recent Expectancy: +₹2432/trade) (N=72 · 90% CI: [+₹1338, +₹3527] / trade)"
+              - paragraph [ref=e947]: Online walk-forward retrain completed across 72 closed NSE trades and 9 counterfactual skipped signals (Gate saved ~₹14,670 across 9 avoided losing setups).
+            - generic [ref=e948]:
+              - generic [ref=e949]:
+                - generic [ref=e950]: LL-LIVE-1015 · WALK_FORWARD_ONLINE_RETRAIN · Model v1.3.0-nse-walkforward
+                - generic [ref=e951]: 31 Oct, 12:06 IST
+              - generic [ref=e952]: "Walk-Forward AUC -> 0.699: N=64 trades → N=67 trades (Recent Expectancy: +₹2094/trade) (N=67 · 90% CI: [+₹1152, +₹3036] / trade)"
+              - paragraph [ref=e953]: Online walk-forward retrain completed across 67 closed NSE trades and 7 counterfactual skipped signals (Gate saved ~₹13,433 across 7 avoided losing setups).
+            - generic [ref=e954]:
+              - generic [ref=e955]:
+                - generic [ref=e956]: LL-LIVE-1005 · WALK_FORWARD_ONLINE_RETRAIN · Model v1.3.0-nse-walkforward
+                - generic [ref=e957]: 31 Oct, 12:05 IST
+              - generic [ref=e958]: "Walk-Forward AUC -> 0.699: N=64 trades → N=66 trades (Recent Expectancy: +₹2148/trade) (N=66 · 90% CI: [+₹1182, +₹3115] / trade)"
+              - paragraph [ref=e959]: Online walk-forward retrain completed across 66 closed NSE trades and 6 counterfactual skipped signals (Gate saved ~₹12,798 across 6 avoided losing setups).
+            - generic [ref=e960]:
+              - generic [ref=e961]:
+                - generic [ref=e962]: LL-2026-104 · CAPITAL_PRESERVATION_GATE · Model v1.3.0-nse-walkforward
+                - generic [ref=e963]: 29 Oct, 12:05 IST
+              - generic [ref=e964]: "quality_gate.min_win_probability: 0.67 (67% Hard Floor) → 0.68 (68% Recommended 2.1:1 Odds) (N=64 · 90% CI: [+₹490.00, +₹1,380.00] / trade)"
+              - paragraph [ref=e965]: "Capital-Preservation Policy: Locked hard floor at P(gain) >= 67% and set active threshold to 68.0% (2.1:1 odds) + Breakeven-Lock stop (+2.5% floor once MFE >= +18%) to eliminate borderline spread/theta losses."
+            - generic [ref=e966]:
+              - generic [ref=e967]:
+                - generic [ref=e968]: LL-2026-103 · BANDIT_POSTERIOR_UPDATE · Model v1.3.0-nse-walkforward
+                - generic [ref=e969]: 22 Oct, 12:05 IST
+              - generic [ref=e970]: "trend_following × trending_up × NIFTY: 0.240 weight → 0.285 weight (N=32 · 90% CI: [54.2%, 76.8%] win rate)"
+              - paragraph [ref=e971]: Bucket crossed 30-trade threshold with 65.6% conservative win rate; Thompson Sampling increased risk multiplier to 1.00x cap.
+            - generic [ref=e972]:
+              - generic [ref=e973]:
+                - generic [ref=e974]: LL-2026-102 · COUNTERFACTUAL_RETRAIN · Model v1.2.0-nse-walkforward
+                - generic [ref=e975]: 15 Oct, 12:05 IST
+              - generic [ref=e976]: "contracts.max_spread_pct_of_mid: 0.080 → 0.074 (-7.5%) (N=52 · 90% CI: [+₹110.00, +₹440.00] / trade)"
+              - paragraph [ref=e977]: Counterfactual log confirmed 78% of skipped wide-spread stock option signals (>7.4% spread) would have lost money after ₹35/lot charges.
+        - generic [ref=e978]:
+          - generic [ref=e979]:
+            - heading "Oracle Cloud Mumbai VM & DB Outbox Health" [level=3] [ref=e980]
+            - paragraph [ref=e981]: Outbound-only VM telemetry · Heartbeat > 10m during 09:15–15:30 IST triggers red OFFLINE banner
+          - generic [ref=e982]:
+            - generic [ref=e983]:
+              - generic [ref=e984]: "Bot Instance:"
+              - generic [ref=e985]: oci-ap-mumbai-1-arm-bot-01
+            - generic [ref=e986]:
+              - generic [ref=e987]: "Last Heartbeat:"
+              - generic [ref=e988]: 31 Oct, 12:07 IST (0m ago)
+            - generic [ref=e989]:
+              - generic [ref=e990]: "Last DB Write:"
+              - generic [ref=e991]: 31 Oct, 12:07 IST
+            - generic [ref=e992]:
+              - generic [ref=e993]: "NIFTY 50 / BANKNIFTY Spot:"
+              - generic [ref=e994]: 23,058.84 / 54,697.1
+            - generic [ref=e995]:
+              - generic [ref=e996]: "SQLite Outbox Queue:"
+              - generic [ref=e997]: 0 pending rows
+            - generic [ref=e998]:
+              - generic [ref=e999]: "Ledger vs Paper Mismatches:"
+              - generic [ref=e1000]: "0"
+            - generic [ref=e1001]:
+              - generic [ref=e1002]: "Stale Quotes Rejected (>180s):"
+              - generic [ref=e1003]: "2"
+            - generic [ref=e1004]:
+              - generic [ref=e1005]: "VM Memory / Budget:"
+              - generic [ref=e1006]: 214.6 MB / 380.0 MB
+            - generic [ref=e1007]:
+              - generic [ref=e1008]: "Control Row Updated By:"
+              - generic [ref=e1009]: bot_rw (Oracle VM systemd)
+          - button "Simulate VM Stopped (>10m Heartbeat Test Step F)" [ref=e1011]
+  - contentinfo [ref=e50]:
+    - generic [ref=e51]: AegisQuant Indian NSE F&O Paper-Trading Monorepo · Oracle Cloud Always Free VM (Mumbai/Hyderabad) + Neon Serverless Postgres + Vercel Hobby (₹0/mo)
+    - generic [ref=e52]: "Paper Trading Only (`paper-sandbox.nseindia-sim.local`) · Zero Live Execution Code Paths"

@@ -1,0 +1,124 @@
+- generic [ref=e3]:
+  - region "Paper Trading Safety Disclosure" [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e8]: PAPER TRADING - NOT REAL MONEY
+      - generic [aria-hidden] [ref=e9]: ·
+      - generic [ref=e10]: Indian NSE F&O (NIFTY / BANKNIFTY / FINNIFTY / Stock Options) · Read-Only Web Role (web_ro) · ₹0/mo Oracle VM + Neon + Vercel
+    - generic [ref=e11]: "SEBI Honesty Notice: ~90% of individual F&O traders lose money; paper results typically overstate live performance."
+  - banner [ref=e12]:
+    - link "AegisQuant NSE" [ref=e13] [cursor=pointer]:
+      - /url: "#overview"
+    - navigation "Primary Navigation" [ref=e14]:
+      - button "Overview" [ref=e15]
+      - button "Positions & Trades" [ref=e16]
+      - button "Performance & Backtest" [ref=e17]
+      - button "Learning & Health" [ref=e18]
+      - button "Bot & Deploy Files" [active] [ref=e19]
+    - button "Pause New Entries" [ref=e21]
+  - generic [ref=e24]:
+    - generic [ref=e25]:
+      - generic [ref=e26]:
+        - text: "Status:"
+        - strong [ref=e27]: Running (NSE Paper)
+      - generic [aria-hidden] [ref=e28]: ·
+      - generic [ref=e29]: "Regime: trending_down"
+      - generic [aria-hidden] [ref=e30]: ·
+      - generic [ref=e31]: "INDIA VIX: 13.75"
+      - generic [aria-hidden] [ref=e32]: ·
+      - generic [ref=e33]: "NIFTY 50: 23,058.84"
+      - generic [aria-hidden] [ref=e34]: ·
+      - generic [ref=e35]: "Sample Size: 72 of 200 trades needed for a meaningful read"
+    - generic [ref=e36]:
+      - button "Simulate Offline (>10m Heartbeat)" [ref=e37]
+      - 'button "Timezone: Asia/Kolkata (IST)" [ref=e38]'
+      - button "Switch to Light Mode" [ref=e42]: Light Theme
+  - main [ref=e49]:
+    - generic [ref=e1012]:
+      - generic [ref=e1013]:
+        - generic [ref=e1014]:
+          - heading "1. How to Read This Website (Plain English)" [level=2] [ref=e1015]
+          - paragraph [ref=e1016]:
+            - strong [ref=e1017]: "Why there are two equity curves:"
+            - text: Standard paper-trading sandboxes fill NSE option orders optimistically at the mid-price. In live Indian F&O trading, market makers capture part of the bid-ask spread and you pay brokerage + STT + NSE exchange turnover + SEBI + GST charges. Our headline
+            - strong [ref=e1018]: Conservative Simulation
+            - text: deducts
+            - code [ref=e1019]: 35% of the spread
+            - text: on entry,
+            - code [ref=e1020]: 35%
+            - text: on exit, and
+            - code [ref=e1021]: ₹35/lot
+            - text: per leg. Always judge the bot by the blue Conservative Simulation curve.
+          - paragraph [ref=e1022]:
+            - strong [ref=e1023]: "Read-Only Security Boundary:"
+            - text: This Vercel dashboard connects using the
+            - code [ref=e1024]: web_ro
+            - text: Postgres role. It cannot place, modify, or cancel orders. Its only write permission is toggling
+            - code [ref=e1025]: control.new_entries_enabled
+            - text: .
+        - generic [ref=e1026]:
+          - heading "2. How the Bot Learns Without Overfitting" [level=2] [ref=e1027]
+          - paragraph [ref=e1028]:
+            - strong [ref=e1029]: "Counterfactual + Post-Mortem Loop:"
+            - text: Every closed NSE trade gets an automatic diagnosis (
+            - code [ref=e1030]: theta_or_iv_crush
+            - text: ","
+            - code [ref=e1031]: stopped_out_then_reversed
+            - text: ", etc.), and skipped signals are simulated for 5 days so the learner sees what it missed."
+          - paragraph [ref=e1032]:
+            - strong [ref=e1033]: "4 Deterministic Learners:"
+            - text: (1) L2 Logistic Regression Quality Gate trained on time-ordered walk-forward splits (upgrades to Gradient Boosting only after >= 300 trades), (2) Thompson Sampling Bandit with a 5% minimum floor, (3) Saturday 10:00 IST
+            - code [ref=e1034]: ±10%
+            - text: bounded parameter tuning gated by a 90% bootstrap CI, and (4) Shadow Challenger requiring >= 50 shadow trades before promotion.
+        - generic [ref=e1035]:
+          - heading "3. Known Limitations & SEBI Honesty Checklist" [level=2] [ref=e1036]
+          - paragraph [ref=e1037]:
+            - strong [ref=e1038]: SEBI studies show ~90% of individual F&O traders lose money.
+            - text: "Paper results almost always overstate live results. Key limitations: (a) Free NSE option chain feeds are delayed/indicative rather than tick-by-tick colocation feeds, (b) backtest prices use Black-Scholes IV approximations, and (c) Oracle Free Tier VMs in Mumbai/Hyderabad can be reclaimed after 7 days of low CPU unless upgraded to Pay-As-You-Go (₹0 inside Always Free limits)."
+          - paragraph [ref=e1039]: "Go/No-Go Gate: >=200 trades · >=8-12 wks · Cons PF > 1.3 · DD < 10% · >=2 regimes."
+      - generic [ref=e1040]:
+        - generic [ref=e1041]:
+          - heading "Complete Monorepo File Explorer (/bot, /deploy, /web, README.md)" [level=2] [ref=e1048]
+          - button "Copy README.md" [ref=e1049]
+        - generic [ref=e1053]:
+          - generic [ref=e1054]:
+            - button "README.md" [ref=e1055]
+            - button "bot/config.yaml" [ref=e1056]
+            - button "bot/.env.example" [ref=e1057]
+            - button "bot/requirements.txt" [ref=e1058]
+            - button "bot/src/config.py" [ref=e1059]
+            - button "bot/src/calendar_utils.py" [ref=e1060]
+            - button "bot/src/interfaces.py" [ref=e1061]
+            - button "bot/src/alpaca_client.py" [ref=e1062]
+            - button "bot/src/regime.py" [ref=e1063]
+            - button "bot/src/strategies.py" [ref=e1064]
+            - button "bot/src/fills.py" [ref=e1065]
+            - button "bot/src/exits.py" [ref=e1066]
+            - button "bot/src/risk.py" [ref=e1067]
+            - button "bot/src/backtester.py" [ref=e1068]
+            - button "bot/src/journal.py" [ref=e1069]
+            - button "bot/src/db.py" [ref=e1070]
+            - button "bot/src/learning.py" [ref=e1071]
+            - button "bot/src/alerts.py" [ref=e1072]
+            - button "bot/src/main.py" [ref=e1073]
+            - button "bot/tests/test_bot_core.py" [ref=e1074]
+            - button "deploy/install.sh" [ref=e1075]
+            - button "deploy/aegis-options-bot.service" [ref=e1076]
+            - button "deploy/migrations/001_initial_schema.sql" [ref=e1077]
+            - button "deploy/migrations/002_roles_and_permissions.sql" [ref=e1078]
+            - button "web/.env.example" [ref=e1079]
+            - button "web/package.json" [ref=e1080]
+            - button "web/middleware.ts" [ref=e1081]
+            - button "web/lib/db.ts" [ref=e1082]
+            - button "web/app/api/overview/route.ts" [ref=e1083]
+            - button "web/app/api/positions/route.ts" [ref=e1084]
+            - button "web/app/api/trades/route.ts" [ref=e1085]
+            - button "web/app/api/performance/route.ts" [ref=e1086]
+            - button "web/app/api/learning/route.ts" [ref=e1087]
+            - button "web/app/api/health/route.ts" [ref=e1088]
+            - button "web/app/api/control/route.ts" [ref=e1089]
+          - generic [ref=e1090]:
+            - generic [ref=e1091]: /README.md
+            - generic [ref=e1095]: "# AegisQuant — Self-Learning Indian NSE F&O Paper-Trading Options Bot & Monorepo > **MANDATORY HONESTY & SEBI F&O RISK DISCLOSURE (PAPER TRADING ONLY)** > - **This system is strictly for PAPER TRADING on Indian NSE F&O (`NIFTY`, `BANKNIFTY`, `FINNIFTY`, and liquid Stock Options).** There is no live order-execution code path anywhere in this repository, and the bot refuses to start if `PAPER_TRADING_ONLY` is disabled or pointed at any live brokerage endpoint. > - **Never assume this bot will be profitable.** Official SEBI studies on Indian equity F&O traders show that **~9 out of 10 individual F&O traders in India incur net losses** after accounting for bid-ask spreads, Securities Transaction Tax (STT), NSE exchange turnover charges, SEBI fees, GST, and brokerage. Paper-trading results almost always overstate live results because paper fills do not move the order book or suffer adverse selection. --- ## Go / No-Go Checklist Before Anyone Ever Considers Real Money Do **not** consider building a live execution adapter unless **every single criterion below** is satisfied in unbroken out-of-sample NSE paper trading: - [ ] **Minimum Sample Size:** `>= 200` closed NSE paper trades logged in the `trades` table. - [ ] **Minimum Calendar Duration:** `>= 8 to 12 weeks` of continuous forward operation across weekly and monthly NSE expiries. - [ ] **Positive Conservative Expectancy:** Expectancy `> ₹0 / trade` on the **Conservative Simulation** curve (`mid ± 35% of bid-ask spread` + `₹35/lot` per leg statutory & brokerage charges)—not the optimistic broker mid/LTP fill curve. - [ ] **Profit Factor:** Conservative Profit Factor `> 1.30`. - [ ] **Drawdown Compliance:** Maximum peak-to-trough drawdown strictly `< 10.0%` (`< ₹1,00,000` on `₹10,00,000` virtual capital) with zero unhandled reconciliation mismatches. - [ ] **Multi-Regime Robustness:** Positive conservative expectancy demonstrated across **at least two distinct Indian market regimes** (e.g., `trending_up` and `range` or `high_volatility` when `INDIA VIX >= 20`). --- ## Indian Market Configuration (`config.yaml`) - **Exchange & Hours:** NSE India (`09:15 IST – 15:30 IST`, `Asia/Kolkata`, `XBOM` calendar skipping Indian market holidays via `pandas_market_calendars`). Intraday flatten window runs at `15:15 IST` (15 minutes before the `15:30 IST` close). - **Universe & NSE Lot Sizes:** - **Index Options:** `NIFTY` (Lot: `75`), `BANKNIFTY` (Lot: `30`), `FINNIFTY` (Lot: `65`) - **Liquid Stock Options:** `RELIANCE` (Lot: `500`), `TCS` (Lot: `175`), `HDFCBANK` (Lot: `550`), `INFY` (Lot: `400`), `ICICIBANK` (Lot: `700`), `SBIN` (Lot: `750`) - **Benchmarks:** `NIFTY 50` Buy-and-Hold (`NIFTY_BENCHMARK`) and **`INDIA VIX`** (`^INDIAVIX`). - **Contract Nomenclature:** NSE standard `CE` (Call European) and `PE` (Put European), e.g., `NIFTY26NOV24500CE`, `BANKNIFTY26NOV52000PE`. - **Starting Paper Capital:** `₹10,00,000` (`₹10 Lakhs` virtual capital). - **Pessimistic Fill & Statutory Cost Model:** - Buy at `mid + 35% of bid-ask spread`, Sell at `mid - 35% of spread`. - Plus **`₹35 per lot per leg`** (`₹20` flat discount brokerage + `~₹15/lot` covering STT on options sell, NSE exchange turnover charges, Stamp Duty, SEBI fees, and 18% GST). --- ## Step-by-Step Deployment Guide (Oracle Cloud Mumbai/Hyderabad VM + Neon + Vercel) ### Step A: Configure Indian NSE Paper Sandbox & Optional Free Market Feed 1. The bot runs out of the box using the built-in **NSE Paper Sandbox (`https://paper-sandbox.nseindia-sim.local`)** and free NSE indicative option-chain quotes (`₹0/month`). 2. *(Optional)* If you have a free read-only market-data API key from **Dhan**, **AngelOne SmartAPI**, or **Flattrade**, you can paste `NSE_DATA_API_KEY` into `/etc/aegis-bot/bot.env` solely for fetching option chain quotes. **Never enable live order permissions.** ### Step B: Create the Free Hosted Postgres Database (Neon Mumbai/Singapore or Supabase) 1. Create a free project on **Neon** (select `ap-southeast-1` Singapore or Mumbai region for low latency to India) or **Supabase**. 2. Open the SQL Editor and run `deploy/migrations/001_initial_schema.sql` to create all 12 tables and indexes. 3. Edit `deploy/migrations/002_roles_and_permissions.sql` with strong passwords for `bot_rw` and `web_ro`, then execute it: - `bot_rw`: Full R/W access used **only** by the Oracle Cloud VM. - `web_ro`: `SELECT` on all tables + `UPDATE (new_entries_enabled, updated_at, updated_by)` on `control` (`id=1`) **only** (used by Vercel). ### Step C: Provision & Harden the Oracle Cloud Always Free VM (Mumbai or Hyderabad Region) 1. In Oracle Cloud Infrastructure (OCI), create an Ubuntu 22.04/24.04 instance in **Mumbai (`ap-mumbai-1`)** or **Hyderabad (`ap-hyderabad-1`)**. 2. **Shape:** Choose `VM.Standard.A1.Flex` (Ampere ARM64) or fallback `VM.Standard.E2.1.Micro` (AMD 1 GB RAM). Our `deploy/install.sh` automatically creates a **2 GB `/swapfile`** and caps memory under `380 MB`. 3. **Security List:** Allow inbound **TCP Port 22 (SSH) ONLY**. Open zero other inbound ports. 4. SSH into your VM and run: ```bash git clone https://github.com/YOUR_USERNAME/aegis-options-bot.git sudo bash aegis-options-bot/deploy/install.sh sudo nano /etc/aegis-bot/bot.env sudo chmod 600 /etc/aegis-bot/bot.env ``` ### Step D: Push `/web` to GitHub and Deploy on Vercel 1. Import the repo into Vercel with **Root Directory** = `web`. 2. Add environment variables: `DATABASE_URL_WEB_RO` (pooled `-pooler` connection string using `web_ro`), `CONTROL_PAUSE_SECRET`, and optional `DASHBOARD_PASSCODE`. 3. Click **Deploy**. ### Step E & F: Dry Run, Start Service & Verify Offline Banner 1. Run a single NSE dry-run cycle on the VM: ```bash sudo -u aegisbot /opt/aegis-options-bot/bot/.venv/bin/python -m src.main --dry-run-once ``` 2. Start the systemd service: ```bash sudo systemctl enable --now aegis-options-bot sudo journalctl -u aegis-options-bot -f ``` 3. Verify on your Vercel dashboard that heartbeats appear in **IST (`Asia/Kolkata`)**, test trades log in `₹` INR with lot sizes (`75` for `NIFTY`, `30` for `BANKNIFTY`), and stopping the service triggers the red **`BOT OFFLINE`** banner when the heartbeat exceeds 10 minutes during `09:15–15:30 IST`."
+  - contentinfo [ref=e50]:
+    - generic [ref=e51]: AegisQuant Indian NSE F&O Paper-Trading Monorepo · Oracle Cloud Always Free VM (Mumbai/Hyderabad) + Neon Serverless Postgres + Vercel Hobby (₹0/mo)
+    - generic [ref=e52]: "Paper Trading Only (`paper-sandbox.nseindia-sim.local`) · Zero Live Execution Code Paths"

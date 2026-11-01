@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { formatInr, NSE_LOT_SIZES, OptionRight, simulatePessimisticFill } from '../quant/engine';
+import { OneMonthHistoricalReplayReport } from '../quant/historicalReplay';
 import { StrategyBacktestRow } from '../quant/seedStore';
 
 interface BreakdownGroup {
@@ -31,6 +32,8 @@ interface PerformanceAndBacktestViewProps {
   byDteBucket: BreakdownGroup[];
   byTimeOfDay: BreakdownGroup[];
   backtestResults: StrategyBacktestRow[];
+  historicalReplayReport?: OneMonthHistoricalReplayReport | null;
+  onRunHistoricalReplay?: () => Promise<void>;
   onRunDryRunCycle: (symbol: string, strategy: string, right: OptionRight) => Promise<void>;
 }
 
@@ -42,6 +45,8 @@ export const PerformanceAndBacktestView: React.FC<PerformanceAndBacktestViewProp
   byDteBucket,
   byTimeOfDay,
   backtestResults,
+  historicalReplayReport,
+  onRunHistoricalReplay,
   onRunDryRunCycle,
 }) => {
   const [simSymbol, setSimSymbol] = useState('NIFTY');
@@ -52,6 +57,7 @@ export const PerformanceAndBacktestView: React.FC<PerformanceAndBacktestViewProp
   const [cycleStrategy, setCycleStrategy] = useState('trend_following');
   const [cycleRight, setCycleRight] = useState<OptionRight>('CE');
   const [runningCycle, setRunningCycle] = useState(false);
+  const [runningReplay, setRunningReplay] = useState(false);
 
   const lotSize = NSE_LOT_SIZES[simSymbol] ?? 75;
   const parsedBid = Math.max(0.5, Number(simBid) || 145);
@@ -75,8 +81,226 @@ export const PerformanceAndBacktestView: React.FC<PerformanceAndBacktestViewProp
     }
   };
 
+  const handleRunReplayClick = async () => {
+    if (!onRunHistoricalReplay) return;
+    setRunningReplay(true);
+    try {
+      await onRunHistoricalReplay();
+    } finally {
+      setRunningReplay(false);
+    }
+  };
+
   return (
     <div className="space-y-8">
+      {/* 1-Month Real Angel One Historical F&O Audit */}
+      {historicalReplayReport && (
+        <section className="bg-white dark:bg-slate-900 border-2 border-emerald-500/40 dark:border-emerald-500/30 rounded-lg p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
+                <span className="text-xs font-mono uppercase tracking-wider text-emerald-600 dark:text-emerald-400 font-semibold">
+                  Real Angel One SmartAPI Historical Audit · Synthetic Simulation Stopped
+                </span>
+              </div>
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mt-1">
+                1-Month Real Historical NSE F&amp;O Replay ({historicalReplayReport.fromDateIst.slice(0, 10)} → {historicalReplayReport.toDateIst.slice(0, 10)})
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Executed chronologically bar-by-bar across{' '}
+                <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">
+                  {historicalReplayReport.totalFiveMinCandlesProcessed.toLocaleString('en-IN')}
+                </span>{' '}
+                real 5-minute candles ({historicalReplayReport.tradingDaysCount} NSE trading sessions) from{' '}
+                <span className="font-mono">{historicalReplayReport.dataSource}</span> with zero lookahead, Kaufman Trend Efficiency filtering, and ₹70/lot roundtrip statutory charges.
+              </p>
+            </div>
+            {onRunHistoricalReplay && (
+              <button
+                type="button"
+                disabled={runningReplay}
+                onClick={handleRunReplayClick}
+                className="px-3.5 py-2 text-xs font-semibold rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white transition-colors cursor-pointer shrink-0"
+              >
+                {runningReplay
+                  ? 'Fetching 16,104 Angel One Candles...'
+                  : 'Re-Run 1-Month Real Angel One Audit'}
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 py-4 border-y border-slate-200 dark:border-slate-800 mb-5">
+            <div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">Net Cons P&amp;L (1M Real)</div>
+              <div
+                className={`text-lg font-mono tabular-nums font-bold mt-0.5 ${
+                  historicalReplayReport.netConservativePnlInr >= 0
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-rose-600 dark:text-rose-400'
+                }`}
+              >
+                {formatInr(historicalReplayReport.netConservativePnlInr, true)} (
+                {historicalReplayReport.netConservativeReturnPct >= 0 ? '+' : ''}
+                {historicalReplayReport.netConservativeReturnPct.toFixed(2)}%)
+              </div>
+              <div className="text-[11px] font-mono text-slate-500">
+                Paper Mid: {formatInr(historicalReplayReport.endingBrokerPaperEquityInr - historicalReplayReport.startingCapitalInr, true)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">Real-Candle Win Rate</div>
+              <div className="text-lg font-mono tabular-nums font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+                {historicalReplayReport.winRatePct.toFixed(1)}%
+              </div>
+              <div className="text-[11px] font-mono text-slate-500">
+                {historicalReplayReport.winsCount}W / {historicalReplayReport.lossesCount}L ({historicalReplayReport.totalTradesClosed} trades · {historicalReplayReport.signalsSkippedByGateCount} gate-skipped)
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">Profit Factor</div>
+              <div className="text-lg font-mono tabular-nums font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">
+                {historicalReplayReport.profitFactor.toFixed(2)}
+              </div>
+              <div className="text-[11px] font-mono text-slate-500">
+                Expectancy: {formatInr(historicalReplayReport.expectancyPerTradeInr, true)}/trade
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">Avg Win / Avg Loss</div>
+              <div className="text-sm font-mono tabular-nums font-semibold mt-1">
+                <span className="text-emerald-600 dark:text-emerald-400">
+                  +₹{Math.round(historicalReplayReport.avgWinInr).toLocaleString('en-IN')}
+                </span>{' '}
+                /{' '}
+                <span className="text-rose-600 dark:text-rose-400">
+                  -₹{Math.round(Math.abs(historicalReplayReport.avgLossInr)).toLocaleString('en-IN')}
+                </span>
+              </div>
+              <div className="text-[11px] font-mono text-slate-500">2-Leg Defined-Risk Spreads</div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">Max Drawdown</div>
+              <div className="text-lg font-mono tabular-nums font-bold text-slate-900 dark:text-slate-100 mt-0.5">
+                {historicalReplayReport.maxDrawdownPct.toFixed(2)}%
+              </div>
+              <div className="text-[11px] font-mono text-slate-500">
+                Sharpe Ratio: {historicalReplayReport.sharpeRatio.toFixed(2)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">Statutory Charges Paid</div>
+              <div className="text-lg font-mono tabular-nums font-semibold text-amber-600 dark:text-amber-400 mt-0.5">
+                ₹{historicalReplayReport.totalStatutoryChargesPaidInr.toLocaleString('en-IN')}
+              </div>
+              <div className="text-[11px] font-mono text-slate-500">₹35/lot/leg STT+Brokerage+GST</div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
+                1-Month Real Market Performance by NSE Underlying (Angel One 5m Candles)
+              </h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs font-mono tabular-nums">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-sans">
+                      <th className="py-1.5">Underlying</th>
+                      <th className="py-1.5 text-right">1M Spot Move</th>
+                      <th className="py-1.5 text-right">Trades</th>
+                      <th className="py-1.5 text-right">Win Rate</th>
+                      <th className="py-1.5 text-right">Net Cons P&amp;L</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 dark:divide-slate-800/70">
+                    {historicalReplayReport.byUnderlying.map((u) => (
+                      <tr key={u.underlying}>
+                        <td className="py-1.5 font-semibold text-slate-900 dark:text-slate-100">
+                          {u.underlying}
+                        </td>
+                        <td
+                          className={`py-1.5 text-right ${
+                            u.underlyingReturnPct >= 0
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-rose-600 dark:text-rose-400'
+                          }`}
+                        >
+                          {u.startSpot.toFixed(1)} → {u.endSpot.toFixed(1)} (
+                          {u.underlyingReturnPct >= 0 ? '+' : ''}
+                          {u.underlyingReturnPct.toFixed(2)}%)
+                        </td>
+                        <td className="py-1.5 text-right">
+                          {u.trades > 0 ? `${u.trades} (${u.wins}W)` : '0 (Filtered)'}
+                        </td>
+                        <td className="py-1.5 text-right">
+                          {u.trades > 0 ? `${u.winRatePct.toFixed(1)}%` : '—'}
+                        </td>
+                        <td
+                          className={`py-1.5 text-right font-semibold ${
+                            u.netPnlInr > 0
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : u.netPnlInr < 0
+                              ? 'text-rose-600 dark:text-rose-400'
+                              : 'text-slate-400'
+                          }`}
+                        >
+                          {u.trades > 0 ? formatInr(u.netPnlInr, true) : '₹0.00'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
+                Chronological Real-Candle Trade Execution Log ({historicalReplayReport.totalTradesClosed} Trades)
+              </h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs font-mono tabular-nums">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-sans">
+                      <th className="py-1.5">Contract Spread</th>
+                      <th className="py-1.5">Entry → Exit (IST)</th>
+                      <th className="py-1.5 text-right">Fill (₹)</th>
+                      <th className="py-1.5 text-right">Exit Reason</th>
+                      <th className="py-1.5 text-right">Net P&amp;L</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 dark:divide-slate-800/70">
+                    {(historicalReplayReport.replayTrades ?? []).map((t) => (
+                      <tr key={t.id}>
+                        <td className="py-1.5 font-semibold text-slate-900 dark:text-slate-100">
+                          {t.sym}
+                        </td>
+                        <td className="py-1.5 text-[11px] text-slate-500">
+                          {t.open.slice(5, 16).replace('T', ' ')} → {t.close.slice(5, 16).replace('T', ' ')}
+                        </td>
+                        <td className="py-1.5 text-right">
+                          ₹{t.entry.toFixed(2)} → ₹{t.exit.toFixed(2)}
+                        </td>
+                        <td className="py-1.5 text-right text-[11px]">{t.reason}</td>
+                        <td
+                          className={`py-1.5 text-right font-semibold ${
+                            t.pnl >= 0
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-rose-600 dark:text-rose-400'
+                          }`}
+                        >
+                          {formatInr(t.pnl, true)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Sample-Size Meter & Go/No-Go Statistical Readiness */}
       <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-6">
         <div className="flex flex-wrap items-center justify-between gap-4 mb-3">

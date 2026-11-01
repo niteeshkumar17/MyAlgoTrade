@@ -29,6 +29,7 @@ import {
   SkippedSignalCounterfactual,
 } from './quant/engine';
 import { LiveSpotQuote } from './quant/livePaperRunner';
+import { OneMonthHistoricalReplayReport } from './quant/historicalReplay';
 import { QuantSystemState, StrategyBacktestRow } from './quant/seedStore';
 
 type ActiveSection = 'overview' | 'positions' | 'performance' | 'learning' | 'code';
@@ -87,6 +88,7 @@ export default function App() {
       sampleSizeTarget: number;
     };
     equitySeries: EquitySnapshotPoint[];
+    historicalReplayReport?: OneMonthHistoricalReplayReport | null;
   } | null>(null);
 
   const [positions, setPositions] = useState<OpenOptionPosition[]>([]);
@@ -147,6 +149,7 @@ export default function App() {
       brokerPaperNetPnlInr: number;
     }>;
     backtestResults: StrategyBacktestRow[];
+    historicalReplayReport?: OneMonthHistoricalReplayReport | null;
   } | null>(null);
 
   const [learningData, setLearningData] = useState<QuantSystemState['learning'] | null>(null);
@@ -325,6 +328,18 @@ export default function App() {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ symbol, strategy, right }),
+    });
+    await fetchAllTelemetry();
+  };
+
+  const handleRunHistoricalReplay = async () => {
+    await fetch('/api/historical-replay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        fromDateIst: '2026-09-29 09:15',
+        toDateIst: '2026-10-30 15:30',
+      }),
     });
     await fetchAllTelemetry();
   };
@@ -1027,6 +1042,10 @@ export default function App() {
             byDteBucket={perfData.byDteBucket}
             byTimeOfDay={perfData.byTimeOfDay}
             backtestResults={perfData.backtestResults}
+            historicalReplayReport={
+              perfData.historicalReplayReport ?? overviewData?.historicalReplayReport ?? null
+            }
+            onRunHistoricalReplay={handleRunHistoricalReplay}
             onRunDryRunCycle={handleRunDryRunCycle}
           />
         )}

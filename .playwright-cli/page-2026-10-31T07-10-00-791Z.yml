@@ -1,0 +1,38 @@
+- generic [ref=e3]:
+  - region "Paper Trading Safety Disclosure" [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e8]: PAPER TRADING - NOT REAL MONEY
+      - generic [aria-hidden] [ref=e9]: ·
+      - generic [ref=e10]: Indian NSE F&O (NIFTY / BANKNIFTY / FINNIFTY / Stock Options) · Read-Only Web Role (web_ro) · ₹0/mo Oracle VM + Neon + Vercel
+    - generic [ref=e11]: "SEBI Honesty Notice: ~90% of individual F&O traders lose money; paper results typically overstate live performance."
+  - banner [ref=e12]:
+    - link "AegisQuant NSE" [ref=e13] [cursor=pointer]:
+      - /url: "#overview"
+    - navigation "Primary Navigation" [ref=e14]:
+      - button "Overview" [ref=e15]
+      - button "Positions & Trades" [ref=e16]
+      - button "Performance & Backtest" [ref=e17]
+      - button "Learning & Health" [ref=e18]
+      - button "Bot & Deploy Files" [ref=e19]
+    - button "Pause New Entries" [ref=e21]
+  - generic [ref=e24]:
+    - generic [ref=e25]:
+      - generic [ref=e26]:
+        - text: "Status:"
+        - strong [ref=e27]: Running (NSE Paper)
+      - generic [aria-hidden] [ref=e28]: ·
+      - generic [ref=e29]: "Regime: trending_up"
+      - generic [aria-hidden] [ref=e30]: ·
+      - generic [ref=e31]: "INDIA VIX: 14.25"
+      - generic [aria-hidden] [ref=e32]: ·
+      - generic [ref=e33]: "NIFTY 50: 24,482.6"
+      - generic [aria-hidden] [ref=e34]: ·
+      - generic [ref=e35]: "Sample Size: 64 of 200 trades needed for a meaningful read"
+    - generic [ref=e36]:
+      - button "Simulate Offline (>10m Heartbeat)" [ref=e37]
+      - 'button "Timezone: Asia/Kolkata (IST)" [ref=e38]'
+      - button "Switch to Light Mode" [ref=e42]: Light Theme
+  - main [ref=e49]
+  - contentinfo [ref=e50]:
+    - generic [ref=e51]: AegisQuant Indian NSE F&O Paper-Trading Monorepo · Oracle Cloud Always Free VM (Mumbai/Hyderabad) + Neon Serverless Postgres + Vercel Hobby (₹0/mo)
+    - generic [ref=e52]: "Paper Trading Only (`paper-sandbox.nseindia-sim.local`) · Zero Live Execution Code Paths"

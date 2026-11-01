@@ -1,0 +1,311 @@
+- generic [ref=e3]:
+  - region "Paper Trading Safety Disclosure" [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e8]: PAPER TRADING - NOT REAL MONEY
+      - generic [aria-hidden] [ref=e9]: ·
+      - generic [ref=e10]: Indian NSE F&O (NIFTY / BANKNIFTY / FINNIFTY / Stock Options) · Read-Only Web Role (web_ro) · ₹0/mo Oracle VM + Neon + Vercel
+    - generic [ref=e11]: "SEBI Honesty Notice: ~90% of individual F&O traders lose money; paper results typically overstate live performance."
+  - banner [ref=e12]:
+    - link "AegisQuant NSE" [ref=e13] [cursor=pointer]:
+      - /url: "#overview"
+    - navigation "Primary Navigation" [ref=e14]:
+      - button "Overview" [ref=e15]
+      - button "Positions & Trades" [ref=e16]
+      - button "Performance & Backtest" [active] [ref=e17]
+      - button "Learning & Health" [ref=e18]
+      - button "Bot & Deploy Files" [ref=e19]
+    - button "Pause New Entries" [ref=e21]
+  - generic [ref=e24]:
+    - generic [ref=e25]:
+      - generic [ref=e26]:
+        - text: "Status:"
+        - strong [ref=e27]: Running (NSE Paper)
+      - generic [aria-hidden] [ref=e28]: ·
+      - generic [ref=e29]: "Regime: trending_down"
+      - generic [aria-hidden] [ref=e30]: ·
+      - generic [ref=e31]: "INDIA VIX: 13.75"
+      - generic [aria-hidden] [ref=e32]: ·
+      - generic [ref=e33]: "NIFTY 50: 23,058.84"
+      - generic [aria-hidden] [ref=e34]: ·
+      - generic [ref=e35]: "Sample Size: 72 of 200 trades needed for a meaningful read"
+    - generic [ref=e36]:
+      - button "Simulate Offline (>10m Heartbeat)" [ref=e37]
+      - 'button "Timezone: Asia/Kolkata (IST)" [ref=e38]'
+      - button "Switch to Light Mode" [ref=e42]: Light Theme
+  - main [ref=e49]:
+    - generic [ref=e569]:
+      - generic [ref=e570]:
+        - generic [ref=e571]:
+          - generic [ref=e572]:
+            - heading "Statistical Sample-Size Meter & SEBI F&O Go/No-Go Readiness" [level=2] [ref=e573]
+            - paragraph [ref=e574]: "Honesty rule: SEBI studies show ~90% of individual NSE F&O traders lose money net of statutory charges. At least 200 closed trades across >= 8-12 weeks and >= 2 regimes are required before any statistical conclusion is meaningful."
+          - generic [ref=e575]: 72 of 200 closed trades (36%)
+        - generic [ref=e578]:
+          - generic [ref=e579]:
+            - generic [ref=e580]: Win Rate (Cons)
+            - generic [ref=e581]: 72.2%
+          - generic [ref=e582]:
+            - generic [ref=e583]: Avg Win / Avg Loss
+            - generic [ref=e584]:
+              - generic [ref=e585]: +₹3,414
+              - generic [ref=e586]: /
+              - generic [ref=e587]: "-₹2,182"
+          - generic [ref=e588]:
+            - generic [ref=e589]: Profit Factor
+            - generic [ref=e590]: "4.07"
+          - generic [ref=e591]:
+            - generic [ref=e592]: Expectancy / Trade
+            - generic [ref=e593]: +₹1,859.72
+          - generic [ref=e594]:
+            - generic [ref=e595]: Max Drawdown
+            - generic [ref=e596]: 1.00%
+          - generic [ref=e597]:
+            - generic [ref=e598]: Sharpe-Style Ratio
+            - generic [ref=e599]: "4.76"
+      - generic [ref=e600]:
+        - generic [ref=e601]:
+          - heading "Breakdown by Strategy & Market Regime (₹ INR)" [level=3] [ref=e602]
+          - table [ref=e603]:
+            - rowgroup [ref=e604]:
+              - row [ref=e605]:
+                - columnheader "Strategy" [ref=e606]
+                - columnheader "Trades" [ref=e607]
+                - columnheader "Win Rate" [ref=e608]
+                - columnheader "Expectancy (₹)" [ref=e609]
+                - columnheader "Cons Net P&L (₹)" [ref=e610]
+            - rowgroup [ref=e611]:
+              - row [ref=e612]:
+                - cell "trend_following" [ref=e613]
+                - cell "18" [ref=e614]
+                - cell "72.2%" [ref=e615]
+                - cell "+₹1,345.19" [ref=e616]
+                - cell "+₹24,213.35" [ref=e617]
+              - row [ref=e618]:
+                - cell "mean_reversion" [ref=e619]
+                - cell "23" [ref=e620]
+                - cell "78.3%" [ref=e621]
+                - cell "+₹2,452.33" [ref=e622]
+                - cell "+₹56,403.65" [ref=e623]
+              - row [ref=e624]:
+                - cell "breakout_momentum" [ref=e625]
+                - cell "31" [ref=e626]
+                - cell "67.7%" [ref=e627]
+                - cell "+₹1,718.81" [ref=e628]
+                - cell "+₹53,283.15" [ref=e629]
+          - heading "Performance by Market Regime (NIFTY 50 + INDIA VIX)" [level=4] [ref=e630]
+          - table [ref=e631]:
+            - rowgroup [ref=e632]:
+              - row [ref=e633]:
+                - columnheader "Regime" [ref=e634]
+                - columnheader "Trades" [ref=e635]
+                - columnheader "Win Rate" [ref=e636]
+                - columnheader "Cons Net P&L (₹)" [ref=e637]
+            - rowgroup [ref=e638]:
+              - row [ref=e639]:
+                - cell "trending_down" [ref=e640]
+                - cell "7" [ref=e641]
+                - cell "85.7%" [ref=e642]
+                - cell "+₹14,854.95" [ref=e643]
+              - row [ref=e644]:
+                - cell "range" [ref=e645]
+                - cell "23" [ref=e646]
+                - cell "78.3%" [ref=e647]
+                - cell "+₹56,403.65" [ref=e648]
+              - row [ref=e649]:
+                - cell "trending_up" [ref=e650]
+                - cell "29" [ref=e651]
+                - cell "62.1%" [ref=e652]
+                - cell "+₹34,621.90" [ref=e653]
+              - row [ref=e654]:
+                - cell "high_volatility" [ref=e655]
+                - cell "13" [ref=e656]
+                - cell "76.9%" [ref=e657]
+                - cell "+₹28,019.65" [ref=e658]
+        - generic [ref=e659]:
+          - heading "Breakdown by NSE Underlying, DTE Bucket & IST Session Window" [level=3] [ref=e660]
+          - table [ref=e661]:
+            - rowgroup [ref=e662]:
+              - row [ref=e663]:
+                - columnheader "NSE Underlying" [ref=e664]
+                - columnheader "Trades" [ref=e665]
+                - columnheader "Win Rate" [ref=e666]
+                - columnheader "Cons Net P&L" [ref=e667]
+                - columnheader "Paper Broker P&L" [ref=e668]
+            - rowgroup [ref=e669]:
+              - row [ref=e670]:
+                - cell "BANKNIFTY (Lot 30)" [ref=e671]
+                - cell "8" [ref=e672]
+                - cell "87.5%" [ref=e673]
+                - cell "+₹23,546.20" [ref=e674]
+                - cell "+₹26,100.60" [ref=e675]
+              - row [ref=e676]:
+                - cell "NIFTY (Lot 75)" [ref=e677]
+                - cell "10" [ref=e678]
+                - cell "80.0%" [ref=e679]
+                - cell "+₹22,610.50" [ref=e680]
+                - cell "+₹26,662.50" [ref=e681]
+              - row [ref=e682]:
+                - cell "INFY (Lot 400)" [ref=e683]
+                - cell "8" [ref=e684]
+                - cell "75.0%" [ref=e685]
+                - cell "+₹18,124.00" [ref=e686]
+                - cell "+₹21,612.00" [ref=e687]
+              - row [ref=e688]:
+                - cell "SBIN (Lot 750)" [ref=e689]
+                - cell "7" [ref=e690]
+                - cell "71.4%" [ref=e691]
+                - cell "+₹17,915.00" [ref=e692]
+                - cell "+₹21,082.50" [ref=e693]
+              - row [ref=e694]:
+                - cell "TCS (Lot 175)" [ref=e695]
+                - cell "7" [ref=e696]
+                - cell "85.7%" [ref=e697]
+                - cell "+₹15,678.25" [ref=e698]
+                - cell "+₹18,333.00" [ref=e699]
+              - row [ref=e700]:
+                - cell "RELIANCE (Lot 500)" [ref=e701]
+                - cell "9" [ref=e702]
+                - cell "77.8%" [ref=e703]
+                - cell "+₹13,670.00" [ref=e704]
+                - cell "+₹17,240.00" [ref=e705]
+          - generic [ref=e706]:
+            - generic [ref=e707]:
+              - generic [ref=e708]: By NSE Expiry Bucket
+              - generic [ref=e709]:
+                - generic [ref=e710]: 22-35 DTE (Monthly)
+                - generic [ref=e711]: 18t · 67% · +₹31,829.35
+              - generic [ref=e712]:
+                - generic [ref=e713]: 14-21 DTE
+                - generic [ref=e714]: 31t · 81% · +₹66,690.20
+              - generic [ref=e715]:
+                - generic [ref=e716]: 7-13 DTE (Weekly)
+                - generic [ref=e717]: 23t · 65% · +₹35,380.60
+            - generic [ref=e718]:
+              - generic [ref=e719]: By Session Window (IST)
+              - generic [ref=e720]:
+                - generic [ref=e721]: MIDDAY 1015 1330
+                - generic [ref=e722]: 22t · 82% · +₹44,735.65
+              - generic [ref=e723]:
+                - generic [ref=e724]: AFTERNOON 1330 1530
+                - generic [ref=e725]: 26t · 62% · +₹41,426.00
+              - generic [ref=e726]:
+                - generic [ref=e727]: OPEN 0915 1015
+                - generic [ref=e728]: 24t · 75% · +₹47,738.50
+      - generic [ref=e729]:
+        - generic [ref=e730]:
+          - heading "Walk-Forward Pre-Paper Backtester (NSE Black-Scholes Approximation)" [level=3] [ref=e731]
+          - paragraph [ref=e732]: "Approximation disclosure: Prices historical 18-DTE ~0.45-delta NSE options via Black-Scholes (RBI 91d T-bill r=6.8%, estimated IV = 1.18 × 20-day realized vol) and applies the exact mid ± 35% spread + ₹35/lot fee model."
+          - table [ref=e733]:
+            - rowgroup [ref=e734]:
+              - row [ref=e735]:
+                - columnheader "Strategy" [ref=e736]
+                - columnheader "Trades" [ref=e737]
+                - columnheader "Win %" [ref=e738]
+                - columnheader "Expectancy (₹)" [ref=e739]
+                - columnheader "PF" [ref=e740]
+                - columnheader "Max DD" [ref=e741]
+                - columnheader "Sharpe" [ref=e742]
+            - rowgroup [ref=e743]:
+              - row [ref=e744]:
+                - cell "trend_following" [ref=e745]
+                - cell "142" [ref=e746]
+                - cell "57.8%" [ref=e747]
+                - cell "+₹725.40" [ref=e748]
+                - cell "1.54" [ref=e749]
+                - cell "5.2%" [ref=e750]
+                - cell "1.78" [ref=e751]
+              - row [ref=e752]:
+                - cell "breakout_momentum" [ref=e753]
+                - cell "118" [ref=e754]
+                - cell "53.4%" [ref=e755]
+                - cell "+₹582.10" [ref=e756]
+                - cell "1.41" [ref=e757]
+                - cell "6.8%" [ref=e758]
+                - cell "1.52" [ref=e759]
+              - row [ref=e760]:
+                - cell "mean_reversion" [ref=e761]
+                - cell "94" [ref=e762]
+                - cell "55.3%" [ref=e763]
+                - cell "+₹412.80" [ref=e764]
+                - cell "1.33" [ref=e765]
+                - cell "4.4%" [ref=e766]
+                - cell "1.44" [ref=e767]
+          - generic [ref=e768]:
+            - generic [ref=e769]: Execute Dry-Run 5-Minute IST Decision Cycle (Test Verification Step E/F)
+            - generic [ref=e770]:
+              - generic [ref=e771]:
+                - generic [ref=e772]: NSE Underlying
+                - combobox "NSE Underlying" [ref=e773]:
+                  - option "NIFTY (Lot 75)" [selected]
+                  - option "BANKNIFTY (Lot 30)"
+                  - option "FINNIFTY (Lot 65)"
+                  - option "RELIANCE (Lot 500)"
+                  - option "TCS (Lot 175)"
+                  - option "HDFCBANK (Lot 550)"
+                  - option "ICICIBANK (Lot 700)"
+              - generic [ref=e774]:
+                - generic [ref=e775]: Strategy Module
+                - combobox "Strategy Module" [ref=e776]:
+                  - option "trend_following" [selected]
+                  - option "breakout_momentum"
+                  - option "mean_reversion"
+              - generic [ref=e777]:
+                - generic [ref=e778]: Option Type (CE / PE)
+                - combobox "Option Type (CE / PE)" [ref=e779]:
+                  - option "CE (Long Call)" [selected]
+                  - option "PE (Long Put)"
+            - button "Run Dry-Run Cycle & Log NSE Paper Trade" [ref=e780]
+        - generic [ref=e781]:
+          - heading "Pessimistic NSE Fill Simulator Inspector (Section 4)" [level=3] [ref=e782]
+          - paragraph [ref=e783]:
+            - text: "Inspect how the internal ledger penalizes paper fills: Buy at"
+            - code [ref=e784]: mid + 35% spread
+            - text: ", Sell at"
+            - code [ref=e785]: mid - 35% spread
+            - text: ", plus"
+            - code [ref=e786]: ₹35/lot
+            - text: statutory + brokerage charges.
+          - generic [ref=e787]:
+            - generic [ref=e788]:
+              - generic [ref=e789]: NSE Symbol
+              - combobox "NSE Symbol" [ref=e790]:
+                - option "NIFTY (75)" [selected]
+                - option "BANKNIFTY (30)"
+                - option "FINNIFTY (65)"
+                - option "RELIANCE (500)"
+                - option "TCS (175)"
+                - option "HDFCBANK (550)"
+                - option "INFY (400)"
+                - option "ICICIBANK (700)"
+                - option "SBIN (750)"
+            - generic [ref=e791]:
+              - generic [ref=e792]: Option Bid (₹)
+              - spinbutton "Option Bid (₹)" [ref=e793]: "145.00"
+            - generic [ref=e794]:
+              - generic [ref=e795]: Option Ask (₹)
+              - spinbutton "Option Ask (₹)" [ref=e796]: "148.50"
+            - generic [ref=e797]:
+              - generic [ref=e798]: Lots Qty
+              - spinbutton "Lots Qty" [ref=e799]: "1"
+          - generic [ref=e800]:
+            - generic [ref=e801]:
+              - generic [ref=e802]: "Lot Size / Total Contract Units:"
+              - generic [ref=e803]: 75 units/lot × 1 lot = 75 units
+            - generic [ref=e804]:
+              - generic [ref=e805]: "Quote Mid / Bid-Ask Spread:"
+              - generic [ref=e806]: ₹146.75 / ₹3.50 (2.39% of mid)
+            - generic [ref=e807]:
+              - generic [ref=e808]: "Conservative Entry Fill (mid + 35% spread):"
+              - generic [ref=e809]: ₹147.97 / unit
+            - generic [ref=e810]:
+              - generic [ref=e811]: "Conservative Exit Fill (mid - 35% spread):"
+              - generic [ref=e812]: ₹145.53 / unit
+            - generic [ref=e813]:
+              - generic [ref=e814]: "Roundtrip Charges (₹35/lot × 1L × 2 legs):"
+              - generic [ref=e815]: ₹70.00
+            - generic [ref=e816]:
+              - generic [ref=e817]: "Immediate Roundtrip Slippage + Charges Drag vs Mid:"
+              - generic [ref=e818]: "-₹253.00"
+  - contentinfo [ref=e50]:
+    - generic [ref=e51]: AegisQuant Indian NSE F&O Paper-Trading Monorepo · Oracle Cloud Always Free VM (Mumbai/Hyderabad) + Neon Serverless Postgres + Vercel Hobby (₹0/mo)
+    - generic [ref=e52]: "Paper Trading Only (`paper-sandbox.nseindia-sim.local`) · Zero Live Execution Code Paths"
