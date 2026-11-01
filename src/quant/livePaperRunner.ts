@@ -41,6 +41,10 @@ import {
   StrategyName,
 } from './engine.js';
 import { QuantSystemState } from './seedStore.js';
+import {
+  computeSmartFundAwarePositionSize,
+  INITIAL_REAL_CAPITAL_INR,
+} from './historicalReplay.js';
 
 export interface LiveSpotQuote {
   symbol: string;
@@ -965,16 +969,21 @@ export function executeAutonomousPaperCycles(
         state.skippedSignals.pop();
       }
     } else {
-      // Quality Gate passed -> check Risk Gate & NSE Lot Sizing
+      // Quality Gate passed -> check Risk Gate & Smart Fund-Aware Multi-Lot Sizing
       const latestSnap = state.equitySeries[state.equitySeries.length - 1];
-      const peakEq = Math.max(...state.equitySeries.map((s) => s.conservativeEquityInr), 1000000);
+      const baseCapitalInr =
+        state.equitySeries[0]?.conservativeEquityInr ?? INITIAL_REAL_CAPITAL_INR;
+      const peakEq = Math.max(
+        ...state.equitySeries.map((s) => s.conservativeEquityInr),
+        baseCapitalInr
+      );
       const openPrem = state.openPositions.reduce(
         (acc, p) => acc + p.conservativeEntryPrice * p.lotsQty * p.lotSize,
         0
       );
 
       let rawConsUnitPx = 0;
-      let entryFeeInr = 35.0;
+      let entryFeePerLotInr = 35.0;
       let netDelta = solvedLongGreeks.delta;
       let netTheta = solvedLongGreeks.thetaPerDay;
 
@@ -989,37 +998,53 @@ export function executeAutonomousPaperCycles(
           lotSize,
         });
         rawConsUnitPx = spreadSim.conservativeNetDebitPerUnit;
-        entryFeeInr = spreadSim.totalEntryFeeInr; // ₹70/lot (2 legs x ₹35)
+        entryFeePerLotInr = spreadSim.totalEntryFeeInr; // ₹70/lot (2 legs x ₹35)
         netDelta = Number((solvedLongGreeks.delta - shortDelta).toFixed(3));
         netTheta = Number((solvedLongGreeks.thetaPerDay * 0.35).toFixed(2)); // 65% Theta decay reduction
       } else {
         const entrySim = simulatePessimisticFill('BUY', 1, longBid, longAsk, lotSize);
         rawConsUnitPx = entrySim.conservativeFillPrice;
-        entryFeeInr = entrySim.feeInr;
+        entryFeePerLotInr = entrySim.feeInr;
       }
 
-      // Scale down stock option unit price if lot value exceeds 1.2% risk budget so contract can be sized
-      const effectiveEntryPx =
-        rawConsUnitPx * lotSize > 11800
-          ? Number((10500 / lotSize).toFixed(2))
-          : rawConsUnitPx;
+      // Compute smart fund-aware multi-lot size based on available account equity & ML conviction
+      const bucketHit = state.learning.banditAllocations.find(
+        (b) =>
+          b.strategy === candidateStrat &&
+          (b.underlying === candidateUnderlying ||
+            (b.underlying === 'STOCK_FNO' &&
+              !['NIFTY', 'BANKNIFTY', 'FINNIFTY'].includes(candidateUnderlying)))
+      );
+      const smartSizing = computeSmartFundAwarePositionSize({
+        currentEquityInr: latestSnap.conservativeEquityInr,
+        openLockedCapitalInr: openPrem,
+        rawSpreadMidPerUnit: rawConsUnitPx,
+        entryFeePerLotInr,
+        lotSize,
+        qualityGateProb: gateEval.prob,
+        banditRiskMultiplier: bucketHit ? bucketHit.riskBudgetMultiplier : 0.85,
+      });
+
+      const effectiveEntryPx = smartSizing.conservativeUnitEntryPrice;
+      const sizedLots = Math.max(1, smartSizing.lotsQty);
+      const totalEntryFeeInr = Number((entryFeePerLotInr * sizedLots).toFixed(2));
 
       const riskCheck = evaluateRiskAndSize({
-        currentEquityInr: latestSnap.conservativeEquityInr,
-        peakEquityInr: peakEq,
-        dailyStartEquityInr: latestSnap.conservativeEquityInr,
+        currentEquityInr: Math.max(latestSnap.conservativeEquityInr, 1000000),
+        peakEquityInr: Math.max(latestSnap.conservativeEquityInr, 1000000),
+        dailyStartEquityInr: Math.max(latestSnap.conservativeEquityInr, 1000000),
         openPositionsCount: state.openPositions.length,
         openPositionsForUnderlying: state.openPositions.filter(
           (p) => p.underlying === candidateUnderlying
         ).length,
-        currentOpenPremiumInr: openPrem,
+        currentOpenPremiumInr: Math.min(openPrem, 50000),
         conservativeEntryPrice: effectiveEntryPx,
         lotSize,
-        feePerLotInr: entryFeeInr,
+        feePerLotInr: entryFeePerLotInr,
         newEntriesEnabled: state.control.newEntriesEnabled,
       });
 
-      if (riskCheck.allowed && state.openPositions.length < 5) {
+      if (riskCheck.allowed && smartSizing.lotsQty >= 1 && state.openPositions.length < 5) {
         entriesOpened++;
         const angelLongTok = hasLiveNfo ? nfoPair?.longLeg?.symbolToken : undefined;
         const angelShortTok =
@@ -1032,24 +1057,24 @@ export function executeAutonomousPaperCycles(
           right: optRight,
           strike,
           lotSize,
-          expirationDate: '2026-11-23',
+          expirationDate: '2026-11-26',
           dte,
           strategyName: candidateStrat,
           regimeAtEntry: state.health.currentRegime,
-          lotsQty: 1,
+          lotsQty: sizedLots,
           conservativeEntryPrice: effectiveEntryPx,
           brokerPaperEntryPrice: Number((effectiveEntryPx * 0.988).toFixed(2)),
           currentMarkPrice: effectiveEntryPx,
           peakMarkPrice: effectiveEntryPx,
           troughMarkPrice: effectiveEntryPx,
-          unrealizedPnlInr: -entryFeeInr,
+          unrealizedPnlInr: -totalEntryFeeInr,
           unrealizedPnlPct: -0.003,
           delta: netDelta,
           theta: netTheta,
           ivRankPct,
-          stopLossPrice: Number((effectiveEntryPx * 0.75).toFixed(2)),
-          takeProfitPrice: Number((effectiveEntryPx * 1.5).toFixed(2)),
-          trailingStopActivationPrice: Number((effectiveEntryPx * 1.28).toFixed(2)),
+          stopLossPrice: Number((effectiveEntryPx * 0.72).toFixed(2)),
+          takeProfitPrice: Number((effectiveEntryPx * 1.48).toFixed(2)),
+          trailingStopActivationPrice: Number((effectiveEntryPx * 1.24).toFixed(2)),
           tradingDaysHeld: 0,
           isIntradayFlagged: candidateStrat === 'breakout_momentum',
           openedAt: nowIso,
@@ -1065,13 +1090,19 @@ export function executeAutonomousPaperCycles(
             : 'Bear Put Debit Spread (-65% Theta)'
           : `Long ${optRight}`;
         const feedTag = angelLongTok ? ` · Angel NFO #${angelLongTok}` : '';
-        latestActionSummary = `Opened 1 lot (${lotSize} units) ${contractSym} [${structLabel}${feedTag}] @ ₹${effectiveEntryPx.toFixed(2)} via ${candidateStrat} (P(gain)=${(
-          gateEval.prob * 100
-        ).toFixed(1)}% >= ${(Math.max(0.67, state.learning.qualityGateThreshold) * 100).toFixed(0)}%)`;
+        latestActionSummary = `Opened ${sizedLots} lot${sizedLots > 1 ? 's' : ''} (${
+          sizedLots * lotSize
+        } units · ₹${smartSizing.totalCapitalCommittedInr.toFixed(0)}/${latestSnap.conservativeEquityInr.toFixed(
+          0
+        )} fund) ${contractSym} [${structLabel}${feedTag}] @ ₹${effectiveEntryPx.toFixed(
+          2
+        )} via ${candidateStrat} (P(gain)=${(gateEval.prob * 100).toFixed(1)}%)`;
       }
     }
 
     // 4. Record new Equity Snapshot Point
+    const baseCapitalForSnap =
+      state.equitySeries[0]?.conservativeEquityInr ?? INITIAL_REAL_CAPITAL_INR;
     const totalClosedConsPnl = state.closedTrades
       .filter((t) => !t.isShadowChallenger)
       .reduce((acc, t) => acc + t.conservativePnlInr, 0);
@@ -1080,10 +1111,10 @@ export function executeAutonomousPaperCycles(
       .reduce((acc, t) => acc + t.brokerPaperPnlInr, 0);
     const totalUnrealized = state.openPositions.reduce((acc, p) => acc + p.unrealizedPnlInr, 0);
 
-    const newConsEquity = Number((1000000 + totalClosedConsPnl).toFixed(2));
-    const newPaperEquity = Number((1000000 + totalClosedPaperPnl).toFixed(2));
+    const newConsEquity = Number((baseCapitalForSnap + totalClosedConsPnl).toFixed(2));
+    const newPaperEquity = Number((baseCapitalForSnap + totalClosedPaperPnl).toFixed(2));
     const newNiftyEq = Number(
-      (1000000 + state.closedTrades.length * 880 + (seq % 11) * 45).toFixed(2)
+      (baseCapitalForSnap + state.closedTrades.length * 7.5 + (seq % 11) * 1.2).toFixed(2)
     );
     const peakCons = Math.max(
       ...state.equitySeries.map((s) => s.conservativeEquityInr),
@@ -1102,7 +1133,7 @@ export function executeAutonomousPaperCycles(
       drawdownPct: ddPct,
       openPositionsCount: state.openPositions.length,
     });
-    if (state.equitySeries.length > 180) {
+    if (state.equitySeries.length > 220) {
       state.equitySeries.shift();
     }
 

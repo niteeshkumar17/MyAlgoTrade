@@ -300,21 +300,7 @@ export const LearningAndHealthView: React.FC<LearningAndHealthViewProps> = ({
               onClick={onResetPaperLedger}
               className="w-full px-3 py-2 text-xs font-medium rounded-lg border border-blue-500/50 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 transition-colors"
             >
-              Reset Paper Ledger to ₹10,00,000 (Keep {learning.championVersion})
-            </button>
-
-            <button
-              type="button"
-              onClick={() => onToggleSimulateOffline(!health.isOffline)}
-              className={`w-full px-3 py-2 text-xs font-medium rounded-lg border transition-colors ${
-                health.isOffline
-                  ? 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-500'
-                  : 'border-rose-500/50 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10'
-              }`}
-            >
-              {health.isOffline
-                ? 'Restore Live Heartbeat (Clear OFFLINE Banner)'
-                : 'Simulate VM Stopped (>10m Heartbeat Test Step F)'}
+              Reset Paper Ledger to ₹10,000 (Keep 1Y Real {learning.championVersion})
             </button>
           </div>
         </section>

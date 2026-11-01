@@ -93,7 +93,7 @@ export const PerformanceAndBacktestView: React.FC<PerformanceAndBacktestViewProp
 
   return (
     <div className="space-y-8">
-      {/* 1-Month Real Angel One Historical F&O Audit */}
+      {/* 1-Year Real Angel One Historical F&O Training & Audit */}
       {historicalReplayReport && (
         <section className="bg-white dark:bg-slate-900 border-2 border-emerald-500/40 dark:border-emerald-500/30 rounded-lg p-6">
           <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
@@ -101,19 +101,19 @@ export const PerformanceAndBacktestView: React.FC<PerformanceAndBacktestViewProp
               <div className="flex items-center gap-2">
                 <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
                 <span className="text-xs font-mono uppercase tracking-wider text-emerald-600 dark:text-emerald-400 font-semibold">
-                  Real Angel One SmartAPI Historical Audit · Synthetic Simulation Stopped
+                  100% Real Angel One SmartAPI Historical Training · Zero Synthetic Simulation
                 </span>
               </div>
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mt-1">
-                1-Month Real Historical NSE F&amp;O Replay ({historicalReplayReport.fromDateIst.slice(0, 10)} → {historicalReplayReport.toDateIst.slice(0, 10)})
+                1-Year Real Historical NSE F&amp;O Replay ({historicalReplayReport.fromDateIst.slice(0, 10)} → {historicalReplayReport.toDateIst.slice(0, 10)} · ₹{historicalReplayReport.startingCapitalInr.toLocaleString('en-IN')} Capital)
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                 Executed chronologically bar-by-bar across{' '}
                 <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">
                   {historicalReplayReport.totalFiveMinCandlesProcessed.toLocaleString('en-IN')}
                 </span>{' '}
-                real 5-minute candles ({historicalReplayReport.tradingDaysCount} NSE trading sessions) from{' '}
-                <span className="font-mono">{historicalReplayReport.dataSource}</span> with zero lookahead, Kaufman Trend Efficiency filtering, and ₹70/lot roundtrip statutory charges.
+                real 1-hour candles ({historicalReplayReport.tradingDaysCount} NSE trading sessions) from{' '}
+                <span className="font-mono">{historicalReplayReport.dataSource}</span> with smart fund-aware multi-lot sizing (<span className="font-mono font-semibold">1L to {historicalReplayReport.maxLotsTraded ?? 5}L</span> scaled by available account funds) and ₹70/lot roundtrip statutory charges.
               </p>
             </div>
             {onRunHistoricalReplay && (
@@ -124,15 +124,15 @@ export const PerformanceAndBacktestView: React.FC<PerformanceAndBacktestViewProp
                 className="px-3.5 py-2 text-xs font-semibold rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white transition-colors cursor-pointer shrink-0"
               >
                 {runningReplay
-                  ? 'Fetching 16,104 Angel One Candles...'
-                  : 'Re-Run 1-Month Real Angel One Audit'}
+                  ? 'Replaying 17,140 Real Angel One Candles...'
+                  : 'Re-Run 1-Year Real Angel One Training (₹10k)'}
               </button>
             )}
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 py-4 border-y border-slate-200 dark:border-slate-800 mb-5">
             <div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">Net Cons P&amp;L (1M Real)</div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">₹10k → Ending Equity (1Y Real)</div>
               <div
                 className={`text-lg font-mono tabular-nums font-bold mt-0.5 ${
                   historicalReplayReport.netConservativePnlInr >= 0
@@ -140,25 +140,34 @@ export const PerformanceAndBacktestView: React.FC<PerformanceAndBacktestViewProp
                     : 'text-rose-600 dark:text-rose-400'
                 }`}
               >
-                {formatInr(historicalReplayReport.netConservativePnlInr, true)} (
+                {formatInr(historicalReplayReport.endingConservativeEquityInr)} (
                 {historicalReplayReport.netConservativeReturnPct >= 0 ? '+' : ''}
-                {historicalReplayReport.netConservativeReturnPct.toFixed(2)}%)
+                {historicalReplayReport.netConservativeReturnPct.toFixed(1)}%)
               </div>
               <div className="text-[11px] font-mono text-slate-500">
-                Paper Mid: {formatInr(historicalReplayReport.endingBrokerPaperEquityInr - historicalReplayReport.startingCapitalInr, true)}
+                Net P&amp;L: {formatInr(historicalReplayReport.netConservativePnlInr, true)}
               </div>
             </div>
             <div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">Real-Candle Win Rate</div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">1-Year Real Win Rate</div>
               <div className="text-lg font-mono tabular-nums font-bold text-slate-900 dark:text-slate-100 mt-0.5">
                 {historicalReplayReport.winRatePct.toFixed(1)}%
               </div>
               <div className="text-[11px] font-mono text-slate-500">
-                {historicalReplayReport.winsCount}W / {historicalReplayReport.lossesCount}L ({historicalReplayReport.totalTradesClosed} trades · {historicalReplayReport.signalsSkippedByGateCount} gate-skipped)
+                {historicalReplayReport.winsCount}W / {historicalReplayReport.lossesCount}L ({historicalReplayReport.totalTradesClosed} real trades)
               </div>
             </div>
             <div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">Profit Factor</div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">Smart Multi-Lot Scaling</div>
+              <div className="text-lg font-mono tabular-nums font-bold text-blue-600 dark:text-blue-400 mt-0.5">
+                {historicalReplayReport.minLotsTraded ?? 1}L → {historicalReplayReport.maxLotsTraded ?? 5}L
+              </div>
+              <div className="text-[11px] font-mono text-slate-500">
+                Avg Size: {historicalReplayReport.avgLotsTraded ?? 1.75} lots / trade
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">Profit Factor &amp; Expectancy</div>
               <div className="text-lg font-mono tabular-nums font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">
                 {historicalReplayReport.profitFactor.toFixed(2)}
               </div>
@@ -167,20 +176,7 @@ export const PerformanceAndBacktestView: React.FC<PerformanceAndBacktestViewProp
               </div>
             </div>
             <div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">Avg Win / Avg Loss</div>
-              <div className="text-sm font-mono tabular-nums font-semibold mt-1">
-                <span className="text-emerald-600 dark:text-emerald-400">
-                  +₹{Math.round(historicalReplayReport.avgWinInr).toLocaleString('en-IN')}
-                </span>{' '}
-                /{' '}
-                <span className="text-rose-600 dark:text-rose-400">
-                  -₹{Math.round(Math.abs(historicalReplayReport.avgLossInr)).toLocaleString('en-IN')}
-                </span>
-              </div>
-              <div className="text-[11px] font-mono text-slate-500">2-Leg Defined-Risk Spreads</div>
-            </div>
-            <div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">Max Drawdown</div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">Max Drawdown (1Y Real)</div>
               <div className="text-lg font-mono tabular-nums font-bold text-slate-900 dark:text-slate-100 mt-0.5">
                 {historicalReplayReport.maxDrawdownPct.toFixed(2)}%
               </div>
@@ -193,21 +189,21 @@ export const PerformanceAndBacktestView: React.FC<PerformanceAndBacktestViewProp
               <div className="text-lg font-mono tabular-nums font-semibold text-amber-600 dark:text-amber-400 mt-0.5">
                 ₹{historicalReplayReport.totalStatutoryChargesPaidInr.toLocaleString('en-IN')}
               </div>
-              <div className="text-[11px] font-mono text-slate-500">₹35/lot/leg STT+Brokerage+GST</div>
+              <div className="text-[11px] font-mono text-slate-500">₹70/lot roundtrip STT+Fee</div>
             </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div>
               <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
-                1-Month Real Market Performance by NSE Underlying (Angel One 5m Candles)
+                1-Year Real Market Performance by NSE Underlying (Angel One 1H Candles)
               </h3>
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs font-mono tabular-nums">
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-sans">
                       <th className="py-1.5">Underlying</th>
-                      <th className="py-1.5 text-right">1M Spot Move</th>
+                      <th className="py-1.5 text-right">1Y Spot Move</th>
                       <th className="py-1.5 text-right">Trades</th>
                       <th className="py-1.5 text-right">Win Rate</th>
                       <th className="py-1.5 text-right">Net Cons P&amp;L</th>
@@ -256,16 +252,15 @@ export const PerformanceAndBacktestView: React.FC<PerformanceAndBacktestViewProp
 
             <div>
               <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
-                Chronological Real-Candle Trade Execution Log ({historicalReplayReport.totalTradesClosed} Trades)
+                Recent Real-Candle Trade Execution Log ({historicalReplayReport.totalTradesClosed} Total 1Y Trades · Showing Latest 40)
               </h3>
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto max-h-80 overflow-y-auto">
                 <table className="w-full text-left border-collapse text-xs font-mono tabular-nums">
                   <thead>
-                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-sans">
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 font-sans sticky top-0 bg-white dark:bg-slate-900">
                       <th className="py-1.5">Contract Spread</th>
-                      <th className="py-1.5">Entry → Exit (IST)</th>
-                      <th className="py-1.5 text-right">Fill (₹)</th>
-                      <th className="py-1.5 text-right">Exit Reason</th>
+                      <th className="py-1.5 text-right">Lots (Fund)</th>
+                      <th className="py-1.5">Entry → Exit</th>
                       <th className="py-1.5 text-right">Net P&amp;L</th>
                     </tr>
                   </thead>
@@ -275,13 +270,12 @@ export const PerformanceAndBacktestView: React.FC<PerformanceAndBacktestViewProp
                         <td className="py-1.5 font-semibold text-slate-900 dark:text-slate-100">
                           {t.sym}
                         </td>
+                        <td className="py-1.5 text-right text-blue-600 dark:text-blue-400 font-semibold">
+                          {t.lotsQty ?? 1}L (₹{Math.round(t.capitalUsedInr ?? 1200).toLocaleString('en-IN')}/₹{Math.round(t.accountEquityAtEntryInr ?? 10000).toLocaleString('en-IN')})
+                        </td>
                         <td className="py-1.5 text-[11px] text-slate-500">
                           {t.open.slice(5, 16).replace('T', ' ')} → {t.close.slice(5, 16).replace('T', ' ')}
                         </td>
-                        <td className="py-1.5 text-right">
-                          ₹{t.entry.toFixed(2)} → ₹{t.exit.toFixed(2)}
-                        </td>
-                        <td className="py-1.5 text-right text-[11px]">{t.reason}</td>
                         <td
                           className={`py-1.5 text-right font-semibold ${
                             t.pnl >= 0

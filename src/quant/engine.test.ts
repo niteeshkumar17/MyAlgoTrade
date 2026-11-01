@@ -388,6 +388,55 @@ test('NSE IST market hours check and Option Expiration Payoff Curve compute accu
   assert.equal(payoff.maxLossInr < 0, true);
 });
 
+test('1-year real Angel One historical replay starts with ₹10,000 capital and scales position size from 1L to 5L dynamically with account funds', async () => {
+  const { buildInitialQuantState } = await import('./seedStore');
+  const {
+    computeSmartFundAwarePositionSize,
+    INITIAL_REAL_CAPITAL_INR,
+    runRealOneYearHistoricalReplay,
+  } = await import('./historicalReplay');
 
+  assert.equal(INITIAL_REAL_CAPITAL_INR, 10000);
 
+  // At ₹10,000 account equity, sizes 1 lot
+  const sizeAt10k = computeSmartFundAwarePositionSize({
+    currentEquityInr: 10000,
+    openLockedCapitalInr: 0,
+    rawSpreadMidPerUnit: 13.5,
+    entryFeePerLotInr: 35,
+    lotSize: 75,
+    qualityGateProb: 0.72,
+    banditRiskMultiplier: 0.9,
+  });
+  assert.equal(sizeAt10k.lotsQty, 1);
 
+  // At ₹38,000 account equity with high conviction, scales dynamically to >= 3 lots
+  const sizeAt38k = computeSmartFundAwarePositionSize({
+    currentEquityInr: 38000,
+    openLockedCapitalInr: 0,
+    rawSpreadMidPerUnit: 13.5,
+    entryFeePerLotInr: 35,
+    lotSize: 75,
+    qualityGateProb: 0.82,
+    banditRiskMultiplier: 1.05,
+  });
+  assert.equal(sizeAt38k.lotsQty >= 3, true);
+
+  // Run full 1-year real Angel One historical replay (17,140 real 1H candles)
+  const state = buildInitialQuantState();
+  const report = await runRealOneYearHistoricalReplay(
+    state,
+    '2025-11-01 09:15',
+    '2026-10-30 15:30',
+    10000,
+    false
+  );
+  assert.equal(report.startingCapitalInr, 10000);
+  assert.equal(report.totalFiveMinCandlesProcessed >= 17000, true);
+  assert.equal(report.totalTradesClosed >= 200, true);
+  assert.equal(report.winRatePct >= 65, true);
+  assert.equal(report.minLotsTraded, 1);
+  assert.equal(report.maxLotsTraded >= 3, true);
+  assert.equal(report.endingConservativeEquityInr > 25000, true);
+  assert.equal(state.learning.championVersion, 'v2.1.0-nse-gbdt-1y-real');
+});

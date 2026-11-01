@@ -333,15 +333,20 @@ export default function App() {
   };
 
   const handleRunHistoricalReplay = async () => {
-    await fetch('/api/historical-replay', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        fromDateIst: '2026-09-29 09:15',
-        toDateIst: '2026-10-30 15:30',
-      }),
-    });
-    await fetchAllTelemetry();
+    setSteppingCycles(true);
+    try {
+      await fetch('/api/historical-replay', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          fromDateIst: '2025-11-01 09:15',
+          toDateIst: '2026-10-30 15:30',
+        }),
+      });
+      await fetchAllTelemetry();
+    } finally {
+      setSteppingCycles(false);
+    }
   };
 
   const isOffline = overviewData?.health.isOffline ?? false;
@@ -539,13 +544,9 @@ export default function App() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => handleToggleSimulateOffline(!isOffline)}
-            className="px-2.5 py-1 text-xs font-medium border border-slate-300 dark:border-slate-700 rounded hover:bg-white dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
-          >
-            {isOffline ? 'Restore Heartbeat' : 'Simulate Offline (>10m Heartbeat)'}
-          </button>
+          <span className="px-2.5 py-1 text-xs font-mono font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 rounded whitespace-nowrap shrink-0">
+            100% Real Angel One Data · ₹10,000 Base · Smart Multi-Lot (1L–5L)
+          </span>
 
           <button
             type="button"
@@ -579,8 +580,8 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <Activity className="w-4 h-4 text-emerald-500" />
                     <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      Live NSE Paper Execution &amp; Self-Learning Engine (Cycle #
-                      {overviewData.liveRunner?.totalAutonomousCyclesRun ?? 1})
+                      1-Year Real Angel One Historical Training &amp; Live NSE F&amp;O Engine (
+                      {overviewData.headline.closedTradesCount} Real Trades · ₹10,000 Capital)
                     </h2>
                   </div>
                   <p className="text-xs font-mono text-slate-600 dark:text-slate-300">
@@ -591,14 +592,14 @@ export default function App() {
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={handleToggleAutoRun}
-                    className={`px-3 py-1.5 text-xs font-medium rounded border transition-colors whitespace-nowrap shrink-0 ${
-                      autoRunActive
-                        ? 'bg-emerald-600/15 border-emerald-500 text-emerald-700 dark:text-emerald-300'
-                        : 'border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                    }`}
+                    disabled={steppingCycles}
+                    onClick={handleRunHistoricalReplay}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   >
-                    Auto-Run (8s Tick): {autoRunActive ? 'ACTIVE' : 'PAUSED'}
+                    <FastForward className="w-3.5 h-3.5" />
+                    {steppingCycles
+                      ? 'Replaying 17,140 Real 1H Candles...'
+                      : 'Re-Run 1-Year Real Angel One Training (₹10k · 1L–5L)'}
                   </button>
                   <button
                     type="button"
@@ -614,49 +615,25 @@ export default function App() {
                     }`}
                   >
                     Strict NSE Hours (09:15–15:30 IST):{' '}
-                    {overviewData.control.strictLiveMarketHoursOnly ? 'ON' : 'OFF (24/7)'}
+                    {overviewData.control.strictLiveMarketHoursOnly ? 'ON (Sunday Standby)' : 'OFF'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleToggleAutoRun}
+                    className={`px-3 py-1.5 text-xs font-medium rounded border transition-colors whitespace-nowrap shrink-0 ${
+                      autoRunActive
+                        ? 'bg-emerald-600/15 border-emerald-500 text-emerald-700 dark:text-emerald-300'
+                        : 'border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                    }`}
+                  >
+                    Monday 09:15 IST Auto-Start: {autoRunActive ? 'ARMED (ACTIVE)' : 'PAUSED'}
                   </button>
                   <button
                     type="button"
                     onClick={handleResetPaperLedger}
                     className="px-3 py-1.5 text-xs font-medium border border-blue-500/50 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 rounded transition-colors whitespace-nowrap shrink-0"
                   >
-                    Reset Ledger (₹10,00,000)
-                  </button>
-                  <button
-                    type="button"
-                    disabled={steppingCycles}
-                    onClick={() => handleFastForwardCycles(1)}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors whitespace-nowrap shrink-0"
-                  >
-                    Step +1 Cycle
-                  </button>
-                  <button
-                    type="button"
-                    disabled={steppingCycles}
-                    onClick={() => handleFastForwardCycles(10)}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors whitespace-nowrap shrink-0"
-                  >
-                    <FastForward className="w-3.5 h-3.5" />
-                    Fast-Forward +10 Cycles
-                  </button>
-                  <button
-                    type="button"
-                    disabled={steppingCycles}
-                    onClick={() => handleFastForwardCycles(30)}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors whitespace-nowrap shrink-0"
-                  >
-                    <FastForward className="w-3.5 h-3.5" />
-                    Fast-Forward +30 Cycles (Retrain ML Gate)
-                  </button>
-                  <button
-                    type="button"
-                    disabled={steppingCycles}
-                    onClick={() => handleFastForwardCycles(180)}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded transition-colors whitespace-nowrap shrink-0"
-                  >
-                    <FastForward className="w-3.5 h-3.5" />
-                    Fast-Forward to 200+ Trades (Promote GBDT)
+                    Reset Ledger (₹10,000)
                   </button>
                 </div>
               </div>
@@ -864,7 +841,7 @@ export default function App() {
                   {formatInr(overviewData.headline.todayPnlInr, true)}
                 </div>
                 <div className="text-xs font-mono tabular-nums text-slate-500 mt-1.5">
-                  Daily Loss Halt Limit: -3.00% (-₹30,000) · Status: Clear
+                  Daily Loss Halt Limit: -3.00% (-₹{Math.round(overviewData.headline.conservativeEquityInr * 0.03).toLocaleString('en-IN')}) · Status: Clear
                 </div>
               </div>
 
@@ -876,8 +853,7 @@ export default function App() {
                   {(overviewData.headline.currentDrawdownPct * 100).toFixed(2)}% / 10.00%
                 </div>
                 <div className="text-xs font-mono tabular-nums text-slate-500 mt-1.5">
-                  Max Historical DD: {(overviewData.headline.maxDrawdownPct * 100).toFixed(2)}% · Open
-                  Positions: {overviewData.headline.openPositionsCount}/5
+                  Max 1Y Real DD: {(overviewData.headline.maxDrawdownPct * 100).toFixed(2)}% · Smart Sizing: 1L–{overviewData.historicalReplayReport?.maxLotsTraded ?? 5}L (Avg {overviewData.historicalReplayReport?.avgLotsTraded ?? 1.75}L)
                 </div>
               </div>
             </div>
@@ -887,13 +863,10 @@ export default function App() {
               <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
                 <div>
                   <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-                    Equity Curve: Conservative Simulation vs. Paper Broker vs. NIFTY 50 Buy-and-Hold
+                    1-Year Real Angel One Equity Curve (₹10,000 Starting Capital · Dynamic 1L–5L Fund-Aware Sizing)
                   </h1>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    Starting virtual capital ₹10,00,000 · Conservative simulation fills buys at{' '}
-                    <code className="font-mono">mid + 35% of bid-ask spread</code> and sells at{' '}
-                    <code className="font-mono">mid - 35% of spread</code> plus{' '}
-                    <code className="font-mono">₹35/lot</code> statutory + brokerage charges
+                    Starting capital <strong className="font-mono text-slate-700 dark:text-slate-200">₹10,000</strong> · Scales position size from <code className="font-mono">1 lot</code> to <code className="font-mono">5 lots</code> automatically as account equity compounds · Conservative fills include <code className="font-mono">mid ± 35% spread</code> + <code className="font-mono">₹35/lot/leg</code> statutory charges
                   </p>
                 </div>
                 <div className="text-xs font-mono tabular-nums text-slate-500">

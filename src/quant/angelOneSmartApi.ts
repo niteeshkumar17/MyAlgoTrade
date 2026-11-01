@@ -181,29 +181,10 @@ export function generateAngelTotp(base32Secret: string, timestampMs: number = Da
 }
 
 function getAngelCredentials() {
-  const apiKey = (
-    process.env.ANGELONE_API_KEY ||
-    process.env.ANGEL_API_KEY ||
-    process.env.ANGEL_SMARTAPI_KEY ||
-    ''
-  ).trim();
-  const clientCode = (
-    process.env.ANGELONE_CLIENT_CODE ||
-    process.env.ANGEL_CLIENT_CODE ||
-    process.env.ANGEL_CLIENT_ID ||
-    ''
-  ).trim();
-  const mpin = (
-    process.env.ANGELONE_MPIN ||
-    process.env.ANGEL_MPIN ||
-    process.env.ANGEL_PASSWORD ||
-    ''
-  ).trim();
-  const totpSecret = (
-    process.env.ANGELONE_TOTP_SECRET ||
-    process.env.ANGEL_TOTP_SECRET ||
-    ''
-  ).trim();
+  const apiKey = (process.env.ANGEL_API_KEY || '').trim();
+  const clientCode = (process.env.ANGEL_CLIENT_CODE || '').trim();
+  const mpin = (process.env.ANGEL_MPIN || '').trim();
+  const totpSecret = (process.env.ANGEL_TOTP_SECRET || '').trim();
   const configured = Boolean(apiKey && clientCode && mpin && totpSecret);
   return { apiKey, clientCode, mpin, totpSecret, configured };
 }
@@ -496,13 +477,14 @@ export async function fetchAngelOneOptionGreeks(
 }
 
 /**
- * Fetch 5-minute intraday OHLCV candles from Angel One SmartAPI (`historical/v1/getCandleData`)
- * to compute live 14-period RSI, ADX, and ATR% for technical signals.
+ * Fetch historical OHLCV candles from Angel One SmartAPI (`historical/v1/getCandleData`)
+ * Supports 'FIVE_MINUTE', 'ONE_HOUR' (1,722 bars/year), and 'ONE_DAY' (246 bars/year).
  */
-export async function fetchAngelOneFiveMinCandles(
+export async function fetchAngelOneHistoricalCandles(
   symbol: string,
   fromDateIst: string,
-  toDateIst: string
+  toDateIst: string,
+  interval: 'FIVE_MINUTE' | 'ONE_HOUR' | 'ONE_DAY' = 'ONE_HOUR'
 ): Promise<Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number }> | null> {
   const { apiKey, configured } = getAngelCredentials();
   const meta = ANGEL_ONE_NSE_TOKENS[symbol];
@@ -513,7 +495,7 @@ export async function fetchAngelOneFiveMinCandles(
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4000);
+    const timer = setTimeout(() => controller.abort(), 6000);
     const res = await fetch(
       `${ANGEL_BASE_URL}/rest/secure/angelbroking/historical/v1/getCandleData`,
       {
@@ -522,7 +504,7 @@ export async function fetchAngelOneFiveMinCandles(
         body: JSON.stringify({
           exchange: meta.exchange,
           symboltoken: meta.angelToken,
-          interval: 'FIVE_MINUTE',
+          interval,
           fromdate: fromDateIst,
           todate: toDateIst,
         }),
@@ -531,7 +513,9 @@ export async function fetchAngelOneFiveMinCandles(
     );
     clearTimeout(timer);
 
-    const payload = (await res.json()) as {
+    const text = await res.text();
+    if (!text.startsWith('{')) return null;
+    const payload = JSON.parse(text) as {
       status?: boolean;
       data?: Array<[string, number, number, number, number, number]>;
     };
@@ -548,6 +532,14 @@ export async function fetchAngelOneFiveMinCandles(
   } catch {
     return null;
   }
+}
+
+export async function fetchAngelOneFiveMinCandles(
+  symbol: string,
+  fromDateIst: string,
+  toDateIst: string
+): Promise<Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number }> | null> {
+  return fetchAngelOneHistoricalCandles(symbol, fromDateIst, toDateIst, 'FIVE_MINUTE');
 }
 
 export interface AngelOneNfoOptionQuote {

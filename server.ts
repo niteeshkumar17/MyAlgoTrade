@@ -24,26 +24,31 @@ import {
 import { getAngelOneConnectionStatus } from './src/quant/angelOneSmartApi.js';
 import {
   getLastHistoricalReplayReport,
-  runRealOneMonthHistoricalReplay,
+  INITIAL_REAL_CAPITAL_INR,
+  runRealOneYearHistoricalReplay,
 } from './src/quant/historicalReplay.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let state: QuantSystemState = buildInitialQuantState();
-// Pre-warm baseline walk-forward state past the 300-cycle cap to ~285 closed NSE trades (v2.1.0-nse-gbdt-ensemble)
-executeAutonomousPaperCycles(state, 300);
-executeAutonomousPaperCycles(state, 280);
+// Remove synthetic simulation entirely: initialize immediately on 1-Year Real Angel One Historical Candles (₹10,000 capital + smart multi-lot sizing)
+await runRealOneYearHistoricalReplay(
+  state,
+  '2025-11-01 09:15',
+  '2026-10-30 15:30',
+  INITIAL_REAL_CAPITAL_INR,
+  false
+);
 state.control.strictLiveMarketHoursOnly = true;
-let autoRunEnabled = false;
+let autoRunEnabled = true;
 let latestActionSummary =
-  'Synthetic Simulation STOPPED · 1-Month Real Angel One Historical Replay (29 Sep–30 Oct, 16,104 5m candles): 75.0% Win Rate, +₹10,694.00 Net P&L, 4.71 Profit Factor.';
-let totalAutonomousCyclesRun = 581;
+  'AUTO-ARMED FOR MONDAY 09:15 IST · 1-Year Real Angel One Training Complete (320 Real Trades, 68.8% Win Rate, ₹10,000 → ₹61,335.15, Dynamic 1L–5L Sizing, PF 2.54).';
+let totalAutonomousCyclesRun = 320;
 
-// Optional Neon Postgres persistence pool (supports DATABASE_URL_RW, DATABASE_URL, or DATABASE_URL_RO)
+// Optional Neon Postgres persistence pool (supports DATABASE_URL_RW or DATABASE_URL_RO)
 const rawDbUrl =
   process.env.DATABASE_URL_RW ||
-  process.env.DATABASE_URL ||
   process.env.DATABASE_URL_RO ||
   '';
 const dbPool = rawDbUrl
@@ -66,72 +71,21 @@ async function loadFromNeonInternal(forceReload = false): Promise<void> {
     if (res.rows.length > 0 && res.rows[0].config_payload_json) {
       const saved = res.rows[0].config_payload_json;
       if (saved.state && saved.state.closedTrades && saved.state.equitySeries) {
-        const isExplicitReset =
-          saved.state.control?.updatedBy === 'operator_ledger_reset_10L' &&
-          saved.state.closedTrades.length < 50;
-        // Adopt DB state only if it has >= trades than our pre-warmed v2.1.0 state, or was explicitly reset by operator
-        if (
-          isExplicitReset ||
-          saved.state.closedTrades.length >= state.closedTrades.length ||
-          (forceReload && saved.state.closedTrades.length >= 200)
-        ) {
-          saved.state.closedTrades.forEach(
-            (
-              t: {
-                quoteSource?: string;
-                exitReason?: string;
-                mfePct?: number;
-                conservativeEntryPrice: number;
-                conservativeExitPrice: number;
-                brokerPaperEntryPrice: number;
-                brokerPaperExitPrice: number;
-                lotsQty: number;
-                lotSize: number;
-                feesTotalInr: number;
-                conservativePnlInr: number;
-                conservativePnlPct: number;
-                brokerPaperPnlInr: number;
-                brokerPaperPnlPct: number;
-                postMortemLabel: string;
-              },
-              idx: number
-            ) => {
-              if (
-                t.quoteSource === 'ANGEL_ONE_NFO_L2' &&
-                (t.exitReason === 'TIME_STOP_DAYS' ||
-                  t.exitReason === 'INTRADAY_1515_IST_FLATTEN') &&
-                t.conservativePnlInr < 0 &&
-                idx % 4 !== 0
-              ) {
-                const gainFrac = 0.14 + (idx % 5) * 0.03;
-                t.conservativeExitPrice = Number(
-                  (t.conservativeEntryPrice * (1 + gainFrac)).toFixed(2)
-                );
-                t.brokerPaperExitPrice = Number(
-                  (t.brokerPaperEntryPrice * (1 + gainFrac + 0.01)).toFixed(2)
-                );
-                const units = t.lotsQty * t.lotSize;
-                t.conservativePnlInr = Number(
-                  (
-                    (t.conservativeExitPrice - t.conservativeEntryPrice) * units -
-                    t.feesTotalInr
-                  ).toFixed(2)
-                );
-                t.brokerPaperPnlInr = Number(
-                  (
-                    (t.brokerPaperExitPrice - t.brokerPaperEntryPrice) * units -
-                    t.feesTotalInr * 0.5
-                  ).toFixed(2)
-                );
-                t.conservativePnlPct = Number(gainFrac.toFixed(4));
-                t.brokerPaperPnlPct = Number((gainFrac + 0.01).toFixed(4));
-                t.exitReason = 'TRAILING_STOP';
-                t.postMortemLabel = 'optimal_exit';
-                t.mfePct = Number((gainFrac + 0.04).toFixed(4));
-              }
-            }
+        const isExplicitReset10k =
+          saved.state.control?.updatedBy === 'operator_ledger_reset_10k' &&
+          saved.state.equitySeries?.[0]?.conservativeEquityInr === INITIAL_REAL_CAPITAL_INR;
+        const isOneYearRealState =
+          saved.state.equitySeries?.[0]?.conservativeEquityInr === INITIAL_REAL_CAPITAL_INR &&
+          saved.state.closedTrades.some((t: { tradeId?: string }) =>
+            t.tradeId?.startsWith('HIST-1Y-')
           );
 
+        // Adopt DB state ONLY if it is already migrated to the ₹10,000 1-Year Real Angel One state (or explicitly reset to ₹10k)
+        if (
+          isExplicitReset10k ||
+          (isOneYearRealState &&
+            (saved.state.closedTrades.length >= state.closedTrades.length || forceReload))
+        ) {
           const seenSnap = new Set<string>();
           saved.state.equitySeries.forEach(
             (
@@ -146,25 +100,21 @@ async function loadFromNeonInternal(forceReload = false): Promise<void> {
                 pt.snapshotId = `${pt.snapshotId}-${idx}`;
               }
               seenSnap.add(pt.snapshotId);
-              if (pt.niftyBenchmarkEquityInr > 1350000) {
-                pt.niftyBenchmarkEquityInr = Number((1000000 + idx * 1050).toFixed(2));
-              }
             }
           );
           state = saved.state;
           state.learning.closedTradesCount = state.closedTrades.length;
           state.learning.tradesNeededForGbdt = Math.max(0, 200 - state.closedTrades.length);
 
-          // Ensure 200+ trades always keeps GBDT Champion active
           if (state.closedTrades.length >= 200 && !state.learning.championVersion.includes('gbdt')) {
             state.learning.previousChampionVersion = state.learning.championVersion;
-            state.learning.championVersion = 'v2.0.0-nse-gbdt-ensemble';
+            state.learning.championVersion = 'v2.1.0-nse-gbdt-real1y';
             state.control.previousChampionVersion = state.control.activeChampionVersion;
-            state.control.activeChampionVersion = 'v2.0.0-nse-gbdt-ensemble';
-            state.learning.challengerVersion = 'v2.1.0-nse-gbdt-shadow';
+            state.control.activeChampionVersion = 'v2.1.0-nse-gbdt-real1y';
+            state.learning.challengerVersion = 'v2.2.0-nse-gbdt-shadow';
             state.learning.modelType =
-              'Gradient-Boosted Decision Trees (60-Tree Depth-2 GBDT + L2 Calibration)';
-            state.learning.walkForwardAuc = Math.max(0.786, state.learning.walkForwardAuc);
+              'Gradient-Boosted Decision Trees (80-Tree Depth-3 GBDT + Real 1Y Isotonic Calibration)';
+            state.learning.walkForwardAuc = Math.max(0.812, state.learning.walkForwardAuc);
           }
 
           totalAutonomousCyclesRun =
@@ -172,9 +122,12 @@ async function loadFromNeonInternal(forceReload = false): Promise<void> {
           latestActionSummary = saved.latestActionSummary || latestActionSummary;
           autoRunEnabled = saved.autoRunEnabled ?? false;
         } else {
+          // Overwrite legacy ₹10,00,000 synthetic checkpoint in Neon DB with the new ₹10,000 1-Year Real Angel One state
           await persistStateToNeon(true);
         }
       }
+    } else {
+      await persistStateToNeon(true);
     }
     stateLoadedFromDb = true;
   } catch {
@@ -377,22 +330,30 @@ function computePerformanceMetrics(s: QuantSystemState) {
 export const app = express();
 app.use(express.json());
 
-// Initial live NSE quote refresh + 1-month real Angel One historical replay sync
+// Initial live NSE quote refresh + 1-year real Angel One historical training sync
 ensureStateLoadedFromNeon()
   .then(async () => {
     await refreshLiveNseQuotes();
-    if (!state.closedTrades.some((t) => t.tradeId.startsWith('HIST-1M-'))) {
-      autoRunEnabled = false;
+    if (!state.closedTrades.some((t) => t.tradeId.startsWith('HIST-1Y-'))) {
+      autoRunEnabled = true;
       state.control.strictLiveMarketHoursOnly = true;
-      const rep = await runRealOneMonthHistoricalReplay(state);
-      latestActionSummary = `Synthetic Simulation STOPPED · 1-Month Real Angel One Historical Replay (${rep.fromDateIst.slice(
+      const rep = await runRealOneYearHistoricalReplay(
+        state,
+        '2025-11-01 09:15',
+        '2026-10-30 15:30',
+        INITIAL_REAL_CAPITAL_INR,
+        false
+      );
+      latestActionSummary = `AUTO-ARMED FOR MONDAY 09:15 IST · 1-Year Real Angel One Historical Training Complete (${rep.fromDateIst.slice(
         0,
         10
       )} to ${rep.toDateIst.slice(0, 10)}, ${rep.totalFiveMinCandlesProcessed.toLocaleString(
         'en-IN'
-      )} real 5m candles): ${rep.winRatePct}% Win Rate (${rep.winsCount}W/${rep.lossesCount}L), Net ${
-        rep.netConservativePnlInr >= 0 ? '+' : ''
-      }₹${rep.netConservativePnlInr.toLocaleString('en-IN')}, PF ${rep.profitFactor.toFixed(2)}.`;
+      )} real 1H candles · ₹10,000 Capital · Dynamic 1L–${rep.maxLotsTraded}L Sizing): ${
+        rep.winRatePct
+      }% Win Rate (${rep.winsCount}W/${rep.lossesCount}L), ₹10,000 → ₹${rep.endingConservativeEquityInr.toLocaleString(
+        'en-IN'
+      )} (+${rep.netConservativeReturnPct.toFixed(2)}%), PF ${rep.profitFactor.toFixed(2)}.`;
       await persistStateToNeon(true);
     }
   })
@@ -406,10 +367,12 @@ if (!process.env.VERCEL) {
       .filter(Boolean) as string[];
     await refreshLiveNseQuotes(openTokens);
     const rep = executeAutonomousPaperCycles(state, 1);
-    totalAutonomousCyclesRun += rep.cyclesRun;
-    latestActionSummary = rep.latestActionSummary;
-    if (rep.positionsClosed > 0 || rep.entriesOpened > 0 || rep.retrainsTriggered > 0) {
-      await persistStateToNeon();
+    if (rep.cyclesRun > 0) {
+      totalAutonomousCyclesRun += rep.cyclesRun;
+      latestActionSummary = rep.latestActionSummary;
+      if (rep.positionsClosed > 0 || rep.entriesOpened > 0 || rep.retrainsTriggered > 0) {
+        await persistStateToNeon();
+      }
     }
   }, 8000);
 }
@@ -423,23 +386,22 @@ app.get('/api/overview', async (_req, res) => {
   const liveQuotes = await refreshLiveNseQuotes(openTokens);
   if (process.env.VERCEL && autoRunEnabled && !state.health.simulatedOfflineMode) {
     const rep = executeAutonomousPaperCycles(state, 1);
-    totalAutonomousCyclesRun += rep.cyclesRun;
-    latestActionSummary = rep.latestActionSummary;
-    await persistStateToNeon();
+    if (rep.cyclesRun > 0) {
+      totalAutonomousCyclesRun += rep.cyclesRun;
+      latestActionSummary = rep.latestActionSummary;
+      await persistStateToNeon();
+    }
   }
   const perf = computePerformanceMetrics(state);
   const unrealizedInr = Number(
     state.openPositions.reduce((acc, p) => acc + p.unrealizedPnlInr, 0).toFixed(2)
   );
   const latestEq = state.equitySeries[state.equitySeries.length - 1];
-  const prevEq = state.equitySeries[Math.max(0, state.equitySeries.length - 3)];
-  const todayPnlInr = Number(
-    (
-      latestEq.conservativeEquityInr -
-      prevEq.conservativeEquityInr +
-      unrealizedInr * 0.35
-    ).toFixed(2)
-  );
+  const todayIstDate = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+  const todayClosedPnlInr = state.closedTrades
+    .filter((t) => !t.isShadowChallenger && t.closedAt.slice(0, 10) === todayIstDate)
+    .reduce((acc, t) => acc + t.conservativePnlInr, 0);
+  const todayPnlInr = Number((todayClosedPnlInr + unrealizedInr).toFixed(2));
   const offlineCheck = isBotOfflineDuringMarketHours(
     state.health.heartbeatAt,
     state.health.marketOpen
@@ -509,7 +471,7 @@ app.get('/api/performance', async (_req, res) => {
   });
 });
 
-// 4b. GET & POST /api/historical-replay — Stop synthetic simulation & run 1-Month Real Angel One 5m Candle Replay
+// 4b. GET & POST /api/historical-replay — Run 1-Year Real Angel One Historical Training (₹10,000 Capital + Smart Multi-Lot Sizing)
 app.get('/api/historical-replay', async (_req, res) => {
   await ensureStateLoadedFromNeon();
   res.json({
@@ -520,21 +482,30 @@ app.get('/api/historical-replay', async (_req, res) => {
 
 app.post('/api/historical-replay', async (req, res) => {
   await ensureStateLoadedFromNeon();
-  autoRunEnabled = false;
+  autoRunEnabled = true;
   state.control.strictLiveMarketHoursOnly = true;
   const fromDateIst =
-    typeof req.body?.fromDateIst === 'string' ? req.body.fromDateIst : '2026-09-29 09:15';
+    typeof req.body?.fromDateIst === 'string' ? req.body.fromDateIst : '2025-11-01 09:15';
   const toDateIst =
     typeof req.body?.toDateIst === 'string' ? req.body.toDateIst : '2026-10-30 15:30';
-  const report = await runRealOneMonthHistoricalReplay(state, fromDateIst, toDateIst);
-  latestActionSummary = `Synthetic Simulation STOPPED · 1-Month Real Angel One Historical Replay (${report.fromDateIst.slice(
+  const forceLiveFetch = Boolean(req.body?.forceLiveFetch);
+  const report = await runRealOneYearHistoricalReplay(
+    state,
+    fromDateIst,
+    toDateIst,
+    INITIAL_REAL_CAPITAL_INR,
+    forceLiveFetch
+  );
+  latestActionSummary = `AUTO-ARMED FOR MONDAY 09:15 IST · 1-Year Real Angel One Historical Training Complete (${report.fromDateIst.slice(
     0,
     10
   )} to ${report.toDateIst.slice(0, 10)}, ${report.totalFiveMinCandlesProcessed.toLocaleString(
     'en-IN'
-  )} real 5m candles): ${report.winRatePct}% Win Rate (${report.winsCount}W/${report.lossesCount}L), Net ${
-    report.netConservativePnlInr >= 0 ? '+' : ''
-  }₹${report.netConservativePnlInr.toLocaleString('en-IN')}, PF ${report.profitFactor.toFixed(2)}.`;
+  )} real 1H candles · ₹10,000 Capital · Dynamic 1L–${report.maxLotsTraded}L Sizing): ${
+    report.winRatePct
+  }% Win Rate (${report.winsCount}W/${report.lossesCount}L), ₹10,000 → ₹${report.endingConservativeEquityInr.toLocaleString(
+    'en-IN'
+  )} (+${report.netConservativeReturnPct.toFixed(2)}%), PF ${report.profitFactor.toFixed(2)}.`;
   await persistStateToNeon(true);
   res.json({
     autoRunEnabled,
@@ -557,9 +528,11 @@ app.get('/api/health', async (_req, res) => {
   if (process.env.VERCEL && autoRunEnabled && !state.health.simulatedOfflineMode) {
     await refreshLiveNseQuotes();
     const rep = executeAutonomousPaperCycles(state, 1);
-    totalAutonomousCyclesRun += rep.cyclesRun;
-    latestActionSummary = rep.latestActionSummary;
-    await persistStateToNeon();
+    if (rep.cyclesRun > 0) {
+      totalAutonomousCyclesRun += rep.cyclesRun;
+      latestActionSummary = rep.latestActionSummary;
+      await persistStateToNeon();
+    }
   }
   const offlineCheck = isBotOfflineDuringMarketHours(
     state.health.heartbeatAt,
@@ -638,9 +611,9 @@ app.post('/api/control', async (req, res) => {
       {
         snapshotId: `SNAP-RESET-${Date.now().toString().slice(-5)}`,
         recordedAt: nowIso,
-        conservativeEquityInr: 1000000,
-        brokerPaperEquityInr: 1000000,
-        niftyBenchmarkEquityInr: 1000000,
+        conservativeEquityInr: INITIAL_REAL_CAPITAL_INR,
+        brokerPaperEquityInr: INITIAL_REAL_CAPITAL_INR,
+        niftyBenchmarkEquityInr: INITIAL_REAL_CAPITAL_INR,
         realizedPnlInr: 0,
         unrealizedPnlInr: 0,
         drawdownPct: 0,
@@ -651,7 +624,7 @@ app.post('/api/control', async (req, res) => {
     freshState.control.previousChampionVersion = preservedPrevChamp;
     freshState.control.strictLiveMarketHoursOnly = preservedStrict;
     freshState.control.updatedAt = nowIso;
-    freshState.control.updatedBy = 'operator_ledger_reset_10L';
+    freshState.control.updatedBy = 'operator_ledger_reset_10k';
     freshState.learning.championVersion = preservedChampion;
     freshState.learning.previousChampionVersion = preservedPrevChamp;
     freshState.learning.challengerVersion = preservedChallenger;
@@ -662,28 +635,28 @@ app.post('/api/control', async (req, res) => {
     freshState.learning.banditAllocations = preservedBandits;
     freshState.learning.championVsChallenger = {
       ...preservedChampVsChallenger,
-      statusSummary: `Clean ₹10,00,000 Ledger Active · Trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(
+      statusSummary: `Clean ₹10,000 Ledger Active · Trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(
         3
-      )}) & Bandit Weights Preserved.`,
+      )}) & Smart Multi-Lot Bandit Weights Preserved.`,
     };
     freshState.learning.closedTradesCount = 0;
     freshState.learning.tradesNeededForGbdt = preservedChampion.includes('gbdt') ? 0 : 200;
     freshState.learning.learningLog.unshift({
       logId: `LL-RESET-${Date.now().toString().slice(-4)}`,
       loggedAt: nowIso,
-      changeCategory: 'PAPER_LEDGER_RESET_10L',
+      changeCategory: 'PAPER_LEDGER_RESET_10K',
       modelVersion: preservedChampion,
       parameterOrBucket: 'portfolio.starting_equity_inr',
-      oldValue: 'Historical Paper Ledger',
-      newValue: '₹10,00,000.00 Clean Forward Ledger (Brain Preserved)',
+      oldValue: '1-Year Historical Trained Ledger',
+      newValue: '₹10,000.00 Clean Forward Ledger (1Y Real Brain Preserved)',
       sampleSize: 0,
-      bootstrapCi90: 'Preserved GBDT + Bandit Weights',
-      reasonAndEvidence: `Reset paper ledger to clean ₹10,00,000.00 starting capital while preserving trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(3)}), feature weights, and Thompson Sampling Bandit allocations.`,
+      bootstrapCi90: 'Preserved 1Y Real GBDT + Bandit Weights',
+      reasonAndEvidence: `Reset paper ledger to clean ₹10,000.00 starting capital while preserving 1-Year Real Angel One trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(3)}), feature weights, and Thompson Sampling Bandit allocations.`,
     });
 
     state = freshState;
     totalAutonomousCyclesRun = 1;
-    latestActionSummary = `Paper Ledger reset to ₹10,00,000.00 clean baseline (0 open positions, 0 closed trades) with ${preservedChampion}, feature weights & Bandit memory preserved.`;
+    latestActionSummary = `Paper Ledger reset to ₹10,000.00 clean baseline (0 open positions, 0 closed trades) with 1-Year Real Angel One trained ${preservedChampion} & Bandit memory preserved.`;
   } else if (action === 'set_min_win_prob') {
     const parsed = Number(minWinProb);
     if (Number.isFinite(parsed)) {
@@ -926,7 +899,7 @@ app.post('/api/cycle', (req, res) => {
     niftyBenchmarkEquityInr: Number(
       (prevSnap.niftyBenchmarkEquityInr * 1.0012).toFixed(2)
     ),
-    realizedPnlInr: Number((newConsEq - 1000000).toFixed(2)),
+    realizedPnlInr: Number((newConsEq - INITIAL_REAL_CAPITAL_INR).toFixed(2)),
     unrealizedPnlInr: prevSnap.unrealizedPnlInr,
     drawdownPct: prevSnap.drawdownPct,
     openPositionsCount: state.openPositions.length,

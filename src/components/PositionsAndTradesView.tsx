@@ -94,7 +94,7 @@ export const PositionsAndTradesView: React.FC<PositionsAndTradesViewProps> = ({
             </p>
           </div>
           <div className="text-xs font-mono tabular-nums text-slate-600 dark:text-slate-400">
-            Max Risk/Trade: 1.5% Equity (₹15,000) · Max Total Premium: 25.0% Equity
+            Smart Fund-Aware Sizing: 11%–15% Equity/Trade (Scales 1L → 5L dynamically with account fund)
           </div>
         </div>
 
