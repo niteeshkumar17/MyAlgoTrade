@@ -28,6 +28,21 @@ export const NSE_LOT_SIZES: Record<string, number> = {
   SBIN: 750,
 };
 
+export const WATCHLIST_PRIORITY_SYMBOLS = [
+  'NIFTY',
+  'BANKNIFTY',
+  'FINNIFTY',
+  'INDIA_VIX',
+  'RELIANCE',
+  'TCS',
+  'HDFCBANK',
+  'INFY',
+  'ICICIBANK',
+  'SBIN',
+] as const;
+
+export const INDEX_SYMBOLS = new Set<string>(['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'INDIA_VIX']);
+
 export interface FillSimConfig {
   spreadSlippageFraction: number; // default 0.35
   feePerLotInr: number;           // default ₹35.0 per lot per leg (₹20 brokerage + ₹15 STT/NSE/SEBI/GST)

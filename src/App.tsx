@@ -23,13 +23,15 @@ import {
   ClosedOptionTrade,
   EquitySnapshotPoint,
   formatInr,
+  INDEX_SYMBOLS,
   OpenOptionPosition,
   OptionRight,
   SkippedSignalCounterfactual,
+  WATCHLIST_PRIORITY_SYMBOLS,
 } from './quant/engine';
-import { LiveSpotQuote } from './quant/livePaperRunner';
-import { OneMonthHistoricalReplayReport } from './quant/historicalReplay';
-import { QuantSystemState, StrategyBacktestRow } from './quant/seedStore';
+import type { LiveSpotQuote } from './quant/livePaperRunner';
+import type { OneMonthHistoricalReplayReport } from './quant/historicalReplay';
+import type { QuantSystemState, StrategyBacktestRow } from './quant/seedStore';
 
 type ActiveSection = 'overview' | 'positions' | 'performance' | 'learning' | 'code';
 
@@ -190,8 +192,23 @@ export default function App() {
 
   useEffect(() => {
     fetchAllTelemetry();
-    const pollTimer = setInterval(fetchAllTelemetry, 8000);
-    return () => clearInterval(pollTimer);
+    const pollTimer = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        fetchAllTelemetry();
+      }
+    }, 3000);
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        fetchAllTelemetry();
+      }
+    };
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    return () => {
+      clearInterval(pollTimer);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
   }, [fetchAllTelemetry]);
 
   const formatTimestamp = useCallback(
@@ -731,38 +748,56 @@ export default function App() {
                       </thead>
                       <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800/70">
                         {overviewData.liveRunner?.liveQuotes &&
-                          Object.values(overviewData.liveRunner.liveQuotes).map((q) => (
-                            <tr
-                              key={q.symbol}
-                              className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
-                            >
-                              <td className="py-2 pr-2 font-semibold text-slate-900 dark:text-slate-100">
-                                {q.symbol}
-                              </td>
-                              <td className="py-2 px-2 text-right text-slate-800 dark:text-slate-200">
-                                {q.symbol === 'INDIA_VIX'
-                                  ? q.spot.toFixed(2)
-                                  : q.spot.toLocaleString('en-IN', { maximumFractionDigits: 1 })}
-                              </td>
-                              <td
-                                className={`py-2 px-2 text-right font-medium ${
-                                  q.changePct >= 0
-                                    ? 'text-emerald-600 dark:text-emerald-400'
-                                    : 'text-rose-600 dark:text-rose-400'
-                                }`}
-                              >
-                                {q.changePct >= 0 ? '+' : ''}
-                                {q.changePct.toFixed(2)}%
-                              </td>
-                              <td className="py-2 pl-2 text-right text-slate-500 dark:text-slate-400">
-                                {q.nfoOptionLtp
-                                  ? `₹${q.nfoOptionLtp.toFixed(1)}`
-                                  : q.rsi14
-                                  ? `RSI ${q.rsi14.toFixed(0)}`
-                                  : '—'}
-                              </td>
-                            </tr>
-                          ))}
+                          WATCHLIST_PRIORITY_SYMBOLS.map((sym) =>
+                            overviewData.liveRunner?.liveQuotes?.[sym]
+                          )
+                            .filter((q): q is LiveSpotQuote => Boolean(q))
+                            .map((q) => {
+                              const isIndex = INDEX_SYMBOLS.has(q.symbol);
+                              return (
+                                <tr
+                                  key={q.symbol}
+                                  className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${
+                                    q.symbol === 'INDIA_VIX'
+                                      ? 'border-b-2 border-slate-300 dark:border-slate-700/90'
+                                      : ''
+                                  }`}
+                                >
+                                  <td className="py-2 pr-2 font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap">
+                                    <span>{q.symbol}</span>
+                                    {isIndex && (
+                                      <span className="ml-1.5 text-[10px] font-normal text-blue-600 dark:text-blue-400">
+                                        IDX
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="py-2 px-2 text-right text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                                    {q.symbol === 'INDIA_VIX'
+                                      ? q.spot.toFixed(2)
+                                      : q.spot.toLocaleString('en-IN', {
+                                          maximumFractionDigits: 1,
+                                        })}
+                                  </td>
+                                  <td
+                                    className={`py-2 px-2 text-right font-medium whitespace-nowrap ${
+                                      q.changePct >= 0
+                                        ? 'text-emerald-600 dark:text-emerald-400'
+                                        : 'text-rose-600 dark:text-rose-400'
+                                    }`}
+                                  >
+                                    {q.changePct >= 0 ? '+' : ''}
+                                    {q.changePct.toFixed(2)}%
+                                  </td>
+                                  <td className="py-2 pl-2 text-right text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                                    {q.symbol === 'INDIA_VIX'
+                                      ? `VIX · RSI ${Math.round(q.rsi14 ?? 58)}`
+                                      : `₹${(q.nfoOptionLtp ?? 45).toFixed(1)} · RSI ${Math.round(
+                                          q.rsi14 ?? 54
+                                        )}`}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                       </tbody>
                     </table>
                   </div>

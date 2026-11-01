@@ -374,7 +374,7 @@ if (!process.env.VERCEL) {
         await persistStateToNeon();
       }
     }
-  }, 8000);
+  }, 4000);
 }
 
 // 1. GET /api/overview
@@ -384,6 +384,10 @@ app.get('/api/overview', async (_req, res) => {
     .flatMap((p) => [p.angelToken, p.shortAngelToken])
     .filter(Boolean) as string[];
   const liveQuotes = await refreshLiveNseQuotes(openTokens);
+  if (liveQuotes.NIFTY?.spot) state.health.niftySpot = liveQuotes.NIFTY.spot;
+  if (liveQuotes.BANKNIFTY?.spot) state.health.bankNiftySpot = liveQuotes.BANKNIFTY.spot;
+  if (liveQuotes.INDIA_VIX?.spot) state.health.indiaVixLevel = liveQuotes.INDIA_VIX.spot;
+
   if (process.env.VERCEL && autoRunEnabled && !state.health.simulatedOfflineMode) {
     const rep = executeAutonomousPaperCycles(state, 1);
     if (rep.cyclesRun > 0) {
