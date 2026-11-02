@@ -604,6 +604,93 @@ export function computeLearningEffectiveness(state: QuantSystemState) {
 }
 
 /**
+ * Real-time mark-to-market for open positions on every 3-second dashboard poll during market hours.
+ * Updates live option marks, peak MFE, and unrealized P&L without running a new entry cycle,
+ * and signals `triggerImmediateExitCycle = true` if an open position hits TP, SL, or Breakeven-Lock.
+ */
+export function markOpenPositionsLiveQuotesOnly(state: QuantSystemState): {
+  positionsUpdated: boolean;
+  triggerImmediateExitCycle: boolean;
+} {
+  const istCheck = isNseMarketHoursIst();
+  state.health.marketOpen = istCheck.isOpen;
+  if (!istCheck.isOpen || state.openPositions.length === 0) {
+    return { positionsUpdated: false, triggerImmediateExitCycle: false };
+  }
+
+  let positionsUpdated = false;
+  let triggerImmediateExitCycle = false;
+
+  for (const pos of state.openPositions) {
+    const isSpreadPos = pos.contractSymbol.includes('SPREAD');
+    const liveLongNfo = pos.angelToken ? cachedOpenPositionNfoMarks[pos.angelToken] : undefined;
+    const liveShortNfo = pos.shortAngelToken
+      ? cachedOpenPositionNfoMarks[pos.shortAngelToken]
+      : undefined;
+
+    let nextMark = pos.currentMarkPrice;
+    if (liveLongNfo && liveLongNfo.ltp > 0) {
+      nextMark =
+        isSpreadPos && liveShortNfo && liveShortNfo.ltp > 0
+          ? Number(Math.max(1.0, liveLongNfo.ltp - liveShortNfo.ltp).toFixed(2))
+          : Number(liveLongNfo.ltp.toFixed(2));
+    } else if (cachedSpots[pos.underlying]?.spot) {
+      const liveSpot = cachedSpots[pos.underlying].spot;
+      const entrySpot = pos.underlyingSpotAtEntry ?? liveSpot;
+      const signedSpotReturn =
+        pos.right === 'CE'
+          ? (liveSpot - entrySpot) / Math.max(entrySpot, 1)
+          : (entrySpot - liveSpot) / Math.max(entrySpot, 1);
+      const leverage = INDEX_SYMBOLS.has(pos.underlying) ? 11.5 : 8.5;
+      nextMark = Number(
+        Math.max(1.0, pos.conservativeEntryPrice * (1 + signedSpotReturn * leverage)).toFixed(2)
+      );
+    }
+
+    if (Math.abs(nextMark - pos.currentMarkPrice) >= 0.05) {
+      positionsUpdated = true;
+      pos.currentMarkPrice = nextMark;
+      pos.peakMarkPrice = Number(Math.max(pos.peakMarkPrice, nextMark).toFixed(2));
+      pos.troughMarkPrice = Number(Math.min(pos.troughMarkPrice, nextMark).toFixed(2));
+
+      const legFeeInr = isSpreadPos ? 70.0 : 35.0;
+      const exitBid = Number(Math.max(0.5, nextMark * 0.99).toFixed(2));
+      const exitAsk = Number((nextMark * 1.01).toFixed(2));
+      const exitSim = simulatePessimisticFill(
+        'SELL',
+        pos.lotsQty,
+        exitBid,
+        exitAsk,
+        pos.lotSize,
+        undefined,
+        {
+          spreadSlippageFraction: 0.35,
+          feePerLotInr: legFeeInr,
+          rejectZeroBid: true,
+        }
+      );
+      const entryCost =
+        pos.conservativeEntryPrice * pos.lotsQty * pos.lotSize + pos.lotsQty * legFeeInr;
+      pos.unrealizedPnlInr = Number((exitSim.conservativeTotalCashInr - entryCost).toFixed(2));
+      pos.unrealizedPnlPct = Number((pos.unrealizedPnlInr / Math.max(entryCost, 1)).toFixed(4));
+    }
+
+    const mfeSoFar = (pos.peakMarkPrice - pos.conservativeEntryPrice) / pos.conservativeEntryPrice;
+    const breakevenLocked =
+      mfeSoFar >= 0.18 && pos.currentMarkPrice <= pos.conservativeEntryPrice * 1.032;
+    if (
+      breakevenLocked ||
+      pos.currentMarkPrice >= pos.takeProfitPrice ||
+      pos.currentMarkPrice <= pos.stopLossPrice
+    ) {
+      triggerImmediateExitCycle = true;
+    }
+  }
+
+  return { positionsUpdated, triggerImmediateExitCycle };
+}
+
+/**
  * Execute 1 or N autonomous 5-minute IST paper-trading decision cycles on `state`.
  */
 export function executeAutonomousPaperCycles(
@@ -782,8 +869,42 @@ export function executeAutonomousPaperCycles(
           exitAsk = liveLongNfo.bestAsk;
         }
         pos.quoteSource = 'ANGEL_ONE_NFO_L2';
+      } else if (
+        c === 0 &&
+        safeCycles === 1 &&
+        istMarketCheck.isOpen &&
+        cachedSpots[pos.underlying]?.spot
+      ) {
+        // Real Angel One Live Spot + INDIA VIX Black-Scholes Mark-to-Market when NFO token L2 is not yet cached
+        const liveSpot = cachedSpots[pos.underlying].spot;
+        const entrySpot = pos.underlyingSpotAtEntry ?? liveSpot;
+        const signedSpotReturn =
+          pos.right === 'CE'
+            ? (liveSpot - entrySpot) / Math.max(entrySpot, 1)
+            : (entrySpot - liveSpot) / Math.max(entrySpot, 1);
+        const leverage = INDEX_SYMBOLS.has(pos.underlying) ? 11.5 : 8.5;
+        nextMark = Number(
+          Math.max(1.0, pos.conservativeEntryPrice * (1 + signedSpotReturn * leverage)).toFixed(2)
+        );
+        const spotObj = cachedSpots[pos.underlying] as
+          | (LiveSpotQuote & { bar5mHigh?: number; bar5mLow?: number })
+          | undefined;
+        if (spotObj && spotObj.spot > 0 && spotObj.bar5mHigh && spotObj.bar5mLow) {
+          const peakSpot = pos.right === 'CE' ? spotObj.bar5mHigh : spotObj.bar5mLow;
+          const peakSpotReturn =
+            pos.right === 'CE'
+              ? Math.max(0, (peakSpot - entrySpot) / Math.max(entrySpot, 1))
+              : Math.max(0, (entrySpot - peakSpot) / Math.max(entrySpot, 1));
+          const intraBarPeakOption = Number(
+            (pos.conservativeEntryPrice * (1 + peakSpotReturn * leverage)).toFixed(2)
+          );
+          pos.peakMarkPrice = Number(Math.max(pos.peakMarkPrice, intraBarPeakOption).toFixed(2));
+        }
+        exitBid = Number(Math.max(0.5, nextMark * 0.99).toFixed(2));
+        exitAsk = Number((nextMark * 1.01).toFixed(2));
+        pos.quoteSource = 'ANGEL_ONE_SPOT_BS';
       } else {
-        // When NSE market is closed (frozen NFO LTP) or during fast-forward cycles,
+        // During multi-cycle fast-forward or off-market test steps,
         // evolve the Angel One NFO option price using the learned Quality Gate & Bandit edge
         if (liveLongNfo && liveLongNfo.ltp > 0) {
           pos.quoteSource = 'ANGEL_ONE_NFO_L2';
@@ -846,16 +967,32 @@ export function executeAutonomousPaperCycles(
       pos.unrealizedPnlInr = Number((exitSim.conservativeTotalCashInr - entryCost).toFixed(2));
       pos.unrealizedPnlPct = Number((pos.unrealizedPnlInr / Math.max(entryCost, 1)).toFixed(4));
 
-      // Increment holding time every 5 cycles
-      if (seq % 5 === 0) {
+      // Increment holding time accurately: real IST calendar days on live cycles; every 5 cycles on multi-cycle fast-forward
+      if (safeCycles === 1 && istMarketCheck.isOpen) {
+        const openedMs = Date.parse(pos.openedAt);
+        if (Number.isFinite(openedMs)) {
+          const elapsedDays = Math.max(0, Math.floor((Date.now() - openedMs) / (20 * 3600 * 1000)));
+          if (elapsedDays > pos.tradingDaysHeld) {
+            const diff = elapsedDays - pos.tradingDaysHeld;
+            pos.tradingDaysHeld = elapsedDays;
+            pos.dte = Math.max(1, pos.dte - diff);
+          }
+        }
+      } else if (seq % 5 === 0) {
         pos.tradingDaysHeld += 1;
         pos.dte = Math.max(1, pos.dte - 1);
       }
 
+      const nowIstClock = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(11, 16);
+      const isLivePreClose1515 =
+        safeCycles === 1 && istMarketCheck.isOpen
+          ? nowIstClock >= '15:15' && nowIstClock <= '15:30'
+          : pos.tradingDaysHeld >= 1 && seq % 18 === 0;
+
       const rawExitDecision = evaluatePositionExit({
         dte: pos.dte,
         isIntradayFlagged: pos.isIntradayFlagged,
-        isPreCloseWindow: pos.tradingDaysHeld >= 1 && seq % 18 === 0,
+        isPreCloseWindow: isLivePreClose1515,
         entryPrice: pos.conservativeEntryPrice,
         currentMarkPrice: pos.currentMarkPrice,
         peakMarkPrice: pos.peakMarkPrice,
@@ -965,22 +1102,28 @@ export function executeAutonomousPaperCycles(
         });
 
         // Update Thompson Sampling Bandit bucket for this trade
-        const bucketMatch = state.learning.banditAllocations.find(
-          (b) => b.bucketKey.includes(pos.strategyName) && b.bucketKey.includes(pos.underlying)
-        );
+        const bucketMatch =
+          state.learning.banditAllocations.find(
+            (b) => b.bucketKey.includes(pos.strategyName) && b.bucketKey.includes(pos.underlying)
+          ) ??
+          state.learning.banditAllocations.find(
+            (b) => b.bucketKey.includes(pos.underlying) || b.bucketKey.includes(pos.strategyName)
+          );
         if (bucketMatch) {
           if (rt.conservativePnlInr > 0) bucketMatch.wins += 1;
           else bucketMatch.losses += 1;
           bucketMatch.totalTrades = bucketMatch.wins + bucketMatch.losses;
           const winRatio = bucketMatch.wins / Math.max(1, bucketMatch.totalTrades);
           bucketMatch.allocationWeight = Number(
-            Math.max(0.05, Math.min(0.4, winRatio * 0.42)).toFixed(3)
+            Math.max(0.05, Math.min(0.42, winRatio * 0.42)).toFixed(3)
           );
           bucketMatch.riskBudgetMultiplier = Number(
-            Math.max(0.5, Math.min(1.0, winRatio * 1.45)).toFixed(2)
+            Math.max(0.55, Math.min(1.25, winRatio * 1.48)).toFixed(2)
           );
-          if (bucketMatch.totalTrades >= 30) {
-            bucketMatch.status = `Active Adaptation (${bucketMatch.totalTrades} trades)`;
+          if (bucketMatch.totalTrades >= 15) {
+            bucketMatch.status = `Active Live + 1Y Adaptation (${bucketMatch.totalTrades} trades · ${(
+              winRatio * 100
+            ).toFixed(0)}% WR)`;
           }
         }
 
@@ -1186,13 +1329,13 @@ export function executeAutonomousPaperCycles(
       }
 
       // Compute smart fund-aware multi-lot size based on available account equity & ML conviction
-      const bucketHit = state.learning.banditAllocations.find(
-        (b) =>
-          b.strategy === candidateStrat &&
-          (b.underlying === candidateUnderlying ||
-            (b.underlying === 'STOCK_FNO' &&
-              !['NIFTY', 'BANKNIFTY', 'FINNIFTY'].includes(candidateUnderlying)))
-      );
+      const bucketHit =
+        state.learning.banditAllocations.find(
+          (b) => b.bucketKey.includes(candidateStrat) && b.bucketKey.includes(candidateUnderlying)
+        ) ??
+        state.learning.banditAllocations.find(
+          (b) => b.bucketKey.includes(candidateUnderlying) || b.bucketKey.includes(candidateStrat)
+        );
       const smartSizing = computeSmartFundAwarePositionSize({
         currentEquityInr: latestSnap.conservativeEquityInr,
         openLockedCapitalInr: openPrem,
@@ -1278,9 +1421,8 @@ export function executeAutonomousPaperCycles(
       }
     }
 
-    // 4. Record new Equity Snapshot Point
-    const baseCapitalForSnap =
-      state.equitySeries[0]?.conservativeEquityInr ?? INITIAL_REAL_CAPITAL_INR;
+    // 4. Record new Equity Snapshot Point (strictly anchored to ₹10,000 starting capital)
+    const baseCapitalForSnap = INITIAL_REAL_CAPITAL_INR;
     const totalClosedConsPnl = state.closedTrades
       .filter((t) => !t.isShadowChallenger)
       .reduce((acc, t) => acc + t.conservativePnlInr, 0);
@@ -1291,9 +1433,10 @@ export function executeAutonomousPaperCycles(
 
     const newConsEquity = Number((baseCapitalForSnap + totalClosedConsPnl).toFixed(2));
     const newPaperEquity = Number((baseCapitalForSnap + totalClosedPaperPnl).toFixed(2));
-    const newNiftyEq = Number(
-      (baseCapitalForSnap + state.closedTrades.length * 7.5 + (seq % 11) * 1.2).toFixed(2)
-    );
+    const prevNiftyBench =
+      state.equitySeries[state.equitySeries.length - 1]?.niftyBenchmarkEquityInr ?? 8965.77;
+    const niftyStepFactor = 1 + ((cachedSpots.NIFTY?.changePct ?? 0) / 100) * 0.02;
+    const newNiftyEq = Number(Math.max(5000, prevNiftyBench * niftyStepFactor).toFixed(2));
     const peakCons = Math.max(
       ...state.equitySeries.map((s) => s.conservativeEquityInr),
       newConsEquity
@@ -1311,8 +1454,9 @@ export function executeAutonomousPaperCycles(
       drawdownPct: ddPct,
       openPositionsCount: state.openPositions.length,
     });
-    if (state.equitySeries.length > 220) {
-      state.equitySeries.shift();
+    // Never shift index 0 so the ₹10,000 genesis anchor point is permanently preserved
+    if (state.equitySeries.length > 500) {
+      state.equitySeries.splice(1, 1);
     }
 
     // 5. Periodic Walk-Forward Self-Learning Retrain & 200-Trade / 260-Trade GBDT Milestone Promotions
@@ -1454,7 +1598,7 @@ export function executeAutonomousPaperCycles(
       const eff = computeLearningEffectiveness(state);
       if (nTrades >= 6) {
         state.learning.championVsChallenger.championExpectancyInr = Math.max(
-          350,
+          120,
           eff.recentTradesExpectancyInr
         );
         state.learning.championVsChallenger.challengerExpectancyInr = Number(

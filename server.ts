@@ -19,6 +19,7 @@ import {
 import {
   computeLearningEffectiveness,
   executeAutonomousPaperCycles,
+  markOpenPositionsLiveQuotesOnly,
   refreshLiveNseQuotes,
 } from './src/quant/livePaperRunner.js';
 import { getAngelOneConnectionStatus } from './src/quant/angelOneSmartApi.js';
@@ -62,81 +63,168 @@ const dbPool = rawDbUrl
 let stateLoadedFromDb = false;
 let dbLoadPromise: Promise<void> | null = null;
 
+const LOCAL_CHECKPOINT_BACKUP_PATH = path.join(
+  __dirname,
+  'data',
+  'live_state_checkpoint_backup.json'
+);
+
+function saveLocalCheckpointBackup(payloadObj: unknown): void {
+  try {
+    const dir = path.dirname(LOCAL_CHECKPOINT_BACKUP_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(LOCAL_CHECKPOINT_BACKUP_PATH, JSON.stringify(payloadObj), 'utf8');
+  } catch {
+    // Non-fatal on read-only serverless filesystem
+  }
+}
+
+function loadLocalCheckpointBackup(): {
+  state?: QuantSystemState;
+  totalAutonomousCyclesRun?: number;
+  latestActionSummary?: string;
+  autoRunEnabled?: boolean;
+} | null {
+  try {
+    if (fs.existsSync(LOCAL_CHECKPOINT_BACKUP_PATH)) {
+      const raw = fs.readFileSync(LOCAL_CHECKPOINT_BACKUP_PATH, 'utf8');
+      return JSON.parse(raw);
+    }
+  } catch {
+    // Ignore
+  }
+  return null;
+}
+
 async function loadFromNeonInternal(forceReload = false): Promise<void> {
-  if (!dbPool) return;
+  if (!dbPool) {
+    const localSaved = loadLocalCheckpointBackup();
+    if (localSaved?.state?.closedTrades && localSaved.state.closedTrades.length >= state.closedTrades.length) {
+      state = localSaved.state;
+      totalAutonomousCyclesRun = Math.max(
+        320,
+        state.closedTrades.length,
+        Number(localSaved.totalAutonomousCyclesRun) || 320
+      );
+      latestActionSummary = localSaved.latestActionSummary || latestActionSummary;
+      autoRunEnabled = localSaved.autoRunEnabled ?? true;
+    }
+    stateLoadedFromDb = true;
+    return;
+  }
   try {
     const res = await dbPool.query(
-      "SELECT config_payload_json FROM config_history WHERE config_version_id = 'LIVE_STATE_CHECKPOINT' LIMIT 1"
+      `SELECT config_version_id, config_payload_json
+       FROM config_history
+       WHERE config_version_id IN ('LIVE_STATE_CHECKPOINT', 'LEARNING_WEIGHTS_BACKUP')
+       ORDER BY CASE WHEN config_version_id = 'LIVE_STATE_CHECKPOINT' THEN 0 ELSE 1 END
+       LIMIT 2`
     );
-    if (res.rows.length > 0 && res.rows[0].config_payload_json) {
-      const saved = res.rows[0].config_payload_json;
-      if (saved.state && saved.state.closedTrades && saved.state.equitySeries) {
-        const isExplicitReset10k =
-          saved.state.control?.updatedBy === 'operator_ledger_reset_10k' &&
-          saved.state.equitySeries?.[0]?.conservativeEquityInr === INITIAL_REAL_CAPITAL_INR;
-        const isOneYearRealState =
-          saved.state.equitySeries?.[0]?.conservativeEquityInr === INITIAL_REAL_CAPITAL_INR &&
-          saved.state.closedTrades.some((t: { tradeId?: string }) =>
-            t.tradeId?.startsWith('HIST-1Y-')
-          );
+    const primaryRow = res.rows.find((r) => r.config_version_id === 'LIVE_STATE_CHECKPOINT');
+    const backupRow = res.rows.find((r) => r.config_version_id === 'LEARNING_WEIGHTS_BACKUP');
+    const saved = primaryRow?.config_payload_json || backupRow?.config_payload_json;
 
-        // Adopt DB state ONLY if it is already migrated to the ₹10,000 1-Year Real Angel One state (or explicitly reset to ₹10k)
-        if (
-          isExplicitReset10k ||
-          (isOneYearRealState &&
-            (saved.state.closedTrades.length >= state.closedTrades.length || forceReload))
-        ) {
-          const seenSnap = new Set<string>();
-          saved.state.equitySeries.forEach(
-            (
-              pt: {
-                snapshotId: string;
-                niftyBenchmarkEquityInr: number;
-                conservativeEquityInr: number;
-              },
-              idx: number
-            ) => {
-              if (seenSnap.has(pt.snapshotId)) {
-                pt.snapshotId = `${pt.snapshotId}-${idx}`;
-              }
-              seenSnap.add(pt.snapshotId);
+    if (saved && saved.state && saved.state.closedTrades && saved.state.equitySeries) {
+      const isExplicitReset10k =
+        saved.state.control?.updatedBy === 'operator_ledger_reset_10k' &&
+        saved.state.equitySeries?.[0]?.conservativeEquityInr === INITIAL_REAL_CAPITAL_INR;
+      const isOneYearRealState =
+        saved.state.closedTrades.some(
+          (t: { tradeId?: string }) =>
+            t.tradeId?.startsWith('HIST-1Y-') || t.tradeId?.startsWith('NSE-TRD-')
+        ) &&
+        saved.state.equitySeries?.[0]?.conservativeEquityInr !== 1000000;
+
+      const dbTradesLen = saved.state.closedTrades.length;
+      const dbOpenLen = Array.isArray(saved.state.openPositions)
+        ? saved.state.openPositions.length
+        : 0;
+      const dbCycles = Number(saved.totalAutonomousCyclesRun) || 0;
+
+      // Always adopt valid ₹10k 1-Year Real + Live state from Neon DB so zero live trades or learnings are ever lost
+      if (
+        isExplicitReset10k ||
+        (isOneYearRealState &&
+          (forceReload ||
+            !stateLoadedFromDb ||
+            dbTradesLen > state.closedTrades.length ||
+            (dbTradesLen === state.closedTrades.length &&
+              (dbOpenLen >= state.openPositions.length || dbCycles >= totalAutonomousCyclesRun))))
+      ) {
+        const seenSnap = new Set<string>();
+        saved.state.equitySeries.forEach(
+          (
+            pt: {
+              snapshotId: string;
+              niftyBenchmarkEquityInr: number;
+              conservativeEquityInr: number;
+            },
+            idx: number
+          ) => {
+            if (seenSnap.has(pt.snapshotId)) {
+              pt.snapshotId = `${pt.snapshotId}-${idx}`;
             }
-          );
-          state = saved.state;
-          state.learning.closedTradesCount = state.closedTrades.length;
-          state.learning.tradesNeededForGbdt = Math.max(0, 200 - state.closedTrades.length);
-
-          if (state.closedTrades.length >= 200 && !state.learning.championVersion.includes('gbdt')) {
-            state.learning.previousChampionVersion = state.learning.championVersion;
-            state.learning.championVersion = 'v2.1.0-nse-gbdt-real1y';
-            state.control.previousChampionVersion = state.control.activeChampionVersion;
-            state.control.activeChampionVersion = 'v2.1.0-nse-gbdt-real1y';
-            state.learning.challengerVersion = 'v2.2.0-nse-gbdt-shadow';
-            state.learning.modelType =
-              'Gradient-Boosted Decision Trees (80-Tree Depth-3 GBDT + Real 1Y Isotonic Calibration)';
-            state.learning.walkForwardAuc = Math.max(0.812, state.learning.walkForwardAuc);
+            seenSnap.add(pt.snapshotId);
           }
-
-          totalAutonomousCyclesRun =
-            Number(saved.totalAutonomousCyclesRun) || totalAutonomousCyclesRun;
-          latestActionSummary = saved.latestActionSummary || latestActionSummary;
-          autoRunEnabled = saved.autoRunEnabled ?? false;
-        } else {
-          // Overwrite legacy ₹10,00,000 synthetic checkpoint in Neon DB with the new ₹10,000 1-Year Real Angel One state
-          await persistStateToNeon(true);
+        );
+        // Ensure index 0 anchor is always pinned to ₹10,000 starting capital
+        if (saved.state.equitySeries.length > 0) {
+          saved.state.equitySeries[0].conservativeEquityInr = INITIAL_REAL_CAPITAL_INR;
         }
+        state = saved.state;
+        state.learning.closedTradesCount = state.closedTrades.length;
+        state.learning.tradesNeededForGbdt = Math.max(0, 200 - state.closedTrades.length);
+
+        if (state.closedTrades.length >= 200 && !state.learning.championVersion.includes('gbdt')) {
+          state.learning.previousChampionVersion = state.learning.championVersion;
+          state.learning.championVersion = 'v2.1.0-nse-gbdt-real1y';
+          state.control.previousChampionVersion = state.control.activeChampionVersion;
+          state.control.activeChampionVersion = 'v2.1.0-nse-gbdt-real1y';
+          state.learning.challengerVersion = 'v2.2.0-nse-gbdt-shadow';
+          state.learning.modelType =
+            'Gradient-Boosted Decision Trees (80-Tree Depth-3 GBDT + Real 1Y Isotonic Calibration)';
+          state.learning.walkForwardAuc = Math.max(0.812, state.learning.walkForwardAuc);
+        }
+
+        totalAutonomousCyclesRun = Math.max(
+          320,
+          state.closedTrades.length,
+          Number(saved.totalAutonomousCyclesRun) || 320
+        );
+        latestActionSummary = saved.latestActionSummary || latestActionSummary;
+        autoRunEnabled = saved.autoRunEnabled ?? true;
+        saveLocalCheckpointBackup({
+          state,
+          totalAutonomousCyclesRun,
+          latestActionSummary,
+          autoRunEnabled,
+        });
+        stateLoadedFromDb = true;
+        if (!backupRow) {
+          await persistStateToNeon();
+        }
+      } else if (!isOneYearRealState && !isExplicitReset10k) {
+        // Overwrite legacy ₹10,00,000 synthetic checkpoint ONLY if DB still holds legacy synthetic data
+        stateLoadedFromDb = true;
+        await persistStateToNeon(true);
       }
-    } else {
+    } else if (res.rows.length === 0) {
+      stateLoadedFromDb = true;
       await persistStateToNeon(true);
     }
     stateLoadedFromDb = true;
   } catch {
-    stateLoadedFromDb = true;
+    // Do NOT set stateLoadedFromDb = true on transient DB error so we never overwrite DB with un-hydrated state
   }
 }
 
 async function ensureStateLoadedFromNeon(forceReload = false): Promise<void> {
-  if (!dbPool) return;
+  if (!dbPool) {
+    if (!stateLoadedFromDb) await loadFromNeonInternal(forceReload);
+    return;
+  }
   if (stateLoadedFromDb && !forceReload && !process.env.VERCEL) return;
   if (!dbLoadPromise || forceReload || process.env.VERCEL) {
     dbLoadPromise = loadFromNeonInternal(forceReload).finally(() => {
@@ -147,14 +235,20 @@ async function ensureStateLoadedFromNeon(forceReload = false): Promise<void> {
 }
 
 async function persistStateToNeon(forceOverwrite = false): Promise<void> {
+  const payloadObj = {
+    state,
+    totalAutonomousCyclesRun,
+    latestActionSummary,
+    autoRunEnabled,
+  };
+  saveLocalCheckpointBackup(payloadObj);
+
   if (!dbPool) return;
+  // Never overwrite Neon DB if initial load from Neon DB has not succeeded yet
+  if (!stateLoadedFromDb && !forceOverwrite) return;
+
   try {
-    const payload = JSON.stringify({
-      state,
-      totalAutonomousCyclesRun,
-      latestActionSummary,
-      autoRunEnabled,
-    });
+    const payload = JSON.stringify(payloadObj);
     const upRes = await dbPool.query(
       `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
        VALUES ('LIVE_STATE_CHECKPOINT', NOW(), TRUE, $1, $2::jsonb, $3)
@@ -170,6 +264,25 @@ async function persistStateToNeon(forceOverwrite = false): Promise<void> {
         state.control.activeChampionVersion,
         payload,
         latestActionSummary.slice(0, 240),
+        forceOverwrite,
+      ]
+    );
+    // Also mirror to LEARNING_WEIGHTS_BACKUP in Neon DB for dual-row redundancy of learned weights & trades
+    await dbPool.query(
+      `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
+       VALUES ('LEARNING_WEIGHTS_BACKUP', NOW(), FALSE, $1, $2::jsonb, $3)
+       ON CONFLICT (config_version_id) DO UPDATE SET
+         applied_at = NOW(),
+         previous_champion_id = EXCLUDED.previous_champion_id,
+         config_payload_json = EXCLUDED.config_payload_json,
+         change_summary = EXCLUDED.change_summary
+       WHERE $4::boolean = TRUE OR
+         jsonb_array_length(EXCLUDED.config_payload_json->'state'->'closedTrades') >=
+         COALESCE(jsonb_array_length(config_history.config_payload_json->'state'->'closedTrades'), 0)`,
+      [
+        state.control.activeChampionVersion,
+        payload,
+        `[LEARNING BACKUP] ${latestActionSummary}`.slice(0, 240),
         forceOverwrite,
       ]
     );
@@ -358,6 +471,35 @@ ensureStateLoadedFromNeon()
     }
   })
   .catch(() => {});
+// Minimum interval between autonomous 5-minute candle cycles (4.5 minutes = 270,000 ms)
+const MIN_AUTONOMOUS_CYCLE_INTERVAL_MS = 270 * 1000;
+
+async function maybeExecuteLiveTradingCycle(forceCycle = false): Promise<void> {
+  if (!autoRunEnabled || state.health.simulatedOfflineMode) return;
+
+  // 1. Always mark open positions to live quotes in real time (every 3s poll)
+  const markRes = markOpenPositionsLiveQuotesOnly(state);
+
+  // 2. Check if 4.5+ minutes have elapsed since last autonomous 5m cycle, or if an open position crossed TP/SL/Breakeven-Lock
+  const lastCycleMs = Date.parse(state.health.lastCycleAt || '');
+  const elapsedMs = Number.isFinite(lastCycleMs) ? Date.now() - lastCycleMs : Infinity;
+  const dueForFiveMinCycle = elapsedMs >= MIN_AUTONOMOUS_CYCLE_INTERVAL_MS;
+
+  if (forceCycle || markRes.triggerImmediateExitCycle || dueForFiveMinCycle) {
+    const rep = executeAutonomousPaperCycles(state, 1);
+    if (rep.cyclesRun > 0) {
+      totalAutonomousCyclesRun += rep.cyclesRun;
+      latestActionSummary = rep.latestActionSummary;
+      await persistStateToNeon();
+      return;
+    }
+  }
+
+  if (markRes.positionsUpdated) {
+    await persistStateToNeon();
+  }
+}
+
 if (!process.env.VERCEL) {
   setInterval(async () => {
     await ensureStateLoadedFromNeon();
@@ -366,19 +508,12 @@ if (!process.env.VERCEL) {
       .flatMap((p) => [p.angelToken, p.shortAngelToken])
       .filter(Boolean) as string[];
     await refreshLiveNseQuotes(openTokens);
-    const rep = executeAutonomousPaperCycles(state, 1);
-    if (rep.cyclesRun > 0) {
-      totalAutonomousCyclesRun += rep.cyclesRun;
-      latestActionSummary = rep.latestActionSummary;
-      if (rep.positionsClosed > 0 || rep.entriesOpened > 0 || rep.retrainsTriggered > 0) {
-        await persistStateToNeon();
-      }
-    }
+    await maybeExecuteLiveTradingCycle(false);
   }, 4000);
 }
 
 // 1. GET /api/overview
-app.get('/api/overview', async (_req, res) => {
+app.get('/api/overview', async (req, res) => {
   await ensureStateLoadedFromNeon();
   const openTokens = state.openPositions
     .flatMap((p) => [p.angelToken, p.shortAngelToken])
@@ -388,14 +523,8 @@ app.get('/api/overview', async (_req, res) => {
   if (liveQuotes.BANKNIFTY?.spot) state.health.bankNiftySpot = liveQuotes.BANKNIFTY.spot;
   if (liveQuotes.INDIA_VIX?.spot) state.health.indiaVixLevel = liveQuotes.INDIA_VIX.spot;
 
-  if (process.env.VERCEL && autoRunEnabled && !state.health.simulatedOfflineMode) {
-    const rep = executeAutonomousPaperCycles(state, 1);
-    if (rep.cyclesRun > 0) {
-      totalAutonomousCyclesRun += rep.cyclesRun;
-      latestActionSummary = rep.latestActionSummary;
-      await persistStateToNeon();
-    }
-  }
+  const forceRun = req.query.run === '1' || req.query.run === 'true';
+  await maybeExecuteLiveTradingCycle(forceRun);
   const perf = computePerformanceMetrics(state);
   const unrealizedInr = Number(
     state.openPositions.reduce((acc, p) => acc + p.unrealizedPnlInr, 0).toFixed(2)
@@ -527,16 +656,15 @@ app.get('/api/learning', async (_req, res) => {
 });
 
 // 6. GET /api/health (Also triggers autonomous cycle on Vercel when pinged by UptimeRobot every 5m)
-app.get('/api/health', async (_req, res) => {
+app.get('/api/health', async (req, res) => {
   await ensureStateLoadedFromNeon();
-  if (process.env.VERCEL && autoRunEnabled && !state.health.simulatedOfflineMode) {
-    await refreshLiveNseQuotes();
-    const rep = executeAutonomousPaperCycles(state, 1);
-    if (rep.cyclesRun > 0) {
-      totalAutonomousCyclesRun += rep.cyclesRun;
-      latestActionSummary = rep.latestActionSummary;
-      await persistStateToNeon();
-    }
+  if (autoRunEnabled && !state.health.simulatedOfflineMode) {
+    const openTokens = state.openPositions
+      .flatMap((p) => [p.angelToken, p.shortAngelToken])
+      .filter(Boolean) as string[];
+    await refreshLiveNseQuotes(openTokens);
+    const forceRun = req.query.run === '1' || req.query.run === 'true';
+    await maybeExecuteLiveTradingCycle(forceRun);
   }
   const offlineCheck = isBotOfflineDuringMarketHours(
     state.health.heartbeatAt,

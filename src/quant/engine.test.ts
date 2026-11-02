@@ -439,4 +439,28 @@ test('1-year real Angel One historical replay starts with ₹10,000 capital and 
   assert.equal(report.maxLotsTraded >= 3, true);
   assert.equal(report.endingConservativeEquityInr > 25000, true);
   assert.equal(state.learning.championVersion, 'v2.1.0-nse-gbdt-1y-real');
+
+  // Verify that running 450+ live autonomous cycles never shifts away the ₹10,000 genesis anchor or loses 1Y learnings
+  const { executeAutonomousPaperCycles, WATCHLIST_PRIORITY_SYMBOLS } = await import(
+    './livePaperRunner'
+  );
+  assert.deepEqual(WATCHLIST_PRIORITY_SYMBOLS.slice(0, 4), [
+    'NIFTY',
+    'BANKNIFTY',
+    'FINNIFTY',
+    'INDIA_VIX',
+  ]);
+  const aucBefore = state.learning.walkForwardAuc;
+  const tradesBefore = state.closedTrades.length;
+  executeAutonomousPaperCycles(state, 225);
+  executeAutonomousPaperCycles(state, 225);
+
+  assert.equal(state.equitySeries[0].conservativeEquityInr, 10000);
+  assert.equal(state.learning.walkForwardAuc >= aucBefore, true);
+  assert.equal(state.closedTrades.length >= tradesBefore, true);
+  assert.equal(
+    state.closedTrades.some((t) => t.tradeId.startsWith('HIST-1Y-')),
+    true
+  );
 });
+
