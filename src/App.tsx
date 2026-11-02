@@ -123,7 +123,7 @@ export default function App() {
       .then((r) => r.json())
       .then((b) => setCandidates(b.rows ?? []))
       .catch(() => setCandidates([]));
-  }, [tab, state?.counters.tradesClosed, state?.counters.candidatesClosed]);
+  }, [tab, state?.counters?.tradesClosed, state?.counters?.candidatesClosed]);
 
   useEffect(() => {
     if (tab !== 'performance' || research) return;
