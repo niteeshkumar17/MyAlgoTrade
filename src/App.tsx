@@ -1,1057 +1,506 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useCallback, useEffect, useState } from 'react';
-import {
-  AlertTriangle,
-  Clock,
-  Moon,
-  PauseCircle,
-  PlayCircle,
-  RefreshCw,
-  RotateCcw,
-  Sun,
-} from 'lucide-react';
 import { EquityCurveChart } from './components/EquityCurveChart';
-import { PositionsAndTradesView } from './components/PositionsAndTradesView';
-import { PerformanceAndBacktestView } from './components/PerformanceAndBacktestView';
-import { LearningAndHealthView } from './components/LearningAndHealthView';
-import { CodeAndGuideView } from './components/CodeAndGuideView';
-import {
-  ClosedOptionTrade,
-  EquitySnapshotPoint,
-  formatInr,
-  INDEX_SYMBOLS,
-  OpenOptionPosition,
-  OptionRight,
-  SkippedSignalCounterfactual,
-  WATCHLIST_PRIORITY_SYMBOLS,
-} from './quant/engine';
-import type { LiveSpotQuote } from './quant/livePaperRunner';
-import type { OneMonthHistoricalReplayReport } from './quant/historicalReplay';
-import type { QuantSystemState, StrategyBacktestRow } from './quant/seedStore';
+import { formatInr, formatIst, formatPct, formatSigned } from './quant/format';
+import type { DashboardPayload } from './quant/report';
+import type { GroupStat } from './quant/stats';
+import type { Candidate, ClosedTrade, PaperPosition } from './quant/types';
 
-type ActiveSection = 'overview' | 'positions' | 'performance' | 'learning' | 'code';
+interface ResearchView {
+  disclaimer: string;
+  summary: { n: number; winRate: number | null; avgR: number | null; rCi90: [number, number] | null };
+  oppositeDirectionBaseline: { n: number; avgR: number | null };
+  portfolio: {
+    startingCapitalInr: number;
+    endingEquityInr: number;
+    returnPct: number;
+    maxDrawdownPct: number;
+    taken: number;
+    skipped: number;
+  };
+  byStrategy: GroupStat[];
+}
+
+type Tab = 'overview' | 'book' | 'performance' | 'learning' | 'rules';
+type StateResponse = DashboardPayload & { persistent?: boolean; ledger?: string | null };
+
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'book', label: 'Positions & trades' },
+  { id: 'performance', label: 'Performance' },
+  { id: 'learning', label: 'Learning' },
+  { id: 'rules', label: 'How it works' },
+];
+
+function pnlClass(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n) || n === 0) return 'text-slate-300';
+  return n > 0 ? 'text-emerald-400' : 'text-rose-400';
+}
+
+function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+      <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-1 text-xl font-semibold tabular-nums">{value}</div>
+      {sub ? <div className="mt-1 text-xs text-slate-500">{sub}</div> : null}
+    </div>
+  );
+}
+
+function ScoreTable({ title, rows, money }: { title: string; rows: GroupStat[]; money: string }) {
+  if (rows.length === 0) return <p className="text-sm text-slate-500">No {title.toLowerCase()} yet.</p>;
+  return (
+    <div>
+      <h3 className="mb-2 text-sm font-medium text-slate-300">{title}</h3>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="text-xs uppercase text-slate-500">
+            <tr>
+              <th className="py-2 pr-3">Group</th>
+              <th className="py-2 pr-3">N</th>
+              <th className="py-2 pr-3">Win</th>
+              <th className="py-2 pr-3">Avg R</th>
+              <th className="py-2">{money}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.key} className="border-t border-slate-800">
+                <td className="py-2 pr-3">{row.key}</td>
+                <td className="py-2 pr-3 tabular-nums">{row.n}</td>
+                <td className="py-2 pr-3 tabular-nums">{row.winRate === null ? '—' : formatPct(row.winRate * 100)}</td>
+                <td className={`py-2 pr-3 tabular-nums ${pnlClass(row.avgR)}`}>{formatSigned(row.avgR, 3)}</td>
+                <td className={`py-2 tabular-nums ${pnlClass(row.netPnlInr)}`}>{formatInr(row.netPnlInr)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
-  const [activeSection, setActiveSection] = useState<ActiveSection>('overview');
-  const [darkMode, setDarkMode] = useState<boolean>(true);
-  const [timezoneMode, setTimezoneMode] = useState<'IST' | 'LOCAL'>('IST');
-  const [steppingCycles, setSteppingCycles] = useState<boolean>(false);
+  const [tab, setTab] = useState<Tab>('overview');
+  const [state, setState] = useState<StateResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [trades, setTrades] = useState<ClosedTrade[]>([]);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [research, setResearch] = useState<ResearchView | null>(null);
+  const [secret, setSecret] = useState(() => localStorage.getItem('paper-admin-secret') ?? '');
+  const [adminNote, setAdminNote] = useState<string | null>(null);
 
-  const [overviewData, setOverviewData] = useState<{
-    control: QuantSystemState['control'];
-    health: QuantSystemState['health'] & { heartbeatAgeMinutes: number; isOffline: boolean };
-    liveRunner?: {
-      autoRunEnabled: boolean;
-      totalAutonomousCyclesRun: number;
-      latestActionSummary: string;
-      liveQuotes: Record<string, LiveSpotQuote>;
-      angelOneStatus?: {
-        configured: boolean;
-        authenticated: boolean;
-        providerName: string;
-        clientCodeMasked: string;
-        feedMode: 'ANGEL_ONE_SMARTAPI_FULL' | 'FALLBACK_PUBLIC_NSE';
-        tokensTracked: number;
-        lastLoginAt: string | null;
-        lastQuoteFetchAt: string | null;
-        lastError: string | null;
-      };
-      istMarketStatus?: {
-        isOpen: boolean;
-        istTimeFormatted: string;
-        reason: string;
-      };
-      learningComparison: {
-        earlyTradesExpectancyInr: number;
-        recentTradesExpectancyInr: number;
-        earlyWinRatePct: number;
-        recentWinRatePct: number;
-        gateAvoidedLossesCount: number;
-        gateAvoidedLossesSavedInr: number;
-      };
-    };
-    headline: {
-      conservativeEquityInr: number;
-      brokerPaperEquityInr: number;
-      niftyBenchmarkEquityInr: number;
-      todayPnlInr: number;
-      realizedPnlInr: number;
-      brokerPaperRealizedPnlInr: number;
-      unrealizedPnlInr: number;
-      currentDrawdownPct: number;
-      maxDrawdownPct: number;
-      openPositionsCount: number;
-      closedTradesCount: number;
-      sampleSizeTarget: number;
-    };
-    equitySeries: EquitySnapshotPoint[];
-    historicalReplayReport?: OneMonthHistoricalReplayReport | null;
-  } | null>(null);
-
-  const [positions, setPositions] = useState<OpenOptionPosition[]>([]);
-  const [trades, setTrades] = useState<ClosedOptionTrade[]>([]);
-  const [skippedSignals, setSkippedSignals] = useState<SkippedSignalCounterfactual[]>([]);
-  const [perfData, setPerfData] = useState<{
-    summary: {
-      tradeCount: number;
-      sampleSizeTarget: number;
-      winRate: number;
-      avgWinInr: number;
-      avgLossInr: number;
-      profitFactor: number;
-      expectancyInr: number;
-      maxDrawdownPct: number;
-      sharpeRatio: number;
-      totalConservativeRealizedPnlInr: number;
-      totalBrokerPaperRealizedPnlInr: number;
-    };
-    byStrategy: Array<{
-      key: string;
-      tradeCount: number;
-      winRate: number;
-      expectancyInr: number;
-      conservativeNetPnlInr: number;
-      brokerPaperNetPnlInr: number;
-    }>;
-    byUnderlying: Array<{
-      key: string;
-      tradeCount: number;
-      winRate: number;
-      expectancyInr: number;
-      conservativeNetPnlInr: number;
-      brokerPaperNetPnlInr: number;
-    }>;
-    byRegime: Array<{
-      key: string;
-      tradeCount: number;
-      winRate: number;
-      expectancyInr: number;
-      conservativeNetPnlInr: number;
-      brokerPaperNetPnlInr: number;
-    }>;
-    byDteBucket: Array<{
-      key: string;
-      tradeCount: number;
-      winRate: number;
-      expectancyInr: number;
-      conservativeNetPnlInr: number;
-      brokerPaperNetPnlInr: number;
-    }>;
-    byTimeOfDay: Array<{
-      key: string;
-      tradeCount: number;
-      winRate: number;
-      expectancyInr: number;
-      conservativeNetPnlInr: number;
-      brokerPaperNetPnlInr: number;
-    }>;
-    backtestResults: StrategyBacktestRow[];
-    historicalReplayReport?: OneMonthHistoricalReplayReport | null;
-  } | null>(null);
-
-  const [learningData, setLearningData] = useState<QuantSystemState['learning'] | null>(null);
-
-  useEffect(() => {
-    const root = document.documentElement;
-    if (darkMode) {
-      root.classList.add('dark');
-    } else {
-      root.classList.remove('dark');
-    }
-  }, [darkMode]);
-
-  const fetchAllTelemetry = useCallback(async () => {
+  const loadState = useCallback(async () => {
     try {
-      const [ovRes, posRes, trdRes, prfRes, lrnRes] = await Promise.all([
-        fetch('/api/overview'),
-        fetch('/api/positions'),
-        fetch('/api/trades'),
-        fetch('/api/performance'),
-        fetch('/api/learning'),
-      ]);
-      if (ovRes.ok) setOverviewData(await ovRes.json());
-      if (posRes.ok) {
-        const p = await posRes.json();
-        setPositions(p.positions ?? []);
-      }
-      if (trdRes.ok) {
-        const t = await trdRes.json();
-        setTrades(t.trades ?? []);
-        setSkippedSignals(t.skippedSignals ?? []);
-      }
-      if (prfRes.ok) setPerfData(await prfRes.json());
-      if (lrnRes.ok) setLearningData(await lrnRes.json());
-    } catch {
-      // Handled gracefully
+      const res = await fetch('/api/state');
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'State request failed');
+      setState(body);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load state');
     }
   }, []);
 
   useEffect(() => {
-    fetchAllTelemetry();
-    const pollTimer = setInterval(() => {
-      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
-        fetchAllTelemetry();
-      }
-    }, 3000);
-    const handleVisibilityOrFocus = () => {
-      if (document.visibilityState === 'visible') {
-        fetchAllTelemetry();
-      }
-    };
-    window.addEventListener('focus', handleVisibilityOrFocus);
-    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    void loadState();
+    const poll = setInterval(() => void loadState(), 15_000);
+    const tick = setInterval(() => {
+      void fetch('/api/tick').finally(() => void loadState());
+    }, 60_000);
     return () => {
-      clearInterval(pollTimer);
-      window.removeEventListener('focus', handleVisibilityOrFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      clearInterval(poll);
+      clearInterval(tick);
     };
-  }, [fetchAllTelemetry]);
+  }, [loadState]);
 
-  const formatTimestamp = useCallback(
-    (iso: string) => {
-      try {
-        const dt = new Date(iso);
-        if (timezoneMode === 'IST') {
-          return (
-            dt.toLocaleString('en-IN', {
-              timeZone: 'Asia/Kolkata',
-              month: 'short',
-              day: '2-digit',
-              hour: '2-digit',
-              minute: '2-digit',
-              hour12: false,
-            }) + ' IST'
-          );
-        }
-        return (
-          dt.toLocaleString('en-US', {
-            month: 'short',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false,
-          }) + ' Local'
-        );
-      } catch {
-        return iso;
-      }
-    },
-    [timezoneMode]
-  );
+  useEffect(() => {
+    if (tab !== 'book' && tab !== 'performance') return;
+    void fetch('/api/journal?kind=trades')
+      .then((r) => r.json())
+      .then((b) => setTrades(b.rows ?? []))
+      .catch(() => setTrades([]));
+    void fetch('/api/journal?kind=candidates')
+      .then((r) => r.json())
+      .then((b) => setCandidates(b.rows ?? []))
+      .catch(() => setCandidates([]));
+  }, [tab, state?.counters.tradesClosed, state?.counters.candidatesClosed]);
 
-  const handleTogglePauseEntries = async () => {
-    if (!overviewData) return;
-    const nextState = !overviewData.control.newEntriesEnabled;
-    await fetch('/api/control', {
+  useEffect(() => {
+    if (tab !== 'performance' || research) return;
+    void fetch('/api/research')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => setResearch(b))
+      .catch(() => setResearch(null));
+  }, [tab, research]);
+
+  async function admin(action: string) {
+    if (action === 'reset_ledger' && !window.confirm('Start a new ₹50,000 ledger? The old one stays in the database but is no longer active.')) return;
+    localStorage.setItem('paper-admin-secret', secret);
+    const res = await fetch('/api/admin', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'toggle_pause', newEntriesEnabled: nextState }),
+      headers: { 'Content-Type': 'application/json', 'x-admin-secret': secret },
+      body: JSON.stringify({ action }),
     });
-    await fetchAllTelemetry();
-  };
+    const body = await res.json();
+    setAdminNote(res.ok ? `Saved (${body.ledgerId ?? 'ok'})` : body.error || 'Rejected');
+    await loadState();
+  }
 
-  const handleToggleAutoRun = async () => {
-    const cur = overviewData?.liveRunner?.autoRunEnabled ?? true;
-    await fetch('/api/control', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'toggle_autorun', autoRun: !cur }),
-    });
-    await fetchAllTelemetry();
-  };
-
-  const handleToggleSimulateOffline = async (makeOffline: boolean) => {
-    await fetch('/api/control', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'simulate_offline', simulateOffline: makeOffline }),
-    });
-    await fetchAllTelemetry();
-  };
-
-  const handlePromoteChallenger = async () => {
-    await fetch('/api/control', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'promote_challenger' }),
-    });
-    await fetchAllTelemetry();
-  };
-
-  const handleSetMinWinProb = async (minWinProb: number) => {
-    await fetch('/api/control', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'set_min_win_prob', minWinProb }),
-    });
-    await fetchAllTelemetry();
-  };
-
-  const handleRollbackChampion = async () => {
-    await fetch('/api/control', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'rollback_champion' }),
-    });
-    await fetchAllTelemetry();
-  };
-
-  const handleToggleStrictMarketHours = async (strictOnly: boolean) => {
-    await fetch('/api/control', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        action: 'toggle_strict_market_hours',
-        strictLiveMarketHoursOnly: strictOnly,
-      }),
-    });
-    await fetchAllTelemetry();
-  };
-
-  const handleResetPaperLedger = async () => {
-    await fetch('/api/control', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'reset_paper_ledger' }),
-    });
-    await fetchAllTelemetry();
-  };
-
-  const handleRunDryRunCycle = async (
-    symbol: string,
-    strategy: string,
-    right: OptionRight
-  ) => {
-    await fetch('/api/cycle', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ symbol, strategy, right }),
-    });
-    await fetchAllTelemetry();
-  };
-
-  const handleRunHistoricalReplay = async () => {
-    setSteppingCycles(true);
-    try {
-      await fetch('/api/historical-replay', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          fromDateIst: '2025-11-01 09:15',
-          toDateIst: '2026-10-30 15:30',
-        }),
-      });
-      await fetchAllTelemetry();
-    } finally {
-      setSteppingCycles(false);
-    }
-  };
-
-  const isOffline = overviewData?.health.isOffline ?? false;
-  const entriesEnabled = overviewData?.control.newEntriesEnabled ?? true;
-  const killSwitchActive = overviewData?.control.killSwitchActive ?? false;
-  const autoRunActive = overviewData?.liveRunner?.autoRunEnabled ?? true;
-  const strictHoursOn = overviewData?.control.strictLiveMarketHoursOnly ?? true;
-
-  const botStatusLabel = isOffline
-    ? 'Offline'
-    : killSwitchActive
-    ? 'Kill-Switch Halted'
-    : entriesEnabled
-    ? 'Active (Paper Mode)'
-    : 'Entries Paused';
-
-  const lc = overviewData?.liveRunner?.learningComparison;
-  const winRatePct =
-    perfData?.summary.winRate !== undefined
-      ? (perfData.summary.winRate * 100).toFixed(1)
-      : overviewData?.historicalReplayReport?.winRatePct?.toFixed(1) ?? '68.8';
-  const profitFactor =
-    perfData?.summary.profitFactor !== undefined
-      ? perfData.summary.profitFactor.toFixed(2)
-      : overviewData?.historicalReplayReport?.profitFactor?.toFixed(2) ?? '2.54';
-  const netReturnPct = overviewData
-    ? (((overviewData.headline.conservativeEquityInr - 10000) / 10000) * 100).toFixed(1)
-    : '513.4';
-
-  const regimeLabelMap: Record<string, string> = {
-    trending_up: 'Trending Up',
-    trending_down: 'Trending Down',
-    range: 'Range-Bound',
-    high_volatility: 'High Volatility',
-  };
+  const dash = state && state.ledgerId ? state : null;
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col">
-      {/* Offline Alert Banner */}
-      {isOffline && (
-        <div
-          role="alert"
-          className="bg-rose-600 text-white px-6 py-2 text-xs flex flex-wrap items-center justify-between gap-4"
-        >
-          <div className="flex items-center gap-2 font-medium">
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-            <span>
-              Engine heartbeat delayed ({overviewData?.health.heartbeatAgeMinutes}m ago during NSE
-              hours).
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => handleToggleSimulateOffline(false)}
-            className="px-3 py-1 bg-white text-rose-700 font-semibold rounded-md hover:bg-rose-50 transition-colors whitespace-nowrap shrink-0"
-          >
-            Restore Heartbeat
-          </button>
+    <div className="mx-auto min-h-screen max-w-6xl px-4 py-6">
+      <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.18em] text-sky-400">Paper training only</p>
+          <h1 className="text-2xl font-semibold">NSE debit-spread paper ledger</h1>
+          <p className="mt-1 max-w-2xl text-sm text-slate-400">
+            Fills use the live bid and ask. No broker order is sent from this site. Real money is a later decision, and only after the checklist passes.
+          </p>
         </div>
-      )}
-
-      {/* Strictly 3-Zone Top Bar Contract */}
-      <header className="flex items-center justify-between gap-8 px-6 py-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
-        {/* Zone 1: Single text element wordmark */}
-        <a
-          href="#overview"
-          onClick={(e) => {
-            e.preventDefault();
-            setActiveSection('overview');
-          }}
-          className="text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap shrink-0"
-        >
-          AegisQuant NSE
-        </a>
-
-        {/* Zone 2: 5 concise single-line navigation links */}
-        <nav
-          aria-label="Primary Navigation"
-          className="flex items-center gap-7 text-sm font-medium text-slate-600 dark:text-slate-400 overflow-x-auto"
-        >
-          <button
-            type="button"
-            onClick={() => setActiveSection('overview')}
-            className={`hover:text-slate-900 dark:hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 ${
-              activeSection === 'overview'
-                ? 'text-blue-600 dark:text-blue-400 underline underline-offset-8 decoration-2'
-                : ''
-            }`}
-          >
-            Overview
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveSection('positions')}
-            className={`hover:text-slate-900 dark:hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 ${
-              activeSection === 'positions'
-                ? 'text-blue-600 dark:text-blue-400 underline underline-offset-8 decoration-2'
-                : ''
-            }`}
-          >
-            Positions &amp; Trades
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveSection('performance')}
-            className={`hover:text-slate-900 dark:hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 ${
-              activeSection === 'performance'
-                ? 'text-blue-600 dark:text-blue-400 underline underline-offset-8 decoration-2'
-                : ''
-            }`}
-          >
-            Performance
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveSection('learning')}
-            className={`hover:text-slate-900 dark:hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 ${
-              activeSection === 'learning'
-                ? 'text-blue-600 dark:text-blue-400 underline underline-offset-8 decoration-2'
-                : ''
-            }`}
-          >
-            Learning &amp; Health
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveSection('code')}
-            className={`hover:text-slate-900 dark:hover:text-slate-100 transition-colors whitespace-nowrap shrink-0 py-1 ${
-              activeSection === 'code'
-                ? 'text-blue-600 dark:text-blue-400 underline underline-offset-8 decoration-2'
-                : ''
-            }`}
-          >
-            Architecture
-          </button>
-        </nav>
-
-        {/* Zone 3: 1 primary action */}
-        <div className="flex items-center gap-3 shrink-0">
-          <button
-            type="button"
-            onClick={handleTogglePauseEntries}
-            className={`inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 ${
-              entriesEnabled
-                ? 'bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-200'
-                : 'bg-amber-600 text-white hover:bg-amber-500'
-            }`}
-          >
-            {entriesEnabled ? (
-              <>
-                <PauseCircle className="w-3.5 h-3.5" />
-                Pause New Entries
-              </>
-            ) : (
-              <>
-                <PlayCircle className="w-3.5 h-3.5" />
-                Resume New Entries
-              </>
-            )}
-          </button>
+        <div className="text-right text-xs text-slate-500">
+          <div>{dash ? formatIst(dash.generatedAt) : '—'}</div>
+          <div>{state?.persistent ? 'Saved in Postgres' : 'Not connected to a database'}</div>
         </div>
       </header>
 
-      {/* Clean Single-Line Workspace Context Bar */}
-      <div className="bg-white/60 dark:bg-slate-900/40 border-b border-slate-200 dark:border-slate-800/80 px-6 py-2.5 flex flex-wrap items-center justify-between gap-4 text-xs">
-        <div className="flex flex-wrap items-center gap-2 text-slate-600 dark:text-slate-400 font-mono tabular-nums">
-          <span
-            className={`font-sans font-semibold ${
-              isOffline
-                ? 'text-rose-600 dark:text-rose-400'
-                : entriesEnabled
-                ? 'text-emerald-600 dark:text-emerald-400'
-                : 'text-amber-600 dark:text-amber-400'
-            }`}
-          >
-            {botStatusLabel}
-          </span>
-          <span aria-hidden="true">·</span>
-          <span className="font-sans">
-            {overviewData?.liveRunner?.angelOneStatus?.authenticated
-              ? `Angel One SmartAPI (${overviewData.liveRunner.angelOneStatus.clientCodeMasked})`
-              : 'Angel One Historical + Live Feed'}
-          </span>
-          <span aria-hidden="true">·</span>
-          <span>
-            NIFTY {overviewData?.health.niftySpot.toLocaleString('en-IN') ?? '23,053.1'}
-          </span>
-          <span aria-hidden="true">·</span>
-          <span>INDIA VIX {overviewData?.health.indiaVixLevel ?? 15.27}</span>
-          <span aria-hidden="true">·</span>
-          <span className="font-sans">
-            Regime:{' '}
-            {regimeLabelMap[overviewData?.health.currentRegime ?? 'trending_up'] ??
-              overviewData?.health.currentRegime}
-          </span>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={handleToggleAutoRun}
-            className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 ${
-              autoRunActive
-                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                : 'border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-            }`}
-          >
-            Mon 09:15 IST Auto-Start: {autoRunActive ? 'Armed' : 'Off'}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleToggleStrictMarketHours(!strictHoursOn)}
-            className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 ${
-              strictHoursOn
-                ? 'border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300'
-                : 'border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-            }`}
-          >
-            NSE Hours Only: {strictHoursOn ? 'On' : '24/7'}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setTimezoneMode((prev) => (prev === 'IST' ? 'LOCAL' : 'IST'))}
-            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium border border-slate-200 dark:border-slate-800 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
-          >
-            <Clock className="w-3.5 h-3.5" />
-            {timezoneMode === 'IST' ? 'IST' : 'Local'}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setDarkMode((prev) => !prev)}
-            aria-label={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium border border-slate-200 dark:border-slate-800 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
-          >
-            {darkMode ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-            {darkMode ? 'Light' : 'Dark'}
-          </button>
-        </div>
+      <div className="mb-4 rounded-xl border border-amber-700/40 bg-amber-950/40 px-4 py-3 text-sm text-amber-100">
+        The previous ledger mixed in fabricated trades. This one starts at {formatInr(dash?.startingCapitalInr ?? 50_000)} and records only what the live order book can support.
+        {dash && !dash.control.entriesEnabled ? ' New entries are paused.' : ''}
+        {dash?.killSwitch.active ? ` Kill switch: ${dash.killSwitch.reason}` : ''}
+        {dash?.dailyHalt ? ' Daily loss limit is active until the next session.' : ''}
       </div>
+      {error ? <p className="mb-4 text-sm text-rose-400">{error}</p> : null}
 
-      {/* Main Content Viewport */}
-      <main className="flex-1 max-w-[1400px] w-full mx-auto px-6 py-7">
-        {activeSection === 'overview' && overviewData && (
-          <div className="space-y-6">
-            {/* Row 1: 4 Clean Portfolio KPIs Above the Fold */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-                <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Account Equity (Net Conservative)
-                </div>
-                <div className="text-2xl font-mono tabular-nums font-bold text-slate-900 dark:text-slate-100 mt-1.5">
-                  {formatInr(overviewData.headline.conservativeEquityInr)}
-                </div>
-                <div className="text-xs font-mono tabular-nums text-emerald-600 dark:text-emerald-400 mt-1.5 flex items-center gap-1.5">
-                  <span>+{netReturnPct}%</span>
-                  <span aria-hidden="true" className="text-slate-400">
-                    ·
-                  </span>
-                  <span className="text-slate-500 dark:text-slate-400 font-sans">
-                    Started with ₹10,000
-                  </span>
-                </div>
+      <nav className="mb-5 flex flex-wrap gap-2">
+        {TABS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => setTab(item.id)}
+            className={`rounded-full px-3 py-1.5 text-sm ${tab === item.id ? 'bg-sky-500 text-slate-950' : 'bg-slate-800 text-slate-300'}`}
+          >
+            {item.label}
+          </button>
+        ))}
+      </nav>
+
+      {!dash ? (
+        <p className="text-sm text-slate-400">No ledger yet. The first visit to /api/tick creates a ₹50,000 paper ledger.</p>
+      ) : tab === 'overview' ? (
+        <Overview dash={dash} />
+      ) : tab === 'book' ? (
+        <Book positions={dash.openPositions} candidates={dash.activeCandidates} closedCandidates={candidates} trades={trades} />
+      ) : tab === 'performance' ? (
+        <Performance dash={dash} research={research} />
+      ) : tab === 'learning' ? (
+        <Learning dash={dash} />
+      ) : (
+        <Rules dash={dash} secret={secret} setSecret={setSecret} adminNote={adminNote} onAdmin={admin} />
+      )}
+    </div>
+  );
+}
+
+function Overview({ dash }: { dash: DashboardPayload }) {
+  const spots = dash.market?.spots ?? {};
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat label="Equity at bid/ask" value={formatInr(dash.equity)} sub={`Cash ${formatInr(dash.cash)}`} />
+        <Stat label="Today" value={formatInr(dash.dayPnlInr)} sub={`Realized ${formatInr(dash.realizedPnlInr)}`} />
+        <Stat label="Max drawdown" value={formatPct(dash.maxDrawdownPct, 2)} sub={`Peak ${formatInr(dash.peakEquity)}`} />
+        <Stat label="Open / closed" value={`${dash.openPositions.length} / ${dash.counters.tradesClosed}`} sub={`${dash.counters.candidatesCreated} candidates tracked`} />
+      </div>
+      <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+        <EquityCurveChart data={dash.recentEquity} />
+      </section>
+      <section className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-xl border border-slate-800 p-4">
+          <h2 className="mb-2 text-sm font-medium">Market</h2>
+          <p className="text-sm text-slate-300">{dash.market ? (dash.market.live ? 'Live feed' : 'Not live') : dash.lastCycle ? 'No live quote this cycle' : 'No cycle yet'} — {dash.market?.liveReason ?? dash.lastCycle?.summary ?? 'waiting'}</p>
+          <p className="mt-1 text-xs text-slate-500">Last cycle: {dash.lastCycle ? `${dash.lastCycle.status} · ${dash.lastCycle.summary}` : 'none'}</p>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+            {Object.values(spots).map((q) => (
+              <div key={q.symbol} className="flex justify-between rounded-lg bg-slate-950 px-2 py-1">
+                <span>{q.symbol}</span>
+                <span className="tabular-nums">{q.ltp.toLocaleString('en-IN')}</span>
               </div>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-800 p-4">
+          <h2 className="mb-2 text-sm font-medium">Real-money checklist</h2>
+          <ul className="space-y-1 text-sm">
+            {dash.readiness.checks.map((c) => (
+              <li key={c.id} className="flex justify-between gap-3">
+                <span className={c.pass ? 'text-emerald-400' : 'text-slate-400'}>{c.pass ? 'Pass' : 'Not yet'} · {c.label}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-slate-500">{dash.readiness.note}</p>
+        </div>
+      </section>
+      <LogList title="Recent decisions" rows={dash.decisionLog.slice(0, 12)} />
+    </div>
+  );
+}
 
-              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-                <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Net Realized Profit (1-Year Real Data)
-                </div>
-                <div
-                  className={`text-2xl font-mono tabular-nums font-bold mt-1.5 ${
-                    overviewData.headline.realizedPnlInr >= 0
-                      ? 'text-emerald-600 dark:text-emerald-400'
-                      : 'text-rose-600 dark:text-rose-400'
-                  }`}
-                >
-                  {formatInr(overviewData.headline.realizedPnlInr, true)}
-                </div>
-                <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-1.5 flex items-center gap-1.5">
-                  <span>{overviewData.headline.closedTradesCount} trades</span>
-                  <span aria-hidden="true">·</span>
-                  <span>Gross: {formatInr(overviewData.headline.brokerPaperEquityInr)}</span>
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-                <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Win Rate &amp; Profit Factor
-                </div>
-                <div className="text-2xl font-mono tabular-nums font-bold text-blue-600 dark:text-blue-400 mt-1.5">
-                  {winRatePct}%{' '}
-                  <span className="text-base font-normal text-slate-500 dark:text-slate-400">
-                    / PF {profitFactor}
-                  </span>
-                </div>
-                <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-1.5 flex items-center gap-1.5">
-                  <span>
-                    Expectancy: {formatInr(perfData?.summary.expectancyInr ?? 160.42, true)}/trade
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span>AUC {learningData?.walkForwardAuc.toFixed(3) ?? '0.784'}</span>
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-                <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Max Drawdown &amp; Smart Lot Sizing
-                </div>
-                <div className="text-2xl font-mono tabular-nums font-bold text-slate-900 dark:text-slate-100 mt-1.5">
-                  {(overviewData.headline.maxDrawdownPct * 100).toFixed(2)}%{' '}
-                  <span className="text-base font-normal text-slate-500 dark:text-slate-400">
-                    / 10% Cap
-                  </span>
-                </div>
-                <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-1.5 flex items-center gap-1.5">
-                  <span>
-                    Dynamic 1L–{overviewData.historicalReplayReport?.maxLotsTraded ?? 5}L
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span>
-                    Avg {overviewData.historicalReplayReport?.avgLotsTraded ?? 1.75} lots/trade
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Row 2: Main 2-Column Workspace (Equity Curve + Live NSE Watchlist) */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch">
-              {/* Left 2 Columns: Equity Curve */}
-              <section className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 flex flex-col justify-between">
-                <div>
-                  <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
-                    <div>
-                      <h1 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                        Account Growth Curve (₹10,000 Starting Capital · 1-Year Real Angel One Data)
-                      </h1>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                        Trained on 17,140 real 1-hour Angel One candles · Includes 35% bid-ask
-                        slippage + ₹35/lot statutory fees
-                      </p>
-                    </div>
-                    <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                      Updated {formatTimestamp(overviewData.health.lastCycleAt)}
-                    </div>
-                  </div>
-
-                  <EquityCurveChart
-                    data={overviewData.equitySeries}
-                    formatTimestamp={formatTimestamp}
-                  />
-                </div>
-
-                {/* Quiet Bottom Summary Strip inside Chart Card */}
-                <div className="pt-4 mt-4 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500 dark:text-slate-400">
-                  <div className="font-mono tabular-nums">
-                    {overviewData.liveRunner?.latestActionSummary}
-                  </div>
-                  {lc && (
-                    <div className="font-mono tabular-nums text-blue-600 dark:text-blue-400">
-                      ML Gate skipped {lc.gateAvoidedLossesCount} weak setups (~
-                      {formatInr(lc.gateAvoidedLossesSavedInr)} saved)
-                    </div>
-                  )}
-                </div>
-              </section>
-
-              {/* Right 1 Column: Clean Tabular Angel One NSE Watchlist */}
-              <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between gap-2 mb-3">
-                    <div>
-                      <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                        Angel One NSE Watchlist
-                      </h2>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">
-                        10 tracked F&amp;O underlyings &amp; NFO option marks
-                      </p>
-                    </div>
-                    <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400">
-                      {overviewData.liveRunner?.angelOneStatus?.authenticated
-                        ? 'LIVE L1/L2'
-                        : 'STANDBY'}
-                    </span>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse text-xs font-mono tabular-nums">
-                      <thead>
-                        <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 font-sans">
-                          <th className="py-2 pr-2 font-medium">Symbol</th>
-                          <th className="py-2 px-2 text-right font-medium">Spot</th>
-                          <th className="py-2 px-2 text-right font-medium">Chg %</th>
-                          <th className="py-2 pl-2 text-right font-medium">NFO / RSI</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800/70">
-                        {overviewData.liveRunner?.liveQuotes &&
-                          WATCHLIST_PRIORITY_SYMBOLS.map((sym) =>
-                            overviewData.liveRunner?.liveQuotes?.[sym]
-                          )
-                            .filter((q): q is LiveSpotQuote => Boolean(q))
-                            .map((q) => {
-                              const isIndex = INDEX_SYMBOLS.has(q.symbol);
-                              return (
-                                <tr
-                                  key={q.symbol}
-                                  className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${
-                                    q.symbol === 'INDIA_VIX'
-                                      ? 'border-b-2 border-slate-300 dark:border-slate-700/90'
-                                      : ''
-                                  }`}
-                                >
-                                  <td className="py-2 pr-2 font-semibold text-slate-900 dark:text-slate-100 whitespace-nowrap">
-                                    <span>{q.symbol}</span>
-                                    {isIndex && (
-                                      <span className="ml-1.5 text-[10px] font-normal text-blue-600 dark:text-blue-400">
-                                        IDX
-                                      </span>
-                                    )}
-                                  </td>
-                                  <td className="py-2 px-2 text-right text-slate-800 dark:text-slate-200 whitespace-nowrap">
-                                    {q.symbol === 'INDIA_VIX'
-                                      ? q.spot.toFixed(2)
-                                      : q.spot.toLocaleString('en-IN', {
-                                          maximumFractionDigits: 1,
-                                        })}
-                                  </td>
-                                  <td
-                                    className={`py-2 px-2 text-right font-medium whitespace-nowrap ${
-                                      q.changePct >= 0
-                                        ? 'text-emerald-600 dark:text-emerald-400'
-                                        : 'text-rose-600 dark:text-rose-400'
-                                    }`}
-                                  >
-                                    {q.changePct >= 0 ? '+' : ''}
-                                    {q.changePct.toFixed(2)}%
-                                  </td>
-                                  <td className="py-2 pl-2 text-right text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                                    {q.symbol === 'INDIA_VIX'
-                                      ? `VIX · RSI ${Math.round(q.rsi14 ?? 58)}`
-                                      : `₹${(q.nfoOptionLtp ?? 45).toFixed(1)} · RSI ${Math.round(
-                                          q.rsi14 ?? 54
-                                        )}`}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div className="pt-3 mt-3 border-t border-slate-200 dark:border-slate-800 text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
-                  <span>5m OHLCV + Intra-Bar High/Low Protection</span>
-                  <span className="font-mono">09:15–15:30 IST</span>
-                </div>
-              </section>
-            </div>
-
-            {/* Row 3: Active Open Positions + Strategy & Risk Guardrails */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch">
-              {/* Left 2 Columns: Active Open Positions */}
-              <section className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                      Active Open Positions ({positions.length} / 5)
-                    </h2>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                      Defined-risk vertical debit spreads (-65% Theta decay) · Breakeven locked at
-                      +3.5% after +18% MFE
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setActiveSection('positions')}
-                    className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0"
-                  >
-                    Full Trade Journal ({overviewData.headline.closedTradesCount}) →
-                  </button>
-                </div>
-
-                {positions.length === 0 ? (
-                  <div className="py-10 text-center border border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-xs text-slate-500">
-                    No open positions right now — Armed for Monday 09:15 IST market open.
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse text-xs font-mono tabular-nums">
-                      <thead>
-                        <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 font-sans">
-                          <th className="py-2.5 pr-3 font-medium">Contract</th>
-                          <th className="py-2.5 px-2 font-medium">Strategy</th>
-                          <th className="py-2.5 px-2 text-right font-medium">Size</th>
-                          <th className="py-2.5 px-2 text-right font-medium">Entry → Mark</th>
-                          <th className="py-2.5 px-2 text-right font-medium">Unrealized P&amp;L</th>
-                          <th className="py-2.5 pl-2 text-right font-medium">DTE / Δ</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800/70">
-                        {positions.map((p) => (
-                          <tr
-                            key={p.positionId}
-                            onClick={() => setActiveSection('positions')}
-                            className="hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer transition-colors"
-                          >
-                            <td className="py-3 pr-3 font-semibold text-slate-900 dark:text-slate-100">
-                              {p.contractSymbol}
-                            </td>
-                            <td className="py-3 px-2 font-sans text-slate-600 dark:text-slate-300">
-                              {p.strategyName.replace('_', ' ')}
-                            </td>
-                            <td className="py-3 px-2 text-right text-slate-500">
-                              {p.lotsQty}L ({p.lotsQty * p.lotSize})
-                            </td>
-                            <td className="py-3 px-2 text-right">
-                              ₹{p.conservativeEntryPrice.toFixed(1)} → ₹{p.currentMarkPrice.toFixed(1)}
-                            </td>
-                            <td
-                              className={`py-3 px-2 text-right font-semibold ${
-                                p.unrealizedPnlInr >= 0
-                                  ? 'text-emerald-600 dark:text-emerald-400'
-                                  : 'text-rose-600 dark:text-rose-400'
-                              }`}
-                            >
-                              {formatInr(p.unrealizedPnlInr, true)} (
-                              {p.unrealizedPnlPct >= 0 ? '+' : ''}
-                              {(p.unrealizedPnlPct * 100).toFixed(1)}%)
-                            </td>
-                            <td className="py-3 pl-2 text-right text-slate-500">
-                              {p.dte}d / {p.delta.toFixed(2)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </section>
-
-              {/* Right 1 Column: Strategy & Risk Controls */}
-              <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 flex flex-col justify-between space-y-4">
-                <div className="space-y-4">
-                  <div>
-                    <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                      Strategy &amp; Risk Controls
-                    </h2>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                      Walk-forward ML gate &amp; readiness checklist
-                    </p>
-                  </div>
-
-                  {/* Probability Gate Segmented Selector */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-600 dark:text-slate-300 font-medium">
-                        ML Win-Probability Gate
-                      </span>
-                      <span className="font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
-                        P(Gain) &ge;{' '}
-                        {Math.round((learningData?.qualityGateThreshold ?? 0.68) * 100)}%
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-1 p-1 rounded-lg bg-slate-100 dark:bg-slate-800/80 font-mono text-xs">
-                      {[
-                        { val: 0.68, label: '68%' },
-                        { val: 0.7, label: '70%' },
-                        { val: 0.72, label: '72%' },
-                      ].map((opt) => {
-                        const currentThresh = Number(
-                          Math.max(0.68, learningData?.qualityGateThreshold ?? 0.68).toFixed(2)
-                        );
-                        const isActive = Math.abs(currentThresh - opt.val) < 0.005;
-                        return (
-                          <button
-                            key={opt.val}
-                            type="button"
-                            onClick={() => handleSetMinWinProb(opt.val)}
-                            className={`py-1.5 rounded-md transition-colors text-center whitespace-nowrap ${
-                              isActive
-                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-semibold shadow-xs'
-                                : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-                            }`}
-                          >
-                            {opt.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Compact Readiness Summary */}
-                  <div className="space-y-2 text-xs font-mono tabular-nums pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <div className="flex justify-between py-1">
-                      <span className="text-slate-500 font-sans">1Y Sample Size (&ge; 200)</span>
-                      <span className="text-emerald-600 dark:text-emerald-400">
-                        {overviewData.headline.closedTradesCount} / 200 (PASS)
-                      </span>
-                    </div>
-                    <div className="flex justify-between py-1">
-                      <span className="text-slate-500 font-sans">Net Profit Factor (&gt; 1.30)</span>
-                      <span className="text-emerald-600 dark:text-emerald-400">
-                        {profitFactor} (PASS)
-                      </span>
-                    </div>
-                    <div className="flex justify-between py-1">
-                      <span className="text-slate-500 font-sans">Max Drawdown (&lt; 10.0%)</span>
-                      <span className="text-emerald-600 dark:text-emerald-400">
-                        {(overviewData.headline.maxDrawdownPct * 100).toFixed(2)}% (PASS)
-                      </span>
-                    </div>
-                    <div className="flex justify-between py-1">
-                      <span className="text-slate-500 font-sans">Daily Loss Limit (-3.0%)</span>
-                      <span className="text-slate-700 dark:text-slate-300">
-                        -₹
-                        {Math.round(
-                          overviewData.headline.conservativeEquityInr * 0.03
-                        ).toLocaleString('en-IN')}{' '}
-                        (Clear)
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Clean Utility Action Row */}
-                <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={steppingCycles}
-                    onClick={handleRunHistoricalReplay}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${steppingCycles ? 'animate-spin' : ''}`} />
-                    {steppingCycles ? 'Training...' : 'Re-Run 1Y Training'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleResetPaperLedger}
-                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    Reset ₹10k
-                  </button>
-                </div>
-              </section>
-            </div>
+function Book({
+  positions,
+  candidates,
+  closedCandidates,
+  trades,
+}: {
+  positions: PaperPosition[];
+  candidates: Candidate[];
+  closedCandidates: Candidate[];
+  trades: ClosedTrade[];
+}) {
+  return (
+    <div className="space-y-6">
+      <section>
+        <h2 className="mb-2 text-sm font-medium">Open paper positions</h2>
+        {positions.length === 0 ? <p className="text-sm text-slate-500">None.</p> : (
+          <div className="overflow-x-auto text-sm">
+            <table className="w-full text-left">
+              <thead className="text-xs uppercase text-slate-500"><tr><th>Opened</th><th>Contract</th><th>Lots</th><th>Debit</th><th>Now</th><th>Unrealized</th></tr></thead>
+              <tbody>
+                {positions.map((p) => (
+                  <tr key={p.id} className="border-t border-slate-800">
+                    <td className="py-2 pr-3">{formatIst(p.openedAt)}</td>
+                    <td className="py-2 pr-3">{p.underlying} {p.direction} {p.plan.long.strike}/{p.plan.short.strike}</td>
+                    <td className="py-2 pr-3">{p.lots}</td>
+                    <td className="py-2 pr-3 tabular-nums">{p.plan.entryDebit.toFixed(2)}</td>
+                    <td className="py-2 pr-3 tabular-nums">{p.lastMark ? p.lastMark.liquidationValue.toFixed(2) : '—'}</td>
+                    <td className={`py-2 tabular-nums ${pnlClass(p.unrealizedInr)}`}>{formatInr(p.unrealizedInr)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
-
-        {activeSection === 'positions' && (
-          <PositionsAndTradesView
-            openPositions={positions}
-            closedTrades={trades}
-            skippedSignals={skippedSignals}
-            liveQuotes={overviewData?.liveRunner?.liveQuotes}
-            formatTimestamp={formatTimestamp}
-          />
-        )}
-
-        {activeSection === 'performance' && perfData && (
-          <PerformanceAndBacktestView
-            summary={perfData.summary}
-            byStrategy={perfData.byStrategy}
-            byUnderlying={perfData.byUnderlying}
-            byRegime={perfData.byRegime}
-            byDteBucket={perfData.byDteBucket}
-            byTimeOfDay={perfData.byTimeOfDay}
-            backtestResults={perfData.backtestResults}
-            historicalReplayReport={
-              perfData.historicalReplayReport ?? overviewData?.historicalReplayReport ?? null
-            }
-            onRunHistoricalReplay={handleRunHistoricalReplay}
-            onRunDryRunCycle={handleRunDryRunCycle}
-          />
-        )}
-
-        {activeSection === 'learning' && learningData && overviewData && (
-          <LearningAndHealthView
-            learning={learningData}
-            health={overviewData.health}
-            control={overviewData.control}
-            formatTimestamp={formatTimestamp}
-            onPromoteChallenger={handlePromoteChallenger}
-            onRollbackChampion={handleRollbackChampion}
-            onToggleSimulateOffline={handleToggleSimulateOffline}
-            onToggleStrictMarketHours={handleToggleStrictMarketHours}
-            onResetPaperLedger={handleResetPaperLedger}
-          />
-        )}
-
-        {activeSection === 'code' && <CodeAndGuideView />}
-      </main>
-
-      <footer className="border-t border-slate-200 dark:border-slate-800 px-6 py-4 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          AegisQuant NSE Options Paper-Trading Engine · Trained on 1-Year Real Angel One Data (₹10,000 Base Capital)
-        </div>
-        <div>
-          Paper Trading Sandbox Only · SEBI Notice: F&amp;O trading carries substantial risk
-        </div>
-      </footer>
+      </section>
+      <section>
+        <h2 className="mb-2 text-sm font-medium">Closed paper trades</h2>
+        <TradeTable trades={trades} />
+      </section>
+      <section>
+        <h2 className="mb-2 text-sm font-medium">Candidates being tracked</h2>
+        <p className="mb-2 text-xs text-slate-500">Every priced signal is followed to its exit, including the ones the ledger skipped. Those outcomes train the model.</p>
+        <CandidateTable rows={[...candidates, ...closedCandidates].slice(0, 40)} />
+      </section>
     </div>
+  );
+}
+
+function TradeTable({ trades }: { trades: ClosedTrade[] }) {
+  if (trades.length === 0) return <p className="text-sm text-slate-500">No closed trades on this ledger.</p>;
+  return (
+    <div className="overflow-x-auto text-sm">
+      <table className="w-full text-left">
+        <thead className="text-xs uppercase text-slate-500"><tr><th>Closed</th><th>Setup</th><th>Exit</th><th>Net</th><th>R</th></tr></thead>
+        <tbody>
+          {trades.slice(0, 50).map((t) => (
+            <tr key={t.id} className="border-t border-slate-800">
+              <td className="py-2 pr-3">{formatIst(t.closedAt)}</td>
+              <td className="py-2 pr-3">{t.underlying} {t.strategy} {t.direction}</td>
+              <td className="py-2 pr-3">{t.exitReason}</td>
+              <td className={`py-2 pr-3 tabular-nums ${pnlClass(t.netPnlInr)}`}>{formatInr(t.netPnlInr)}</td>
+              <td className={`py-2 tabular-nums ${pnlClass(t.rMultiple)}`}>{formatSigned(t.rMultiple, 2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CandidateTable({ rows }: { rows: Candidate[] }) {
+  if (rows.length === 0) return <p className="text-sm text-slate-500">None yet.</p>;
+  return (
+    <div className="overflow-x-auto text-sm">
+      <table className="w-full text-left">
+        <thead className="text-xs uppercase text-slate-500"><tr><th>When</th><th>Signal</th><th>Ledger</th><th>₹/lot</th></tr></thead>
+        <tbody>
+          {rows.map((c) => (
+            <tr key={c.id} className="border-t border-slate-800">
+              <td className="py-2 pr-3">{formatIst(c.createdAt)}</td>
+              <td className="py-2 pr-3">{c.underlying} {c.strategy} {c.direction}</td>
+              <td className="py-2 pr-3">{c.takenByLedger ? 'Taken' : c.skipReason || 'Skipped'}</td>
+              <td className={`py-2 tabular-nums ${pnlClass(c.pnlPerLotInr)}`}>{c.pnlPerLotInr === undefined ? 'Open' : formatInr(c.pnlPerLotInr)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Performance({ dash, research }: { dash: DashboardPayload; research: ResearchView | null }) {
+  return (
+    <div className="space-y-8">
+      <section className="space-y-4">
+        <h2 className="text-sm font-medium">This paper ledger</h2>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <ScoreTable title="By strategy" rows={dash.tradeScorecards.byStrategy} money="Net ₹" />
+          <ScoreTable title="By underlying" rows={dash.tradeScorecards.byUnderlying} money="Net ₹" />
+          <ScoreTable title="By regime" rows={dash.tradeScorecards.byRegime} money="Net ₹" />
+          <ScoreTable title="By exit" rows={dash.tradeScorecards.byExit} money="Net ₹" />
+        </div>
+        <h3 className="text-sm font-medium text-slate-300">Shadow candidates, per lot</h3>
+        <ScoreTable title="Candidate strategies" rows={dash.candidateScorecards.byStrategy} money="₹/lot" />
+      </section>
+      <section className="space-y-3 rounded-xl border border-slate-800 p-4">
+        <h2 className="text-sm font-medium">One-year research on real hourly prices</h2>
+        {!research ? <p className="text-sm text-slate-500">Research report is not loaded.</p> : (
+          <>
+            <p className="text-sm text-amber-100/90">{research.disclaimer}</p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Stat label="Model-priced trades" value={String(research.summary.n)} sub={research.summary.winRate === null ? undefined : `${formatPct(research.summary.winRate * 100)} winners`} />
+              <Stat label="Average R" value={formatSigned(research.summary.avgR, 3)} sub={research.summary.rCi90 ? `90% CI ${research.summary.rCi90.map((x) => x.toFixed(3)).join(' to ')}` : undefined} />
+              <Stat label="Same signals, opposite direction" value={formatSigned(research.oppositeDirectionBaseline.avgR, 3)} sub={`${research.oppositeDirectionBaseline.n} trades`} />
+            </div>
+            <p className="text-sm text-slate-400">
+              A ₹{research.portfolio.startingCapitalInr.toLocaleString('en-IN')} replay of these model-priced trades ended at {formatInr(research.portfolio.endingEquityInr)} ({formatSigned(research.portfolio.returnPct, 1)}%), max drawdown {formatPct(research.portfolio.maxDrawdownPct, 1)}. It took {research.portfolio.taken} trades and skipped {research.portfolio.skipped}.
+            </p>
+            <ScoreTable title="Research by strategy" rows={research.byStrategy} money="₹/lot" />
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function Learning({ dash }: { dash: DashboardPayload }) {
+  const model = dash.model;
+  return (
+    <div className="space-y-5">
+      <section className="rounded-xl border border-slate-800 p-4">
+        <h2 className="text-sm font-medium">Gate</h2>
+        {model ? (
+          <>
+            <p className="mt-2 text-sm text-slate-200">{model.gate.reason}</p>
+            <p className="mt-2 text-xs text-slate-500">
+              Trained {formatIst(model.trainedAt)} on {model.nOffline} offline samples (weight {model.offlineWeight}) and {model.nLive} live samples. Version {model.version}.
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <Stat label="Offline out-of-sample AUC" value={model.offlineOos.auc === null ? '—' : model.offlineOos.auc.toFixed(3)} sub={`${model.offlineOos.n} predictions`} />
+              <Stat label="Live out-of-sample AUC" value={model.liveOos.auc === null ? '—' : model.liveOos.auc.toFixed(3)} sub={`${model.liveOos.n} predictions`} />
+            </div>
+          </>
+        ) : <p className="mt-2 text-sm text-slate-500">The model has not been fit yet. The next live cycle fits it from the one-year research sample.</p>}
+        {dash.suspendedStrategies.length > 0 ? (
+          <p className="mt-3 text-sm text-rose-300">Suspended after live losses: {dash.suspendedStrategies.join(', ')}</p>
+        ) : <p className="mt-3 text-sm text-slate-500">No strategy is suspended. Suspension needs 40 live samples and a negative 90% upper bound on average R.</p>}
+      </section>
+      {model && model.calibration.length > 0 ? (
+        <section>
+          <h2 className="mb-2 text-sm font-medium">Calibration</h2>
+          <table className="w-full text-left text-sm">
+            <thead className="text-xs uppercase text-slate-500"><tr><th>Predicted</th><th>Actual win rate</th><th>N</th></tr></thead>
+            <tbody>
+              {model.calibration.map((b) => (
+                <tr key={`${b.lo}-${b.hi}`} className="border-t border-slate-800">
+                  <td className="py-2">{formatPct(b.avgPred * 100)}</td>
+                  <td className="py-2">{formatPct(b.winRate * 100)}</td>
+                  <td className="py-2">{b.n}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+      {model ? (
+        <section>
+          <h2 className="mb-2 text-sm font-medium">Feature weights</h2>
+          <ul className="grid gap-1 text-sm sm:grid-cols-2">
+            {model.featureNames.map((name, i) => (
+              <li key={name} className="flex justify-between rounded bg-slate-900 px-2 py-1">
+                <span>{name}</span>
+                <span className="tabular-nums">{model.weights[i]?.toFixed(3)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      <LogList title="Learning log" rows={dash.learningLog} />
+      <section className="rounded-xl border border-slate-800 p-4 text-sm text-slate-400">
+        <h2 className="mb-2 font-medium text-slate-200">Data health</h2>
+        <p>Angel One configured: {dash.angel?.configured ? 'yes' : 'no'}. Last quote {formatIst(dash.angel?.lastQuoteFetchAt)}. Instruments as of {dash.instrumentsAsOf ?? '—'}. Quote errors {dash.counters.dataErrors}. Stale marks {dash.counters.staleMarks}.</p>
+        {dash.angel?.lastError ? <p className="mt-1 text-rose-300">{dash.angel.lastError}</p> : null}
+      </section>
+    </div>
+  );
+}
+
+function Rules({
+  dash,
+  secret,
+  setSecret,
+  adminNote,
+  onAdmin,
+}: {
+  dash: DashboardPayload;
+  secret: string;
+  setSecret: (v: string) => void;
+  adminNote: string | null;
+  onAdmin: (action: string) => void;
+}) {
+  const cfg = dash.config;
+  return (
+    <div className="space-y-5 text-sm leading-6 text-slate-300">
+      <section className="rounded-xl border border-slate-800 p-4">
+        <h2 className="mb-2 font-medium text-slate-100">What is real</h2>
+        <p>Spot and option prices come from Angel One. A debit spread is bought at the ask and sold at the bid, and the reverse on the way out. Brokerage is ₹20 per order plus STT, exchange fees, stamp duty and GST. If the book has no bid or no ask, the trade is not priced and is not invented.</p>
+        <p className="mt-2">Signals use completed hourly bars: a Donchian breakout, a trend pullback to the 20-bar average, or a return inside the Bollinger band while the market is ranging. One signal per bar. New entries only from 09:30 to 15:00 IST, with 7 to 35 days to expiry.</p>
+        <p className="mt-2">Exits: take profit at {formatPct(cfg.takeProfitFracOfMaxGain * 100, 0)} of the maximum gain, stop at {formatPct(cfg.stopLossFracOfDebit * 100, 0)} of the debit, leave after {cfg.maxHoldSessions} sessions, or when {cfg.exitAtDte} days remain.</p>
+      </section>
+      <section className="rounded-xl border border-slate-800 p-4">
+        <h2 className="mb-2 font-medium text-slate-100">Risk limits on the ₹{dash.startingCapitalInr.toLocaleString('en-IN')} ledger</h2>
+        <p>{formatPct(cfg.riskPerTradePct * 100, 0)} of equity at risk per trade, at most {cfg.maxOpenPositions} positions, {formatPct(cfg.maxOpenRiskPct * 100, 0)} open risk, one position per underlying, a {formatPct(cfg.dailyLossHaltPct * 100, 0)} daily halt and a {formatPct(cfg.drawdownKillPct * 100, 0)} drawdown kill switch.</p>
+      </section>
+      <section className="rounded-xl border border-slate-800 p-4">
+        <h2 className="mb-2 font-medium text-slate-100">Before any real money</h2>
+        <p>Passing the checklist is required and it is not sufficient. Retail algo orders in India need a broker-registered strategy and a static IP approved with the exchange. This Vercel deployment does not have a static IP, so live orders cannot be added here. That would be a separate process on a VM, after this paper ledger has earned it. This site will keep paper-trading either way.</p>
+        <ul className="mt-3 space-y-1">
+          {dash.readiness.checks.map((c) => (
+            <li key={c.id}>{c.pass ? 'Pass' : 'Not yet'} — {c.label}. {c.detail}</li>
+          ))}
+        </ul>
+      </section>
+      <section className="rounded-xl border border-slate-800 p-4">
+        <h2 className="mb-2 font-medium text-slate-100">Controls</h2>
+        <p className="mb-2 text-slate-400">The secret is ADMIN_SECRET, or DASHBOARD_PASSCODE if that is the one set on the server. It stays in this browser only.</p>
+        <input value={secret} onChange={(e) => setSecret(e.target.value)} type="password" placeholder="Admin secret" className="mb-3 w-full max-w-sm rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" />
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="rounded-lg bg-slate-800 px-3 py-1.5" onClick={() => onAdmin('pause')}>Pause entries</button>
+          <button type="button" className="rounded-lg bg-slate-800 px-3 py-1.5" onClick={() => onAdmin('resume')}>Resume entries</button>
+          <button type="button" className="rounded-lg bg-slate-800 px-3 py-1.5" onClick={() => onAdmin('retrain')}>Retrain next cycle</button>
+          <button type="button" className="rounded-lg bg-slate-800 px-3 py-1.5" onClick={() => onAdmin('ack_kill_switch')}>Acknowledge kill switch</button>
+          <button type="button" className="rounded-lg bg-rose-900 px-3 py-1.5" onClick={() => onAdmin('reset_ledger')}>Reset to ₹50,000</button>
+        </div>
+        {adminNote ? <p className="mt-2 text-slate-400">{adminNote}</p> : null}
+      </section>
+    </div>
+  );
+}
+
+function LogList({ title, rows }: { title: string; rows: Array<{ t: string; kind: string; message: string }> }) {
+  return (
+    <section>
+      <h2 className="mb-2 text-sm font-medium">{title}</h2>
+      {rows.length === 0 ? <p className="text-sm text-slate-500">Empty.</p> : (
+        <ul className="space-y-1 text-sm">
+          {rows.map((row, i) => (
+            <li key={`${row.t}-${i}`} className="flex gap-3">
+              <span className="w-28 shrink-0 text-slate-500">{formatIst(row.t)}</span>
+              <span className="w-16 shrink-0 text-slate-500">{row.kind}</span>
+              <span>{row.message}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

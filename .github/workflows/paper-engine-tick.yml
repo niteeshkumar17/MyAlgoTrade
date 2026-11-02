@@ -1,0 +1,14 @@
+name: Paper engine tick
+
+on:
+  schedule:
+    # 03:00–10:55 UTC is 08:30–16:25 IST, covering the NSE session on weekdays.
+    - cron: '*/5 3-10 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run one paper cycle
+        run: curl -fsS --retry 3 --max-time 70 "https://my-algo-trade.vercel.app/api/tick"

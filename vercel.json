@@ -4,6 +4,15 @@
   "installCommand": "npm install --legacy-peer-deps",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "crons": [
+    { "path": "/api/tick?eod=1", "schedule": "30 10 * * 1-5" }
+  ],
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 60,
+      "includeFiles": "src/quant/angelOne1YearCache.json"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/(.*)",

@@ -1,1143 +1,137 @@
 // server.ts
+import "dotenv/config";
 import express from "express";
-import fs2 from "node:fs";
 import path2 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-import pg from "pg";
-
-// src/quant/engine.ts
-var NSE_LOT_SIZES = {
-  NIFTY: 75,
-  BANKNIFTY: 30,
-  FINNIFTY: 65,
-  RELIANCE: 500,
-  TCS: 175,
-  HDFCBANK: 550,
-  INFY: 400,
-  ICICIBANK: 700,
-  SBIN: 750
-};
-function simulatePessimisticFill(side, lotsQty, bid, ask, lotSize = 75, brokerPaperFillPrice, cfg = {
-  spreadSlippageFraction: 0.35,
-  feePerLotInr: 35,
-  rejectZeroBid: true
-}) {
-  if (lotsQty <= 0) {
-    throw new Error(`Lot quantity must be > 0, got ${lotsQty}`);
-  }
-  if (lotSize <= 0) {
-    throw new Error(`lotSize must be > 0, got ${lotSize}`);
-  }
-  if (cfg.rejectZeroBid && bid <= 0) {
-    throw new Error(`Rejected contract with zero or negative bid (${bid})`);
-  }
-  if (ask < bid) {
-    throw new Error(`Inverted quote: ask (${ask}) < bid (${bid})`);
-  }
-  const mid = (bid + ask) / 2;
-  const spread = ask - bid;
-  const spreadPctOfMid = spread / Math.max(mid, 1e-9);
-  const feeInr = Number((lotsQty * cfg.feePerLotInr).toFixed(2));
-  const totalUnits = lotsQty * lotSize;
-  const paperPx = Number((brokerPaperFillPrice ?? mid).toFixed(2));
-  if (side === "BUY") {
-    const consPx2 = Number((mid + cfg.spreadSlippageFraction * spread).toFixed(2));
-    const consCash2 = Number((-(consPx2 * totalUnits + feeInr)).toFixed(2));
-    const paperCash2 = Number((-(paperPx * totalUnits)).toFixed(2));
-    const slipInr2 = Number(((consPx2 - mid) * totalUnits + feeInr).toFixed(2));
-    return {
-      side,
-      lotsQty,
-      lotSize,
-      totalUnits,
-      bid,
-      ask,
-      mid: Number(mid.toFixed(2)),
-      spread: Number(spread.toFixed(2)),
-      spreadPctOfMid: Number(spreadPctOfMid.toFixed(4)),
-      conservativeFillPrice: consPx2,
-      brokerPaperFillPrice: paperPx,
-      feeInr,
-      conservativeTotalCashInr: consCash2,
-      brokerPaperTotalCashInr: paperCash2,
-      slippageVsMidInr: slipInr2
-    };
-  }
-  const consPx = Number(Math.max(0.05, mid - cfg.spreadSlippageFraction * spread).toFixed(2));
-  const consCash = Number((consPx * totalUnits - feeInr).toFixed(2));
-  const paperCash = Number((paperPx * totalUnits).toFixed(2));
-  const slipInr = Number(((mid - consPx) * totalUnits + feeInr).toFixed(2));
-  return {
-    side,
-    lotsQty,
-    lotSize,
-    totalUnits,
-    bid,
-    ask,
-    mid: Number(mid.toFixed(2)),
-    spread: Number(spread.toFixed(2)),
-    spreadPctOfMid: Number(spreadPctOfMid.toFixed(4)),
-    conservativeFillPrice: consPx,
-    brokerPaperFillPrice: paperPx,
-    feeInr,
-    conservativeTotalCashInr: consCash,
-    brokerPaperTotalCashInr: paperCash,
-    slippageVsMidInr: slipInr
-  };
-}
-function calculateRoundtripPnl(lotsQty, entryFill, exitFill) {
-  if (lotsQty <= 0) throw new Error("lotsQty must be > 0");
-  const entryCostCons = Math.abs(entryFill.conservativeTotalCashInr);
-  const exitProceedsCons = exitFill.conservativeTotalCashInr;
-  const conservativePnlInr = Number((exitProceedsCons - entryCostCons).toFixed(2));
-  const conservativePnlPct = Number((conservativePnlInr / Math.max(entryCostCons, 1e-9)).toFixed(4));
-  const entryCostPaper = Math.abs(entryFill.brokerPaperTotalCashInr);
-  const exitProceedsPaper = exitFill.brokerPaperTotalCashInr;
-  const brokerPaperPnlInr = Number((exitProceedsPaper - entryCostPaper).toFixed(2));
-  const brokerPaperPnlPct = Number((brokerPaperPnlInr / Math.max(entryCostPaper, 1e-9)).toFixed(4));
-  return {
-    conservativePnlInr,
-    conservativePnlPct,
-    brokerPaperPnlInr,
-    brokerPaperPnlPct,
-    executionDragInr: Number((brokerPaperPnlInr - conservativePnlInr).toFixed(2))
-  };
-}
-function simulateVerticalDebitSpreadFill(params) {
-  const longLeg = simulatePessimisticFill(
-    "BUY",
-    params.lotsQty,
-    params.longBid,
-    params.longAsk,
-    params.lotSize
-  );
-  const shortLeg = simulatePessimisticFill(
-    "SELL",
-    params.lotsQty,
-    params.shortBid,
-    params.shortAsk,
-    params.lotSize
-  );
-  const conservativeNetDebitPerUnit = Number(
-    Math.max(1, longLeg.conservativeFillPrice - shortLeg.conservativeFillPrice).toFixed(2)
-  );
-  const brokerPaperNetDebitPerUnit = Number(
-    Math.max(1, longLeg.brokerPaperFillPrice - shortLeg.brokerPaperFillPrice).toFixed(2)
-  );
-  const totalEntryFeeInr = Number((longLeg.feeInr + shortLeg.feeInr).toFixed(2));
-  const totalUnits = params.lotsQty * params.lotSize;
-  const conservativeTotalDebitInr = Number(
-    (conservativeNetDebitPerUnit * totalUnits + totalEntryFeeInr).toFixed(2)
-  );
-  const brokerPaperTotalDebitInr = Number(
-    (brokerPaperNetDebitPerUnit * totalUnits).toFixed(2)
-  );
-  const nakedDebitInr = Math.abs(longLeg.conservativeTotalCashInr);
-  const maxRiskReductionPct = Number(
-    Math.max(0, (nakedDebitInr - conservativeTotalDebitInr) / Math.max(nakedDebitInr, 1)).toFixed(4)
-  );
-  return {
-    spreadType: params.right === "CE" ? "BULL_CALL_SPREAD" : "BEAR_PUT_SPREAD",
-    lotsQty: params.lotsQty,
-    lotSize: params.lotSize,
-    longLeg,
-    shortLeg,
-    conservativeNetDebitPerUnit,
-    brokerPaperNetDebitPerUnit,
-    totalEntryFeeInr,
-    conservativeTotalDebitInr,
-    brokerPaperTotalDebitInr,
-    maxRiskReductionPct,
-    thetaDecayReductionPct: 0.65
-  };
-}
-function evaluatePositionExit(params) {
-  const entry = Math.max(params.entryPrice, 0.05);
-  const peak = Math.max(params.peakMarkPrice, params.currentMarkPrice, entry);
-  const pnlPct = Number(((params.currentMarkPrice - entry) / entry).toFixed(4));
-  const mfePct = Number(((peak - entry) / entry).toFixed(4));
-  if (params.dte <= 1) {
-    return { shouldExit: true, exitReason: "FORCE_CLOSE_DTE_1", pnlPct, mfePct };
-  }
-  if (params.isIntradayFlagged && params.isPreCloseWindow) {
-    return { shouldExit: true, exitReason: "INTRADAY_1515_IST_FLATTEN", pnlPct, mfePct };
-  }
-  if (pnlPct <= -0.3) {
-    return { shouldExit: true, exitReason: "STOP_LOSS", pnlPct, mfePct };
-  }
-  if (pnlPct >= 0.5) {
-    return { shouldExit: true, exitReason: "TAKE_PROFIT", pnlPct, mfePct };
-  }
-  if (mfePct >= 0.3) {
-    const pullbackFromPeak = (peak - params.currentMarkPrice) / Math.max(peak, 1e-9);
-    if (pullbackFromPeak >= 0.15) {
-      return { shouldExit: true, exitReason: "TRAILING_STOP", pnlPct, mfePct };
-    }
-  }
-  if (params.tradingDaysHeld > 5) {
-    return { shouldExit: true, exitReason: "TIME_STOP_DAYS", pnlPct, mfePct };
-  }
-  if (params.dte <= 3) {
-    return { shouldExit: true, exitReason: "TIME_STOP_DTE", pnlPct, mfePct };
-  }
-  if (params.latestSignalDirection && params.latestSignalDirection !== "NONE" && params.latestSignalDirection !== params.positionRight) {
-    return { shouldExit: true, exitReason: "SIGNAL_REVERSAL", pnlPct, mfePct };
-  }
-  return { shouldExit: false, exitReason: "HOLD", pnlPct, mfePct };
-}
-function evaluateRiskAndSize(params) {
-  const eq = Math.max(params.currentEquityInr, 1);
-  const peak = Math.max(params.peakEquityInr, eq);
-  const dayStart = Math.max(params.dailyStartEquityInr, 1);
-  const fee = params.feePerLotInr ?? 35;
-  const maxRiskPct = params.maxRiskPerTradePct ?? 0.015;
-  const drawdownPct = (peak - eq) / peak;
-  if (drawdownPct >= 0.1) {
-    return {
-      allowed: false,
-      lotsQty: 0,
-      reason: `Drawdown kill switch active (${(drawdownPct * 100).toFixed(2)}% >= 10.0%)`,
-      dailyHaltTriggered: true,
-      drawdownKillSwitchTriggered: true
-    };
-  }
-  const dailyLossPct = (dayStart - eq) / dayStart;
-  if (dailyLossPct >= 0.03) {
-    return {
-      allowed: false,
-      lotsQty: 0,
-      reason: `Daily loss limit reached (${(dailyLossPct * 100).toFixed(2)}% >= 3.0%)`,
-      dailyHaltTriggered: true,
-      drawdownKillSwitchTriggered: false
-    };
-  }
-  if (!params.newEntriesEnabled) {
-    return {
-      allowed: false,
-      lotsQty: 0,
-      reason: "Control row new_entries_enabled is FALSE (Paused)",
-      dailyHaltTriggered: false,
-      drawdownKillSwitchTriggered: false
-    };
-  }
-  if (params.openPositionsCount >= 5) {
-    return {
-      allowed: false,
-      lotsQty: 0,
-      reason: "Max 5 open positions reached",
-      dailyHaltTriggered: false,
-      drawdownKillSwitchTriggered: false
-    };
-  }
-  if (params.openPositionsForUnderlying >= 2) {
-    return {
-      allowed: false,
-      lotsQty: 0,
-      reason: "Max 2 open positions for this NSE underlying reached",
-      dailyHaltTriggered: false,
-      drawdownKillSwitchTriggered: false
-    };
-  }
-  const maxPerTradeInr = eq * maxRiskPct;
-  const remainingTotalPremiumCapInr = Math.max(0, eq * 0.25 - params.currentOpenPremiumInr);
-  const effectiveBudgetInr = Math.min(maxPerTradeInr, remainingTotalPremiumCapInr);
-  const lotCostInr = params.conservativeEntryPrice * params.lotSize + fee;
-  const lotsQty = Math.floor(effectiveBudgetInr / Math.max(lotCostInr, 1));
-  if (lotsQty < 1) {
-    return {
-      allowed: false,
-      lotsQty: 0,
-      reason: `1 Lot cost \u20B9${lotCostInr.toFixed(0)} exceeds per-trade risk cap \u20B9${effectiveBudgetInr.toFixed(0)}`,
-      dailyHaltTriggered: false,
-      drawdownKillSwitchTriggered: false
-    };
-  }
-  return {
-    allowed: true,
-    lotsQty,
-    reason: "Approved within NSE lot risk budget",
-    dailyHaltTriggered: false,
-    drawdownKillSwitchTriggered: false
-  };
-}
-function isBotOfflineDuringMarketHours(heartbeatIso, marketOpen, nowMs = Date.now()) {
-  const hbMs = new Date(heartbeatIso).getTime();
-  const ageMinutes = Number(((nowMs - hbMs) / 6e4).toFixed(1));
-  return {
-    isOffline: marketOpen && ageMinutes > 10,
-    ageMinutes
-  };
-}
-function classifyTradePostMortem(input) {
-  if (input.exitReason === "STOP_LOSS" && input.postExit60mOptionReturnPct >= 0.25) {
-    return "stopped_out_then_reversed";
-  }
-  if (input.mfePct >= 0.25 && input.conservativePnlPct <= 0.05) {
-    return "winner_given_back";
-  }
-  if (input.conservativePnlPct < 0 && input.signedUnderlyingMovePct > 2e-3 && input.ivChangePct < -0.04) {
-    return "theta_or_iv_crush";
-  }
-  if (input.brokerPaperPnlInr > 0 && input.conservativePnlInr <= 0 && input.spreadPctAtEntry >= 0.05) {
-    return "bad_fill_wide_spread";
-  }
-  if (input.conservativePnlPct < 0 && input.regimeAtEntry !== input.regimeAtExit) {
-    return "wrong_regime";
-  }
-  if (input.conservativePnlPct <= 0) {
-    return "wrong_direction";
-  }
-  return "optimal_exit";
-}
-function normalCdf(x) {
-  const t = 1 / (1 + 0.2316419 * Math.abs(x));
-  const d = 0.3989423 * Math.exp(-x * x / 2);
-  const prob = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
-  return x > 0 ? 1 - prob : prob;
-}
-function blackScholesOptionPrice(params) {
-  const T = Math.max(params.dteDays / 365, 1 / 365);
-  const sigma = Math.max(params.ivAnnual, 0.08);
-  const S = Math.max(params.spot, 0.01);
-  const K = Math.max(params.strike, 0.01);
-  const r = params.riskFreeRate;
-  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-  const d2 = d1 - sigma * Math.sqrt(T);
-  let theo = 0;
-  let delta = 0;
-  if (params.right === "CE") {
-    theo = S * normalCdf(d1) - K * Math.exp(-r * T) * normalCdf(d2);
-    delta = normalCdf(d1);
-  } else {
-    theo = K * Math.exp(-r * T) * normalCdf(-d2) - S * normalCdf(-d1);
-    delta = normalCdf(d1) - 1;
-  }
-  const mid = Number(Math.max(2, theo).toFixed(2));
-  const halfSpread = Math.max(0.25, Number((mid * 0.032 / 2).toFixed(2)));
-  const bid = Number(Math.max(0.5, mid - halfSpread).toFixed(2));
-  const ask = Number((mid + halfSpread).toFixed(2));
-  return { mid, bid, ask, delta: Number(delta.toFixed(3)) };
-}
-function solveImpliedVolatilityAndGreeks(params) {
-  const S = Math.max(params.spot, 1);
-  const K = Math.max(params.strike, 1);
-  const T = Math.max(params.dteDays / 365, 1 / 365);
-  const r = params.riskFreeRate;
-  const target = Math.max(0.5, params.marketPrice);
-  let low = 0.06;
-  let high = 1.25;
-  let sigma = 0.16;
-  for (let i = 0; i < 24; i++) {
-    sigma = (low + high) / 2;
-    const d12 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-    const d22 = d12 - sigma * Math.sqrt(T);
-    const theo = params.right === "CE" ? S * normalCdf(d12) - K * Math.exp(-r * T) * normalCdf(d22) : K * Math.exp(-r * T) * normalCdf(-d22) - S * normalCdf(-d12);
-    if (theo > target) {
-      high = sigma;
-    } else {
-      low = sigma;
-    }
-  }
-  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-  const d2 = d1 - sigma * Math.sqrt(T);
-  const nPrimeD1 = 0.39894228 * Math.exp(-d1 * d1 / 2);
-  const delta = params.right === "CE" ? normalCdf(d1) : normalCdf(d1) - 1;
-  const thetaAnnual = params.right === "CE" ? -(S * nPrimeD1 * sigma) / (2 * Math.sqrt(T)) - r * K * Math.exp(-r * T) * normalCdf(d2) : -(S * nPrimeD1 * sigma) / (2 * Math.sqrt(T)) + r * K * Math.exp(-r * T) * normalCdf(-d2);
-  const thetaPerDay = Number((thetaAnnual / 365).toFixed(2));
-  const vegaPerPct = Number((S * nPrimeD1 * Math.sqrt(T) / 100).toFixed(2));
-  return {
-    impliedVolAnnual: Number(sigma.toFixed(4)),
-    delta: Number(delta.toFixed(3)),
-    thetaPerDay,
-    vegaPerPct
-  };
-}
-function computeTechnicalIndicatorsFromCandles(candles) {
-  if (!candles || candles.length < 15) {
-    return {
-      rsi14: 56.4,
-      adx14: 26.2,
-      atrPct: 0.0115,
-      ema9: candles?.[candles.length - 1]?.close ?? 23050,
-      ema21: candles?.[candles.length - 1]?.close ?? 23040,
-      trendSignal: "CE",
-      recommendedStrategy: "trend_following",
-      signalConfidence: 0.76
-    };
-  }
-  const recent = candles.slice(-60);
-  const closes = recent.map((c) => c.close);
-  const lastClose = Math.max(closes[closes.length - 1], 1);
-  const calcEma = (period) => {
-    const k = 2 / (period + 1);
-    let ema = closes[0];
-    for (let i = 1; i < closes.length; i++) {
-      ema = closes[i] * k + ema * (1 - k);
-    }
-    return Number(ema.toFixed(2));
-  };
-  const ema9 = calcEma(9);
-  const ema21 = calcEma(21);
-  let gains = 0;
-  let losses = 0;
-  const rsiStart = Math.max(1, recent.length - 14);
-  for (let i = rsiStart; i < recent.length; i++) {
-    const diff = recent[i].close - recent[i - 1].close;
-    if (diff >= 0) gains += diff;
-    else losses += Math.abs(diff);
-  }
-  const avgGain = gains / 14;
-  const avgLoss = losses / 14;
-  const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-  const rawRsi = 100 - 100 / (1 + rs);
-  const rsi14 = Number(Math.max(18, Math.min(85, rawRsi)).toFixed(1));
-  let trSum = 0;
-  let plusDmSum = 0;
-  let minusDmSum = 0;
-  for (let i = rsiStart; i < recent.length; i++) {
-    const cur = recent[i];
-    const prev = recent[i - 1];
-    const tr = Math.max(
-      cur.high - cur.low,
-      Math.abs(cur.high - prev.close),
-      Math.abs(cur.low - prev.close)
-    );
-    trSum += tr;
-    const upMove = cur.high - prev.high;
-    const downMove = prev.low - cur.low;
-    if (upMove > downMove && upMove > 0) plusDmSum += upMove;
-    if (downMove > upMove && downMove > 0) minusDmSum += downMove;
-  }
-  const atr14 = trSum / 14;
-  const atrPct = Number(Math.max(25e-4, Math.min(0.035, atr14 / lastClose * 4.5)).toFixed(4));
-  const plusDi = trSum > 0 ? plusDmSum / trSum * 100 : 25;
-  const minusDi = trSum > 0 ? minusDmSum / trSum * 100 : 20;
-  const dx = plusDi + minusDi > 0 ? Math.abs(plusDi - minusDi) / (plusDi + minusDi) * 100 : 22;
-  const adx14 = Number(Math.max(16, Math.min(48, 18 + dx * 0.52)).toFixed(1));
-  const trendSignal = ema9 >= ema21 && rsi14 >= 48 ? "CE" : rsi14 < 35 ? "CE" : "PE";
-  const recommendedStrategy = adx14 >= 26 ? "trend_following" : rsi14 <= 38 || rsi14 >= 66 ? "mean_reversion" : "breakout_momentum";
-  const trendAlign = Math.min(0.16, Math.abs(ema9 - ema21) / Math.max(lastClose * 3e-3, 1) * 0.08);
-  const signalConfidence = Number(
-    Math.max(0.58, Math.min(0.91, 0.64 + (adx14 - 18) * 6e-3 + trendAlign)).toFixed(2)
-  );
-  return {
-    rsi14,
-    adx14,
-    atrPct,
-    ema9,
-    ema21,
-    trendSignal,
-    recommendedStrategy,
-    signalConfidence
-  };
-}
-function isNseMarketHoursIst(nowDate = /* @__PURE__ */ new Date()) {
-  const utcMs = nowDate.getTime() + nowDate.getTimezoneOffset() * 6e4;
-  const istDate = new Date(utcMs + 330 * 6e4);
-  const day = istDate.getDay();
-  const hours = istDate.getHours();
-  const minutes = istDate.getMinutes();
-  const totalMins = hours * 60 + minutes;
-  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const istTimeFormatted = `${dayNames[day]} ${String(hours).padStart(2, "0")}:${String(
-    minutes
-  ).padStart(2, "0")} IST`;
-  if (day === 0 || day === 6) {
-    return {
-      isOpen: false,
-      istTimeFormatted,
-      reason: `NSE Weekend Closed (${istTimeFormatted}) \u2014 Market opens Mon 09:15 IST`
-    };
-  }
-  if (totalMins < 9 * 60 + 15) {
-    return {
-      isOpen: false,
-      istTimeFormatted,
-      reason: `Pre-Open Session (${istTimeFormatted}) \u2014 NSE F&O opens at 09:15 IST`
-    };
-  }
-  if (totalMins > 15 * 60 + 30) {
-    return {
-      isOpen: false,
-      istTimeFormatted,
-      reason: `Post-Close Session (${istTimeFormatted}) \u2014 NSE F&O closed at 15:30 IST`
-    };
-  }
-  return {
-    isOpen: true,
-    istTimeFormatted,
-    reason: `NSE F&O Live Session Active (${istTimeFormatted})`
-  };
-}
-
-// src/quant/seedStore.ts
-function seededRand(seed) {
-  let s = seed % 2147483647;
-  if (s <= 0) s += 2147483646;
-  return () => {
-    s = s * 16807 % 2147483647;
-    return (s - 1) / 2147483646;
-  };
-}
-function buildInitialQuantState() {
-  const rng = seededRand(20261104);
-  const underlyings = [
-    "NIFTY",
-    "BANKNIFTY",
-    "FINNIFTY",
-    "RELIANCE",
-    "TCS",
-    "HDFCBANK",
-    "INFY",
-    "ICICIBANK",
-    "SBIN"
-  ];
-  const strategies = ["trend_following", "mean_reversion", "breakout_momentum"];
-  const timeBuckets = [
-    "OPEN_0915_1015",
-    "MIDDAY_1015_1330",
-    "AFTERNOON_1330_1530"
-  ];
-  const basePremiums = {
-    NIFTY: 145,
-    BANKNIFTY: 340,
-    FINNIFTY: 135,
-    RELIANCE: 22,
-    TCS: 58,
-    HDFCBANK: 24,
-    INFY: 28,
-    ICICIBANK: 19,
-    SBIN: 16
-  };
-  const baseStrikes = {
-    NIFTY: 24500,
-    BANKNIFTY: 51800,
-    FINNIFTY: 23900,
-    RELIANCE: 1360,
-    TCS: 4100,
-    HDFCBANK: 1740,
-    INFY: 1860,
-    ICICIBANK: 1290,
-    SBIN: 840
-  };
-  const closedTrades = [];
-  let runningConsEquity = 1e6;
-  let runningPaperEquity = 1e6;
-  let runningNiftyEquity = 1e6;
-  let peakConsEquity = 1e6;
-  const equitySeries = [];
-  const startMs = Date.now() - 56 * 24 * 3600 * 1e3;
-  for (let i = 0; i < 64; i++) {
-    const u = underlyings[i % underlyings.length];
-    const lotSize = NSE_LOT_SIZES[u] ?? 75;
-    const strat = strategies[(i + Math.floor(rng() * 3)) % strategies.length];
-    const regimeAtEntry = strat === "mean_reversion" ? "range" : strat === "trend_following" ? rng() > 0.35 ? "trending_up" : "trending_down" : rng() > 0.4 ? "trending_up" : "high_volatility";
-    const right = regimeAtEntry === "trending_down" ? "PE" : rng() > 0.32 ? "CE" : "PE";
-    const dte = 7 + Math.floor(rng() * 21);
-    const delta = Number(((right === "CE" ? 1 : -1) * (0.38 + rng() * 0.14)).toFixed(2));
-    const ivRank = Number((22 + rng() * 48).toFixed(1));
-    const basePrem = basePremiums[u] ?? 120;
-    const entryMid = Number((basePrem * (0.85 + rng() * 0.35)).toFixed(2));
-    const spreadPct = Number((0.022 + rng() * 0.036).toFixed(4));
-    const halfSpread = Number((entryMid * spreadPct / 2).toFixed(2));
-    const entryBid = Number(Math.max(0.5, entryMid - halfSpread).toFixed(2));
-    const entryAsk = Number((entryMid + halfSpread).toFixed(2));
-    const lotsQty = 1;
-    const entryFill = simulatePessimisticFill("BUY", lotsQty, entryBid, entryAsk, lotSize);
-    const isWin = rng() < (i < 30 ? 0.52 : 0.76);
-    const rawMovePct = isWin ? (i < 30 ? 0.14 : 0.22) + rng() * 0.34 : -(0.1 + rng() * 0.14);
-    const exitMid = Number(Math.max(1, entryMid * (1 + rawMovePct)).toFixed(2));
-    const exitHalfSpread = Number((exitMid * spreadPct / 2).toFixed(2));
-    const exitBid = Number(Math.max(0.5, exitMid - exitHalfSpread).toFixed(2));
-    const exitAsk = Number((exitMid + exitHalfSpread).toFixed(2));
-    const exitFill = simulatePessimisticFill("SELL", lotsQty, exitBid, exitAsk, lotSize);
-    const consPnlInr = Number(
-      (exitFill.conservativeTotalCashInr - Math.abs(entryFill.conservativeTotalCashInr)).toFixed(2)
-    );
-    const consPnlPct = Number(
-      (consPnlInr / Math.abs(entryFill.conservativeTotalCashInr)).toFixed(4)
-    );
-    const paperPnlInr = Number(
-      (exitFill.brokerPaperTotalCashInr - Math.abs(entryFill.brokerPaperTotalCashInr)).toFixed(2)
-    );
-    const paperPnlPct = Number(
-      (paperPnlInr / Math.abs(entryFill.brokerPaperTotalCashInr)).toFixed(4)
-    );
-    const mfePct = Number(
-      Math.max(consPnlPct + 0.05, isWin ? consPnlPct + rng() * 0.14 : rng() * 0.28).toFixed(4)
-    );
-    const maePct = Number(
-      Math.min(consPnlPct - 0.03, isWin ? -(rng() * 0.11) : consPnlPct - rng() * 0.06).toFixed(4)
-    );
-    let exitReason = "TAKE_PROFIT";
-    if (consPnlPct <= -0.28) exitReason = "STOP_LOSS";
-    else if (consPnlPct >= 0.42) exitReason = "TAKE_PROFIT";
-    else if (mfePct >= 0.3 && consPnlPct > 0.1) exitReason = "TRAILING_STOP";
-    else if (!isWin && rng() > 0.5) exitReason = "TIME_STOP_DAYS";
-    else if (!isWin) exitReason = "SIGNAL_REVERSAL";
-    const regimeAtExit = !isWin && rng() > 0.72 ? "high_volatility" : regimeAtEntry;
-    const postMortemLabel = classifyTradePostMortem({
-      exitReason,
-      conservativePnlInr: consPnlInr,
-      conservativePnlPct: consPnlPct,
-      brokerPaperPnlInr: paperPnlInr,
-      mfePct,
-      spreadPctAtEntry: spreadPct,
-      signedUnderlyingMovePct: isWin ? 0.011 : rng() > 0.7 ? 4e-3 : -9e-3,
-      ivChangePct: !isWin && rng() > 0.65 ? -0.06 : 0.01,
-      postExit60mOptionReturnPct: exitReason === "STOP_LOSS" && rng() > 0.65 ? 0.31 : -0.04,
-      regimeAtEntry,
-      regimeAtExit
-    });
-    const openedMs = startMs + i * 20.5 * 3600 * 1e3;
-    const holdMinutes = 75 + Math.floor(rng() * 720);
-    const closedMs = openedMs + holdMinutes * 60 * 1e3;
-    runningConsEquity = Number((runningConsEquity + consPnlInr).toFixed(2));
-    runningPaperEquity = Number((runningPaperEquity + paperPnlInr).toFixed(2));
-    runningNiftyEquity = Number(
-      (runningNiftyEquity * (1 + (rng() - 0.465) * 52e-4)).toFixed(2)
-    );
-    peakConsEquity = Math.max(peakConsEquity, runningConsEquity);
-    const ddPct = Number(((peakConsEquity - runningConsEquity) / peakConsEquity).toFixed(4));
-    const strikeStep = u === "BANKNIFTY" ? 100 : u === "NIFTY" || u === "FINNIFTY" ? 50 : 20;
-    const strike = (baseStrikes[u] ?? 24e3) + (i % 5 - 2) * strikeStep;
-    const contractSymbol = `${u}26NOV${strike}${right}`;
-    const diagnosisMap = {
-      optimal_exit: "Clean execution inside target delta band; exit captured directional expansion with tight NSE bid-ask spread.",
-      wrong_direction: "Underlying failed to follow through on 5m trigger; directional thesis invalidated before target.",
-      theta_or_iv_crush: "Underlying moved mildly in favor, but INDIA VIX contraction (-6.2%) + theta decay outweighed delta gains.",
-      stopped_out_then_reversed: "Hit -30% premium stop on intraday wick, then contract rallied +31% within 60m after exit.",
-      winner_given_back: "Position reached +28% MFE during IST morning session but retraced during midday chop before trailing stop.",
-      bad_fill_wide_spread: "Paper mid fill showed profit, but conservative fill (mid \xB1 35% spread + \u20B935/lot charges) flipped net P&L negative.",
-      wrong_regime: "Entered during trending regime, but NIFTY 50 shifted into high-volatility intraday whipsaw prior to exit."
-    };
-    const entryReasonMap = {
-      trend_following: `EMA20 > EMA50 aligned + Spot > VWAP + ADX(14)=${(24 + rng() * 10).toFixed(1)} in ${regimeAtEntry}`,
-      mean_reversion: `RSI(14)=${(right === "CE" ? 27.4 : 73.2).toFixed(1)} extreme + Bollinger re-entry inside low-ADX range`,
-      breakout_momentum: `20-bar range breakout + Volume ${(1.6 + rng() * 0.8).toFixed(2)}x avg + ATR expansion`
-    };
-    closedTrades.push({
-      tradeId: `NSE-TRD-${String(1001 + i)}`,
-      contractSymbol,
-      underlying: u,
-      right,
-      lotSize,
-      strategyName: strat,
-      regimeAtEntry,
-      regimeAtExit,
-      isShadowChallenger: false,
-      modelVersion: i < 42 ? "v1.2.0-nse-walkforward" : "v1.3.0-nse-walkforward",
-      lotsQty,
-      dteAtEntry: dte,
-      deltaAtEntry: delta,
-      ivRankAtEntry: ivRank,
-      spreadPctAtEntry: spreadPct,
-      confidenceAtEntry: Number((0.64 + rng() * 0.24).toFixed(2)),
-      rsiAtEntry: Number((32 + rng() * 38).toFixed(1)),
-      adxAtEntry: Number((18 + rng() * 18).toFixed(1)),
-      atrPctAtEntry: Number((0.011 + rng() * 0.012).toFixed(4)),
-      indiaVixAtEntry: Number((12.8 + rng() * 4.8).toFixed(2)),
-      timeOfDayBucket: timeBuckets[i % timeBuckets.length],
-      conservativeEntryPrice: entryFill.conservativeFillPrice,
-      conservativeExitPrice: exitFill.conservativeFillPrice,
-      brokerPaperEntryPrice: entryFill.brokerPaperFillPrice,
-      brokerPaperExitPrice: exitFill.brokerPaperFillPrice,
-      feesTotalInr: Number((entryFill.feeInr + exitFill.feeInr).toFixed(2)),
-      conservativePnlInr: consPnlInr,
-      conservativePnlPct: consPnlPct,
-      brokerPaperPnlInr: paperPnlInr,
-      brokerPaperPnlPct: paperPnlPct,
-      maePct,
-      mfePct,
-      holdMinutes,
-      entryReason: entryReasonMap[strat],
-      exitReason,
-      postMortemLabel,
-      diagnosisNotes: diagnosisMap[postMortemLabel],
-      openedAt: new Date(openedMs).toISOString(),
-      closedAt: new Date(closedMs).toISOString()
-    });
-    equitySeries.push({
-      snapshotId: `SNAP-${String(i + 1).padStart(4, "0")}`,
-      recordedAt: new Date(closedMs).toISOString(),
-      conservativeEquityInr: runningConsEquity,
-      brokerPaperEquityInr: runningPaperEquity,
-      niftyBenchmarkEquityInr: runningNiftyEquity,
-      realizedPnlInr: Number((runningConsEquity - 1e6).toFixed(2)),
-      unrealizedPnlInr: Number(((rng() - 0.35) * 3200).toFixed(2)),
-      drawdownPct: ddPct,
-      openPositionsCount: 2 + i % 3
-    });
-  }
-  const openPositions = [
-    {
-      positionId: "POS-NSE-901",
-      tradeId: "NSE-TRD-2001",
-      contractSymbol: "NIFTY26NOV24500CE",
-      underlying: "NIFTY",
-      right: "CE",
-      strike: 24500,
-      lotSize: 75,
-      expirationDate: "2026-11-26",
-      dte: 18,
-      strategyName: "trend_following",
-      regimeAtEntry: "trending_up",
-      lotsQty: 1,
-      conservativeEntryPrice: 148.4,
-      brokerPaperEntryPrice: 146.5,
-      currentMarkPrice: 171.2,
-      peakMarkPrice: 176.8,
-      troughMarkPrice: 141,
-      unrealizedPnlInr: 1675,
-      unrealizedPnlPct: 0.1536,
-      delta: 0.49,
-      theta: -4.2,
-      ivRankPct: 34.5,
-      stopLossPrice: 103.9,
-      takeProfitPrice: 222.6,
-      trailingStopActivationPrice: 192.9,
-      tradingDaysHeld: 2,
-      isIntradayFlagged: false,
-      openedAt: new Date(Date.now() - 2 * 24 * 3600 * 1e3).toISOString()
-    },
-    {
-      positionId: "POS-NSE-902",
-      tradeId: "NSE-TRD-2002",
-      contractSymbol: "BANKNIFTY26NOV52000CE",
-      underlying: "BANKNIFTY",
-      right: "CE",
-      strike: 52e3,
-      lotSize: 30,
-      expirationDate: "2026-11-25",
-      dte: 17,
-      strategyName: "breakout_momentum",
-      regimeAtEntry: "trending_up",
-      lotsQty: 1,
-      conservativeEntryPrice: 345.2,
-      brokerPaperEntryPrice: 341,
-      currentMarkPrice: 398.5,
-      peakMarkPrice: 406,
-      troughMarkPrice: 332,
-      unrealizedPnlInr: 1564,
-      unrealizedPnlPct: 0.1544,
-      delta: 0.47,
-      theta: -9.8,
-      ivRankPct: 41.2,
-      stopLossPrice: 241.6,
-      takeProfitPrice: 517.8,
-      trailingStopActivationPrice: 448.8,
-      tradingDaysHeld: 1,
-      isIntradayFlagged: false,
-      openedAt: new Date(Date.now() - 22 * 3600 * 1e3).toISOString()
-    },
-    {
-      positionId: "POS-NSE-903",
-      tradeId: "NSE-TRD-2003",
-      contractSymbol: "FINNIFTY26NOV23900PE",
-      underlying: "FINNIFTY",
-      right: "PE",
-      strike: 23900,
-      lotSize: 65,
-      expirationDate: "2026-11-24",
-      dte: 16,
-      strategyName: "mean_reversion",
-      regimeAtEntry: "range",
-      lotsQty: 1,
-      conservativeEntryPrice: 132.6,
-      brokerPaperEntryPrice: 131,
-      currentMarkPrice: 124.8,
-      peakMarkPrice: 139.5,
-      troughMarkPrice: 121,
-      unrealizedPnlInr: -542,
-      unrealizedPnlPct: -0.0588,
-      delta: -0.42,
-      theta: -3.6,
-      ivRankPct: 29.8,
-      stopLossPrice: 92.8,
-      takeProfitPrice: 198.9,
-      trailingStopActivationPrice: 172.4,
-      tradingDaysHeld: 3,
-      isIntradayFlagged: false,
-      openedAt: new Date(Date.now() - 3 * 24 * 3600 * 1e3).toISOString()
-    },
-    {
-      positionId: "POS-NSE-904",
-      tradeId: "NSE-TRD-2004",
-      contractSymbol: "RELIANCE26NOV1360CE",
-      underlying: "RELIANCE",
-      right: "CE",
-      strike: 1360,
-      lotSize: 500,
-      expirationDate: "2026-11-26",
-      dte: 18,
-      strategyName: "trend_following",
-      regimeAtEntry: "trending_up",
-      lotsQty: 1,
-      conservativeEntryPrice: 22.85,
-      brokerPaperEntryPrice: 22.5,
-      currentMarkPrice: 25.4,
-      peakMarkPrice: 26.1,
-      troughMarkPrice: 21.9,
-      unrealizedPnlInr: 1240,
-      unrealizedPnlPct: 0.1116,
-      delta: 0.46,
-      theta: -0.65,
-      ivRankPct: 37,
-      stopLossPrice: 16,
-      takeProfitPrice: 34.3,
-      trailingStopActivationPrice: 29.7,
-      tradingDaysHeld: 1,
-      isIntradayFlagged: true,
-      openedAt: new Date(Date.now() - 6 * 3600 * 1e3).toISOString()
-    }
-  ];
-  const skippedSignals = [
-    {
-      signalId: "SIG-SKIP-401",
-      generatedAt: new Date(Date.now() - 3 * 3600 * 1e3).toISOString(),
-      underlying: "TCS",
-      strategyName: "breakout_momentum",
-      direction: "CE",
-      regime: "trending_up",
-      confidence: 0.67,
-      qualityGateProb: 0.64,
-      skipReason: "Capital-Preservation Gate P(gain)=64.0% < 68.0% threshold (Hard Floor 67% \u2014 wide afternoon spread + IVR 79%)",
-      counterfactualContract: "TCS26NOV4150CE",
-      counterfactualEntryPrice: 61.5,
-      counterfactualExitPrice: 49.2,
-      counterfactualPnlPct: -0.2
-    },
-    {
-      signalId: "SIG-SKIP-402",
-      generatedAt: new Date(Date.now() - 9 * 3600 * 1e3).toISOString(),
-      underlying: "INFY",
-      strategyName: "trend_following",
-      direction: "CE",
-      regime: "trending_up",
-      confidence: 0.74,
-      qualityGateProb: 0.66,
-      skipReason: "Capital-Preservation Gate P(gain)=66.0% < 68.0% threshold + Q2 corporate results inside holding window",
-      counterfactualContract: "INFY26NOV1880CE",
-      counterfactualEntryPrice: 29.4,
-      counterfactualExitPrice: 20.1,
-      counterfactualPnlPct: -0.3163
-    },
-    {
-      signalId: "SIG-SKIP-403",
-      generatedAt: new Date(Date.now() - 26 * 3600 * 1e3).toISOString(),
-      underlying: "HDFCBANK",
-      strategyName: "mean_reversion",
-      direction: "PE",
-      regime: "range",
-      confidence: 0.65,
-      qualityGateProb: 0.61,
-      skipReason: "Capital-Preservation Gate P(gain)=61.0% < 68.0% threshold (Midday IST theta drag)",
-      counterfactualContract: "HDFCBANK26NOV1740PE",
-      counterfactualEntryPrice: 24.8,
-      counterfactualExitPrice: 21.4,
-      counterfactualPnlPct: -0.1371
-    },
-    {
-      signalId: "SIG-SKIP-404",
-      generatedAt: new Date(Date.now() - 48 * 3600 * 1e3).toISOString(),
-      underlying: "SBIN",
-      strategyName: "breakout_momentum",
-      direction: "CE",
-      regime: "high_volatility",
-      confidence: 0.71,
-      qualityGateProb: 0.65,
-      skipReason: "Capital-Preservation Gate P(gain)=65.0% < 68.0% threshold + bid-ask spread 9.2% > 8.0% limit",
-      counterfactualContract: "SBIN26NOV850CE",
-      counterfactualEntryPrice: 16.9,
-      counterfactualExitPrice: 13.4,
-      counterfactualPnlPct: -0.2071
-    }
-  ];
-  const backtestResults = [
-    {
-      strategyName: "trend_following",
-      tradeCount: 142,
-      winRate: 0.578,
-      expectancyInr: 725.4,
-      profitFactor: 1.54,
-      maxDrawdownPct: 0.052,
-      sharpeRatio: 1.78
-    },
-    {
-      strategyName: "breakout_momentum",
-      tradeCount: 118,
-      winRate: 0.534,
-      expectancyInr: 582.1,
-      profitFactor: 1.41,
-      maxDrawdownPct: 0.068,
-      sharpeRatio: 1.52
-    },
-    {
-      strategyName: "mean_reversion",
-      tradeCount: 94,
-      winRate: 0.553,
-      expectancyInr: 412.8,
-      profitFactor: 1.33,
-      maxDrawdownPct: 0.044,
-      sharpeRatio: 1.44
-    }
-  ];
-  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-  return {
-    control: {
-      id: 1,
-      newEntriesEnabled: true,
-      killSwitchActive: false,
-      dailyLossHaltActive: false,
-      activeChampionVersion: "v1.3.0-nse-walkforward",
-      previousChampionVersion: "v1.2.0-nse-walkforward",
-      strictLiveMarketHoursOnly: false,
-      updatedAt: new Date(Date.now() - 45 * 60 * 1e3).toISOString(),
-      updatedBy: "bot_rw (Oracle VM systemd)"
-    },
-    health: {
-      botId: "oci-ap-mumbai-1-arm-bot-01",
-      heartbeatAt: new Date(Date.now() - 42 * 1e3).toISOString(),
-      lastCycleAt: new Date(Date.now() - 2 * 60 * 1e3).toISOString(),
-      lastDbWriteAt: new Date(Date.now() - 42 * 1e3).toISOString(),
-      lastCycleStatus: "OK",
-      marketOpen: true,
-      currentRegime: "trending_up",
-      indiaVixLevel: 14.25,
-      niftySpot: 24482.6,
-      bankNiftySpot: 51845.2,
-      sqliteOutboxPending: 0,
-      reconciliationMismatches: 0,
-      staleQuotesRejected: 2,
-      memoryRssMb: 214.6,
-      simulatedOfflineMode: false
-    },
-    openPositions,
-    closedTrades: closedTrades.reverse(),
-    skippedSignals,
-    equitySeries,
-    backtestResults,
-    learning: {
-      championVersion: "v1.3.0-nse-walkforward",
-      previousChampionVersion: "v1.2.0-nse-walkforward",
-      challengerVersion: "v2.0.0-nse-gbdt-ensemble",
-      modelType: "L2 Logistic Regression (Calibrated)",
-      walkForwardAuc: 0.724,
-      qualityGateThreshold: 0.68,
-      closedTradesCount: 64,
-      tradesNeededForGbdt: 136,
-      championVsChallenger: {
-        championExpectancyInr: 485,
-        challengerExpectancyInr: 640,
-        championMaxDrawdownPct: 0.048,
-        challengerMaxDrawdownPct: 0.041,
-        shadowTradesCompleted: 54,
-        minShadowTradesRequired: 50,
-        readyToPromote: true,
-        statusSummary: "Shadow Challenger v1.4.0-nse-shadow has completed 54/50 shadow NSE trades with higher conservative expectancy (+\u20B9640.00 vs +\u20B9485.00/trade) and lower max drawdown (4.1% vs 4.8%). Eligible for promotion."
-      },
-      featureImportances: [
-        {
-          feature: "signal_confidence",
-          weight: 1.42,
-          description: "Composite indicator alignment score (EMA20/50 + VWAP + ADX)"
-        },
-        {
-          feature: "spread_pct_of_mid",
-          weight: -1.38,
-          description: "Penalizes wide NSE option bid-ask spreads (> 4.5% of mid)"
-        },
-        {
-          feature: "adx_14_trend_strength",
-          weight: 0.89,
-          description: "Favors strong directional trend regimes on NIFTY & BANKNIFTY"
-        },
-        {
-          feature: "iv_rank_pct_over_70",
-          weight: -1.12,
-          description: "Avoids buying expensive premium susceptible to INDIA VIX crush"
-        },
-        {
-          feature: "midday_1015_1330_ist",
-          weight: -0.74,
-          description: "Penalizes low-volume IST midday chop entries (10:15\u201313:30 IST)"
-        },
-        {
-          feature: "dte_14_to_28_bucket",
-          weight: 0.66,
-          description: "Favors NSE monthly/bi-weekly contracts with lower gamma/theta decay"
-        }
-      ],
-      banditAllocations: [
-        {
-          bucketKey: "trend_following \xD7 trending_up \xD7 NIFTY (Lot 75)",
-          wins: 21,
-          losses: 11,
-          totalTrades: 32,
-          allocationWeight: 0.285,
-          riskBudgetMultiplier: 1,
-          status: "Active Adaptation (>= 30 trades)"
-        },
-        {
-          bucketKey: "breakout_momentum \xD7 trending_up \xD7 BANKNIFTY (Lot 30)",
-          wins: 19,
-          losses: 12,
-          totalTrades: 31,
-          allocationWeight: 0.245,
-          riskBudgetMultiplier: 0.96,
-          status: "Active Adaptation (>= 30 trades)"
-        },
-        {
-          bucketKey: "mean_reversion \xD7 range \xD7 FINNIFTY (Lot 65)",
-          wins: 10,
-          losses: 8,
-          totalTrades: 18,
-          allocationWeight: 0.165,
-          riskBudgetMultiplier: 0.85,
-          status: "Warmup Prior (18/30 trades)"
-        },
-        {
-          bucketKey: "trend_following \xD7 trending_down \xD7 HDFCBANK (Lot 550)",
-          wins: 9,
-          losses: 6,
-          totalTrades: 15,
-          allocationWeight: 0.155,
-          riskBudgetMultiplier: 0.85,
-          status: "Warmup Prior (15/30 trades)"
-        },
-        {
-          bucketKey: "breakout_momentum \xD7 high_volatility \xD7 RELIANCE (Lot 500)",
-          wins: 5,
-          losses: 11,
-          totalTrades: 16,
-          allocationWeight: 0.05,
-          riskBudgetMultiplier: 0.55,
-          status: "Clamped at 5.0% Exploration Floor"
-        },
-        {
-          bucketKey: "trend_following \xD7 trending_up \xD7 TCS (Lot 175)",
-          wins: 8,
-          losses: 6,
-          totalTrades: 14,
-          allocationWeight: 0.1,
-          riskBudgetMultiplier: 0.8,
-          status: "Warmup Prior (14/30 trades)"
-        }
-      ],
-      learningLog: [
-        {
-          logId: "LL-2026-104",
-          loggedAt: new Date(Date.now() - 2 * 24 * 3600 * 1e3).toISOString(),
-          changeCategory: "CAPITAL_PRESERVATION_GATE",
-          modelVersion: "v1.3.0-nse-walkforward",
-          parameterOrBucket: "quality_gate.min_win_probability",
-          oldValue: "0.67 (67% Hard Floor)",
-          newValue: "0.68 (68% Recommended 2.1:1 Odds)",
-          sampleSize: 64,
-          bootstrapCi90: "[+\u20B9490.00, +\u20B91,380.00] / trade",
-          reasonAndEvidence: "Capital-Preservation Policy: Locked hard floor at P(gain) >= 67% and set active threshold to 68.0% (2.1:1 odds) + Breakeven-Lock stop (+2.5% floor once MFE >= +18%) to eliminate borderline spread/theta losses."
-        },
-        {
-          logId: "LL-2026-103",
-          loggedAt: new Date(Date.now() - 9 * 24 * 3600 * 1e3).toISOString(),
-          changeCategory: "BANDIT_POSTERIOR_UPDATE",
-          modelVersion: "v1.3.0-nse-walkforward",
-          parameterOrBucket: "trend_following \xD7 trending_up \xD7 NIFTY",
-          oldValue: "0.240 weight",
-          newValue: "0.285 weight",
-          sampleSize: 32,
-          bootstrapCi90: "[54.2%, 76.8%] win rate",
-          reasonAndEvidence: "Bucket crossed 30-trade threshold with 65.6% conservative win rate; Thompson Sampling increased risk multiplier to 1.00x cap."
-        },
-        {
-          logId: "LL-2026-102",
-          loggedAt: new Date(Date.now() - 16 * 24 * 3600 * 1e3).toISOString(),
-          changeCategory: "COUNTERFACTUAL_RETRAIN",
-          modelVersion: "v1.2.0-nse-walkforward",
-          parameterOrBucket: "contracts.max_spread_pct_of_mid",
-          oldValue: "0.080",
-          newValue: "0.074 (-7.5%)",
-          sampleSize: 52,
-          bootstrapCi90: "[+\u20B9110.00, +\u20B9440.00] / trade",
-          reasonAndEvidence: "Counterfactual log confirmed 78% of skipped wide-spread stock option signals (>7.4% spread) would have lost money after \u20B935/lot charges."
-        }
-      ]
-    }
-  };
-}
 
 // src/quant/angelOneSmartApi.ts
 import crypto from "node:crypto";
+
+// src/quant/clock.ts
+var IST_OFFSET_MS = 5.5 * 3600 * 1e3;
+var SESSION_OPEN_MINUTE = 9 * 60 + 15;
+var SESSION_CLOSE_MINUTE = 15 * 60 + 30;
+function istParts(ms) {
+  const d = new Date(ms + IST_OFFSET_MS);
+  const hour = d.getUTCHours();
+  const minute = d.getUTCMinutes();
+  return {
+    dateStr: d.toISOString().slice(0, 10),
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth() + 1,
+    day: d.getUTCDate(),
+    hour,
+    minute,
+    second: d.getUTCSeconds(),
+    weekday: d.getUTCDay(),
+    minuteOfDay: hour * 60 + minute
+  };
+}
+function istToMs(dateStr, hour, minute, second = 0) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return Date.UTC(y, m - 1, d, hour, minute, second) - IST_OFFSET_MS;
+}
+function isWithinSessionHours(ms) {
+  const p = istParts(ms);
+  return p.weekday >= 1 && p.weekday <= 5 && p.minuteOfDay >= SESSION_OPEN_MINUTE && p.minuteOfDay < SESSION_CLOSE_MINUTE;
+}
+function formatIstForAngel(ms) {
+  const p = istParts(ms);
+  return `${p.dateStr} ${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
+}
+var MONTHS = {
+  JAN: 1,
+  FEB: 2,
+  MAR: 3,
+  APR: 4,
+  MAY: 5,
+  JUN: 6,
+  JUL: 7,
+  AUG: 8,
+  SEP: 9,
+  OCT: 10,
+  NOV: 11,
+  DEC: 12
+};
+function parseAngelExpiry(raw) {
+  const m = /^(\d{2})([A-Za-z]{3})(\d{4})$/.exec(raw.trim());
+  if (!m) return null;
+  const month = MONTHS[m[2].toUpperCase()];
+  if (!month) return null;
+  return `${m[3]}-${String(month).padStart(2, "0")}-${m[1]}`;
+}
+function parseAngelFeedTime(raw) {
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})$/.exec(raw.trim());
+  if (!m) return null;
+  const month = MONTHS[m[2].toUpperCase()];
+  if (!month) return null;
+  const dateStr = `${m[3]}-${String(month).padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  return istToMs(dateStr, Number(m[4]), Number(m[5]), Number(m[6]));
+}
+function calendarDaysBetween(fromDate, toDate) {
+  const a = Date.parse(`${fromDate}T00:00:00Z`);
+  const b = Date.parse(`${toDate}T00:00:00Z`);
+  return Math.round((b - a) / 864e5);
+}
+function hourlyBarEndMs(barStartMs) {
+  const p = istParts(barStartMs);
+  if (p.minuteOfDay >= 15 * 60 + 15) return istToMs(p.dateStr, 15, 30);
+  return barStartMs + 36e5;
+}
+function istDate(ms) {
+  return istParts(ms).dateStr;
+}
+function istWeekStartMs(ms) {
+  const p = istParts(ms);
+  const daysSinceMonday = (p.weekday + 6) % 7;
+  return istToMs(p.dateStr, 0, 0) - daysSinceMonday * 864e5;
+}
+function istMonthStartMs(ms) {
+  const p = istParts(ms);
+  return istToMs(`${p.year}-${String(p.month).padStart(2, "0")}-01`, 0, 0);
+}
+function istMonthKey(ms) {
+  const p = istParts(ms);
+  return `${p.year}-${String(p.month).padStart(2, "0")}`;
+}
+
+// src/quant/types.ts
+var UNDERLYINGS = [
+  "NIFTY",
+  "BANKNIFTY",
+  "FINNIFTY",
+  "RELIANCE",
+  "TCS",
+  "HDFCBANK",
+  "INFY",
+  "ICICIBANK",
+  "SBIN"
+];
+var INDEX_UNDERLYINGS = /* @__PURE__ */ new Set(["NIFTY", "BANKNIFTY", "FINNIFTY"]);
+
+// src/quant/angelOneSmartApi.ts
 var ANGEL_ONE_NSE_TOKENS = {
-  NIFTY: {
-    symbol: "NIFTY",
-    angelToken: "99926000",
-    tradingSymbol: "Nifty 50",
-    exchange: "NSE"
-  },
-  BANKNIFTY: {
-    symbol: "BANKNIFTY",
-    angelToken: "99926009",
-    tradingSymbol: "Nifty Bank",
-    exchange: "NSE"
-  },
-  FINNIFTY: {
-    symbol: "FINNIFTY",
-    angelToken: "99926037",
-    tradingSymbol: "Nifty Fin Service",
-    exchange: "NSE"
-  },
-  INDIA_VIX: {
-    symbol: "INDIA_VIX",
-    angelToken: "99926017",
-    tradingSymbol: "India VIX",
-    exchange: "NSE"
-  },
-  RELIANCE: {
-    symbol: "RELIANCE",
-    angelToken: "2885",
-    tradingSymbol: "RELIANCE-EQ",
-    exchange: "NSE"
-  },
-  TCS: {
-    symbol: "TCS",
-    angelToken: "11536",
-    tradingSymbol: "TCS-EQ",
-    exchange: "NSE"
-  },
-  HDFCBANK: {
-    symbol: "HDFCBANK",
-    angelToken: "1333",
-    tradingSymbol: "HDFCBANK-EQ",
-    exchange: "NSE"
-  },
-  INFY: {
-    symbol: "INFY",
-    angelToken: "1594",
-    tradingSymbol: "INFY-EQ",
-    exchange: "NSE"
-  },
-  ICICIBANK: {
-    symbol: "ICICIBANK",
-    angelToken: "4963",
-    tradingSymbol: "ICICIBANK-EQ",
-    exchange: "NSE"
-  },
-  SBIN: {
-    symbol: "SBIN",
-    angelToken: "3045",
-    tradingSymbol: "SBIN-EQ",
-    exchange: "NSE"
-  }
+  NIFTY: { symbol: "NIFTY", angelToken: "99926000", tradingSymbol: "Nifty 50", exchange: "NSE" },
+  BANKNIFTY: { symbol: "BANKNIFTY", angelToken: "99926009", tradingSymbol: "Nifty Bank", exchange: "NSE" },
+  FINNIFTY: { symbol: "FINNIFTY", angelToken: "99926037", tradingSymbol: "Nifty Fin Service", exchange: "NSE" },
+  INDIA_VIX: { symbol: "INDIA_VIX", angelToken: "99926017", tradingSymbol: "India VIX", exchange: "NSE" },
+  RELIANCE: { symbol: "RELIANCE", angelToken: "2885", tradingSymbol: "RELIANCE-EQ", exchange: "NSE" },
+  TCS: { symbol: "TCS", angelToken: "11536", tradingSymbol: "TCS-EQ", exchange: "NSE" },
+  HDFCBANK: { symbol: "HDFCBANK", angelToken: "1333", tradingSymbol: "HDFCBANK-EQ", exchange: "NSE" },
+  INFY: { symbol: "INFY", angelToken: "1594", tradingSymbol: "INFY-EQ", exchange: "NSE" },
+  ICICIBANK: { symbol: "ICICIBANK", angelToken: "4963", tradingSymbol: "ICICIBANK-EQ", exchange: "NSE" },
+  SBIN: { symbol: "SBIN", angelToken: "3045", tradingSymbol: "SBIN-EQ", exchange: "NSE" }
 };
 var ANGEL_BASE_URL = "https://apiconnect.angelone.in";
+var SCRIP_MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
+var UNDERLYING_SET = new Set(UNDERLYINGS);
+var QUOTE_BATCH = 50;
 var cachedJwtToken = null;
-var cachedFeedToken = null;
 var jwtExpiresAtMs = 0;
 var lastLoginAtIso = null;
 var lastQuoteFetchAtIso = null;
 var lastAngelError = null;
-var cachedOptionGreeks = {};
 function decodeBase32(base32Raw) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   const cleaned = base32Raw.toUpperCase().replace(/[^A-Z2-7]/g, "");
@@ -1164,19 +158,24 @@ function generateAngelTotp(base32Secret, timestampMs = Date.now()) {
   const hmac = crypto.createHmac("sha1", key).update(counterBuf).digest();
   const offset = hmac[hmac.length - 1] & 15;
   const binary = (hmac[offset] & 127) << 24 | (hmac[offset + 1] & 255) << 16 | (hmac[offset + 2] & 255) << 8 | hmac[offset + 3] & 255;
-  const otp = binary % 1e6;
-  return otp.toString().padStart(6, "0");
+  return (binary % 1e6).toString().padStart(6, "0");
 }
-function getAngelCredentials() {
-  const apiKey = (process.env.ANGELONE_API_KEY || process.env.ANGEL_API_KEY || process.env.ANGEL_SMARTAPI_KEY || "").trim();
-  const clientCode = (process.env.ANGELONE_CLIENT_CODE || process.env.ANGEL_CLIENT_CODE || process.env.ANGEL_CLIENT_ID || "").trim();
-  const mpin = (process.env.ANGELONE_MPIN || process.env.ANGEL_MPIN || process.env.ANGEL_PASSWORD || "").trim();
-  const totpSecret = (process.env.ANGELONE_TOTP_SECRET || process.env.ANGEL_TOTP_SECRET || "").trim();
-  const configured = Boolean(apiKey && clientCode && mpin && totpSecret);
-  return { apiKey, clientCode, mpin, totpSecret, configured };
+function angelCredentialsConfigured() {
+  return Boolean(
+    process.env.ANGEL_API_KEY && process.env.ANGEL_CLIENT_CODE && process.env.ANGEL_MPIN && process.env.ANGEL_TOTP_SECRET
+  );
 }
-function buildAngelHeaders(apiKey, jwtToken) {
-  const headers = {
+function credentials() {
+  return {
+    apiKey: (process.env.ANGEL_API_KEY || "").trim(),
+    clientCode: (process.env.ANGEL_CLIENT_CODE || "").trim(),
+    mpin: (process.env.ANGEL_MPIN || "").trim(),
+    totpSecret: (process.env.ANGEL_TOTP_SECRET || "").trim(),
+    configured: angelCredentialsConfigured()
+  };
+}
+function headers(apiKey, jwtToken) {
+  const h = {
     "Content-Type": "application/json",
     Accept: "application/json",
     "X-UserType": "USER",
@@ -1186,3048 +185,2875 @@ function buildAngelHeaders(apiKey, jwtToken) {
     "X-MACAddress": "02:00:00:00:00:01",
     "X-PrivateKey": apiKey
   };
-  if (jwtToken) {
-    headers.Authorization = jwtToken.startsWith("Bearer ") ? jwtToken : `Bearer ${jwtToken}`;
-  }
-  return headers;
+  if (jwtToken) h.Authorization = jwtToken.startsWith("Bearer ") ? jwtToken : `Bearer ${jwtToken}`;
+  return h;
 }
-async function ensureAngelOneSession(forceRefresh = false) {
-  const { apiKey, clientCode, mpin, totpSecret, configured } = getAngelCredentials();
-  if (!configured) {
-    return null;
-  }
-  const now = Date.now();
-  if (!forceRefresh && cachedJwtToken && now < jwtExpiresAtMs) {
-    return cachedJwtToken;
-  }
-  try {
-    const totp = generateAngelTotp(totpSecret, now);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4500);
-    const res = await fetch(
-      `${ANGEL_BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword`,
-      {
-        method: "POST",
-        headers: buildAngelHeaders(apiKey),
-        body: JSON.stringify({
-          clientcode: clientCode,
-          password: mpin,
-          totp
-        }),
-        signal: controller.signal
-      }
-    );
-    clearTimeout(timer);
-    const payload = await res.json();
-    if (!res.ok || !payload?.status || !payload?.data?.jwtToken) {
-      lastAngelError = payload?.message || payload?.errorcode || `Angel login HTTP ${res.status}`;
-      return null;
-    }
-    cachedJwtToken = payload.data.jwtToken;
-    cachedFeedToken = payload.data.feedToken ?? null;
-    jwtExpiresAtMs = now + 18 * 60 * 60 * 1e3;
-    lastLoginAtIso = new Date(now).toISOString();
-    lastAngelError = null;
-    return cachedJwtToken;
-  } catch (err) {
-    lastAngelError = err instanceof Error ? err.message : "Angel login network error";
-    return null;
-  }
-}
-async function fetchAngelOneFullMarketQuotes() {
-  const { apiKey, configured } = getAngelCredentials();
-  if (!configured) return null;
-  let jwt = await ensureAngelOneSession(false);
-  if (!jwt) return null;
-  const tokenList = Object.values(ANGEL_ONE_NSE_TOKENS).map((t) => t.angelToken);
-  const tokenToSymbol = /* @__PURE__ */ new Map();
-  for (const [sym, meta] of Object.entries(ANGEL_ONE_NSE_TOKENS)) {
-    tokenToSymbol.set(meta.angelToken, sym);
-  }
-  const executeQuoteCall = async (token) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4500);
-    const response = await fetch(
-      `${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`,
-      {
-        method: "POST",
-        headers: buildAngelHeaders(apiKey, token),
-        body: JSON.stringify({
-          mode: "FULL",
-          exchangeTokens: {
-            NSE: tokenList
-          }
-        }),
-        signal: controller.signal
-      }
-    );
-    clearTimeout(timer);
-    return response;
-  };
-  try {
-    let res = await executeQuoteCall(jwt);
-    let data = await res.json();
-    if (!data?.status && (data?.errorcode === "AG8001" || res.status === 401)) {
-      jwt = await ensureAngelOneSession(true);
-      if (!jwt) return null;
-      res = await executeQuoteCall(jwt);
-      data = await res.json();
-    }
-    if (!data?.status || !Array.isArray(data?.data?.fetched)) {
-      lastAngelError = data?.message || data?.errorcode || "Angel quote fetch unsuccessful";
-      return null;
-    }
-    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-    lastQuoteFetchAtIso = nowIso;
-    lastAngelError = null;
-    const results = {};
-    for (const item of data.data.fetched) {
-      const sym = tokenToSymbol.get(String(item.symbolToken || ""));
-      if (!sym) continue;
-      const ltp = Number(item.ltp ?? 0);
-      if (ltp <= 0) continue;
-      const close = Number(item.close ?? ltp);
-      const pctChange = typeof item.percentChange === "number" ? Number(item.percentChange.toFixed(2)) : close > 0 ? Number(((ltp - close) / close * 100).toFixed(2)) : 0;
-      const rawBid = Number(item.depth?.buy?.[0]?.price ?? 0);
-      const rawAsk = Number(item.depth?.sell?.[0]?.price ?? 0);
-      const bestBid = rawBid > 0 ? rawBid : Number((ltp * 0.9992).toFixed(2));
-      const bestAsk = rawAsk > 0 && rawAsk >= bestBid ? rawAsk : Number((ltp * 1.0008).toFixed(2));
-      const mid = (bestBid + bestAsk) / 2;
-      const spreadPctOfMid = mid > 0 ? Number(((bestAsk - bestBid) / mid).toFixed(5)) : 16e-4;
-      results[sym] = {
-        symbol: sym,
-        angelToken: String(item.symbolToken),
-        ltp: Number(ltp.toFixed(2)),
-        open: Number((item.open ?? ltp).toFixed(2)),
-        high: Number((item.high ?? ltp).toFixed(2)),
-        low: Number((item.low ?? ltp).toFixed(2)),
-        close: Number(close.toFixed(2)),
-        percentChange: pctChange,
-        bestBid,
-        bestAsk,
-        spreadPctOfMid,
-        tradeVolume: Number(item.tradeVolume ?? 0),
-        openInterest: Number(item.opnInterest ?? 0),
-        updatedAt: nowIso
-      };
-    }
-    return Object.keys(results).length > 0 ? results : null;
-  } catch (err) {
-    lastAngelError = err instanceof Error ? err.message : "Angel quote network error";
-    return null;
-  }
-}
-async function fetchAngelOneOptionGreeks(underlying, expiryDate = "26NOV2026") {
-  const { apiKey, configured } = getAngelCredentials();
-  if (!configured) return null;
-  const jwt = await ensureAngelOneSession(false);
-  if (!jwt) return null;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3500);
-    const res = await fetch(
-      `${ANGEL_BASE_URL}/rest/secure/angelbroking/marketData/v1/optionGreek`,
-      {
-        method: "POST",
-        headers: buildAngelHeaders(apiKey, jwt),
-        body: JSON.stringify({
-          name: underlying,
-          expirydate: expiryDate
-        }),
-        signal: controller.signal
-      }
-    );
-    clearTimeout(timer);
-    const payload = await res.json();
-    if (!payload?.status || !Array.isArray(payload?.data) || payload.data.length === 0) {
-      return cachedOptionGreeks[underlying] ?? null;
-    }
-    const calls = payload.data.filter((r) => r.optionType === "CE" && Number(r.impliedVolatility) > 0);
-    const puts = payload.data.filter((r) => r.optionType === "PE" && Number(r.impliedVolatility) > 0);
-    const atmCall = calls.sort((a, b) => Math.abs(Number(a.delta) - 0.5) - Math.abs(Number(b.delta) - 0.5))[0] ?? calls[0];
-    const atmPut = puts.sort((a, b) => Math.abs(Math.abs(Number(a.delta)) - 0.5) - Math.abs(Math.abs(Number(b.delta)) - 0.5))[0] ?? puts[0];
-    const summary = {
-      underlying,
-      expiryDate,
-      atmImpliedVolatilityPct: Number(atmCall?.impliedVolatility ?? atmPut?.impliedVolatility ?? 14.5),
-      atmCallDelta: Number(atmCall?.delta ?? 0.52),
-      atmPutDelta: Number(atmPut?.delta ?? -0.48),
-      atmTheta: Number(atmCall?.theta ?? -12.4),
-      atmVega: Number(atmCall?.vega ?? 18.2),
-      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-    };
-    cachedOptionGreeks[underlying] = summary;
-    return summary;
-  } catch {
-    return cachedOptionGreeks[underlying] ?? null;
-  }
-}
-async function fetchAngelOneHistoricalCandles(symbol, fromDateIst, toDateIst, interval = "ONE_HOUR") {
-  const { apiKey, configured } = getAngelCredentials();
-  const meta = ANGEL_ONE_NSE_TOKENS[symbol];
-  if (!configured || !meta) return null;
-  const jwt = await ensureAngelOneSession(false);
-  if (!jwt) return null;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6e3);
-    const res = await fetch(
-      `${ANGEL_BASE_URL}/rest/secure/angelbroking/historical/v1/getCandleData`,
-      {
-        method: "POST",
-        headers: buildAngelHeaders(apiKey, jwt),
-        body: JSON.stringify({
-          exchange: meta.exchange,
-          symboltoken: meta.angelToken,
-          interval,
-          fromdate: fromDateIst,
-          todate: toDateIst
-        }),
-        signal: controller.signal
-      }
-    );
-    clearTimeout(timer);
-    const text = await res.text();
-    if (!text.startsWith("{")) return null;
-    const payload = JSON.parse(text);
-    if (!payload?.status || !Array.isArray(payload.data)) return null;
-    return payload.data.map((row) => ({
-      timestamp: String(row[0]),
-      open: Number(row[1]),
-      high: Number(row[2]),
-      low: Number(row[3]),
-      close: Number(row[4]),
-      volume: Number(row[5])
-    }));
-  } catch {
-    return null;
-  }
-}
-async function fetchAngelOneFiveMinCandles(symbol, fromDateIst, toDateIst) {
-  return fetchAngelOneHistoricalCandles(symbol, fromDateIst, toDateIst, "FIVE_MINUTE");
-}
-var cachedNfoScripByUnderlying = {};
-var cachedNfoScripFetchedAt = {};
-var cachedNfoOptionQuotes = {};
-var nfoOptionsTrackedCount = 0;
-function parseAngelNfoOptionSymbol(underlying, tradingSymbol, symbolToken) {
-  if (!tradingSymbol.startsWith(underlying)) return null;
-  const rest = tradingSymbol.slice(underlying.length);
-  const match = rest.match(/^(\d{2}[A-Z]{3}\d{2})(\d+(?:\.\d+)?)(CE|PE)$/);
-  if (!match) return null;
-  const [, expiryCode, strikeRaw, right] = match;
-  const strike = Number(strikeRaw);
-  if (!Number.isFinite(strike) || strike <= 0) return null;
+function getAngelStatus() {
   return {
-    underlying,
-    tradingSymbol,
-    symbolToken: String(symbolToken),
-    expiryCode,
-    strike,
-    right
-  };
-}
-async function ensureAngelNfoScripCache(underlying) {
-  const now = Date.now();
-  if (cachedNfoScripByUnderlying[underlying] && cachedNfoScripByUnderlying[underlying].length > 0 && now - (cachedNfoScripFetchedAt[underlying] ?? 0) < 6 * 3600 * 1e3) {
-    return cachedNfoScripByUnderlying[underlying];
-  }
-  const { apiKey, configured } = getAngelCredentials();
-  if (!configured) return [];
-  const jwt = await ensureAngelOneSession(false);
-  if (!jwt) return [];
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4500);
-    const res = await fetch(
-      `${ANGEL_BASE_URL}/rest/secure/angelbroking/order/v1/searchScrip`,
-      {
-        method: "POST",
-        headers: buildAngelHeaders(apiKey, jwt),
-        body: JSON.stringify({
-          exchange: "NFO",
-          searchscrip: underlying
-        }),
-        signal: controller.signal
-      }
-    );
-    clearTimeout(timer);
-    const text = await res.text();
-    if (!text.startsWith("{")) return cachedNfoScripByUnderlying[underlying] ?? [];
-    const payload = JSON.parse(text);
-    if (!payload?.status || !Array.isArray(payload.data)) {
-      return cachedNfoScripByUnderlying[underlying] ?? [];
-    }
-    const parsed = [];
-    for (const row of payload.data) {
-      if (row.exchange !== "NFO" || !row.tradingsymbol || !row.symboltoken) continue;
-      const item = parseAngelNfoOptionSymbol(underlying, row.tradingsymbol, row.symboltoken);
-      if (item) parsed.push(item);
-    }
-    if (parsed.length > 0) {
-      cachedNfoScripByUnderlying[underlying] = parsed;
-      cachedNfoScripFetchedAt[underlying] = now;
-    }
-    return parsed;
-  } catch {
-    return cachedNfoScripByUnderlying[underlying] ?? [];
-  }
-}
-async function fetchAngelOneLiveOptionPairQuotes(params) {
-  const scripList = await ensureAngelNfoScripCache(params.underlying);
-  if (scripList.length === 0) {
-    return { longLeg: null, shortLeg: null };
-  }
-  const rightFiltered = scripList.filter((s) => s.right === params.right);
-  if (rightFiltered.length === 0) return { longLeg: null, shortLeg: null };
-  const preferredExpiry = rightFiltered.find((s) => s.expiryCode.includes("NOV26"))?.expiryCode || rightFiltered.find((s) => s.expiryCode.includes("DEC26"))?.expiryCode || rightFiltered[0].expiryCode;
-  const sameExpiry = rightFiltered.filter((s) => s.expiryCode === preferredExpiry);
-  const pool = sameExpiry.length > 0 ? sameExpiry : rightFiltered;
-  const sortedForLong = [...pool].sort(
-    (a, b) => Math.abs(a.strike - params.targetStrike) - Math.abs(b.strike - params.targetStrike)
-  );
-  const longEntry = sortedForLong[0];
-  const sortedForShort = [...pool].filter((s) => s.symbolToken !== longEntry?.symbolToken).sort((a, b) => Math.abs(a.strike - params.shortStrike) - Math.abs(b.strike - params.shortStrike));
-  const shortEntry = sortedForShort[0] ?? longEntry;
-  if (!longEntry) return { longLeg: null, shortLeg: null };
-  const nowMs = Date.now();
-  const cachedLong = cachedNfoOptionQuotes[longEntry.symbolToken];
-  const cachedShort = shortEntry ? cachedNfoOptionQuotes[shortEntry.symbolToken] : null;
-  if (cachedLong && nowMs - Date.parse(cachedLong.updatedAt) < 25e3 && (!shortEntry || cachedShort && nowMs - Date.parse(cachedShort.updatedAt) < 25e3)) {
-    return { longLeg: cachedLong, shortLeg: cachedShort ?? null };
-  }
-  const { apiKey, configured } = getAngelCredentials();
-  if (!configured) return { longLeg: null, shortLeg: null };
-  const jwt = await ensureAngelOneSession(false);
-  if (!jwt) return { longLeg: null, shortLeg: null };
-  const tokensToQuery = Array.from(
-    new Set([longEntry.symbolToken, shortEntry?.symbolToken].filter(Boolean))
-  );
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4e3);
-    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`, {
-      method: "POST",
-      headers: buildAngelHeaders(apiKey, jwt),
-      body: JSON.stringify({
-        mode: "FULL",
-        exchangeTokens: { NFO: tokensToQuery }
-      }),
-      signal: controller.signal
-    });
-    clearTimeout(timer);
-    const text = await res.text();
-    if (!text.startsWith("{")) {
-      return { longLeg: cachedLong ?? null, shortLeg: cachedShort ?? null };
-    }
-    const payload = JSON.parse(text);
-    if (!payload?.status || !Array.isArray(payload.data?.fetched)) {
-      return { longLeg: cachedLong ?? null, shortLeg: cachedShort ?? null };
-    }
-    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-    for (const item of payload.data.fetched) {
-      const tok = String(item.symbolToken || "");
-      const meta = tok === longEntry.symbolToken ? longEntry : shortEntry;
-      if (!meta) continue;
-      const ltp = Number(item.ltp ?? 0);
-      if (ltp <= 0) continue;
-      const rawBid = Number(item.depth?.buy?.[0]?.price ?? 0);
-      const rawAsk = Number(item.depth?.sell?.[0]?.price ?? 0);
-      const bestBid = rawBid > 0 ? rawBid : Number(Math.max(0.5, ltp * 0.988).toFixed(2));
-      const bestAsk = rawAsk > 0 && rawAsk >= bestBid ? rawAsk : Number((ltp * 1.012).toFixed(2));
-      const mid = (bestBid + bestAsk) / 2;
-      const spreadPctOfMid = mid > 0 ? Number(((bestAsk - bestBid) / mid).toFixed(4)) : 0.024;
-      cachedNfoOptionQuotes[tok] = {
-        underlying: meta.underlying,
-        tradingSymbol: meta.tradingSymbol,
-        symbolToken: tok,
-        expiryCode: meta.expiryCode,
-        strike: meta.strike,
-        right: meta.right,
-        ltp: Number(ltp.toFixed(2)),
-        bestBid,
-        bestAsk,
-        spreadPctOfMid,
-        openInterest: Number(item.opnInterest ?? 0),
-        tradeVolume: Number(item.tradeVolume ?? 0),
-        updatedAt: nowIso
-      };
-    }
-    nfoOptionsTrackedCount = Object.keys(cachedNfoOptionQuotes).length;
-    return {
-      longLeg: cachedNfoOptionQuotes[longEntry.symbolToken] ?? null,
-      shortLeg: shortEntry ? cachedNfoOptionQuotes[shortEntry.symbolToken] ?? null : null
-    };
-  } catch {
-    return { longLeg: cachedLong ?? null, shortLeg: cachedShort ?? null };
-  }
-}
-async function fetchAngelOneNfoQuotesByTokens(tokens) {
-  const uniqueTokens = Array.from(new Set(tokens.filter(Boolean)));
-  if (uniqueTokens.length === 0) return {};
-  const { apiKey, configured } = getAngelCredentials();
-  if (!configured) return {};
-  const jwt = await ensureAngelOneSession(false);
-  if (!jwt) return {};
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3800);
-    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`, {
-      method: "POST",
-      headers: buildAngelHeaders(apiKey, jwt),
-      body: JSON.stringify({
-        mode: "FULL",
-        exchangeTokens: { NFO: uniqueTokens.slice(0, 20) }
-      }),
-      signal: controller.signal
-    });
-    clearTimeout(timer);
-    const text = await res.text();
-    if (!text.startsWith("{")) return {};
-    const payload = JSON.parse(text);
-    if (!payload?.status || !Array.isArray(payload.data?.fetched)) return {};
-    const map = {};
-    for (const item of payload.data.fetched) {
-      const tok = String(item.symbolToken || "");
-      const ltp = Number(item.ltp ?? 0);
-      if (!tok || ltp <= 0) continue;
-      const rawBid = Number(item.depth?.buy?.[0]?.price ?? 0);
-      const rawAsk = Number(item.depth?.sell?.[0]?.price ?? 0);
-      const bestBid = rawBid > 0 ? rawBid : Number(Math.max(0.5, ltp * 0.988).toFixed(2));
-      const bestAsk = rawAsk > 0 && rawAsk >= bestBid ? rawAsk : Number((ltp * 1.012).toFixed(2));
-      map[tok] = {
-        ltp: Number(ltp.toFixed(2)),
-        bestBid,
-        bestAsk,
-        openInterest: Number(item.opnInterest ?? 0),
-        tradeVolume: Number(item.tradeVolume ?? 0)
-      };
-    }
-    return map;
-  } catch {
-    return {};
-  }
-}
-function getAngelOneConnectionStatus() {
-  const { clientCode, configured } = getAngelCredentials();
-  const masked = clientCode.length >= 4 ? `${clientCode.slice(0, 2)}***${clientCode.slice(-2)}` : configured ? "CONFIGURED" : "NOT_SET";
-  return {
-    configured,
-    authenticated: Boolean(configured && cachedJwtToken && Date.now() < jwtExpiresAtMs),
-    providerName: "Angel One SmartAPI (NSE Spot + NFO Option L2 Depth + 5m OHLCV Technicals)",
-    clientCodeMasked: masked,
-    feedMode: configured && cachedJwtToken ? "ANGEL_ONE_SMARTAPI_FULL" : "FALLBACK_PUBLIC_NSE",
-    tokensTracked: Object.keys(ANGEL_ONE_NSE_TOKENS).length + nfoOptionsTrackedCount,
+    configured: angelCredentialsConfigured(),
+    authenticated: Boolean(cachedJwtToken && Date.now() < jwtExpiresAtMs),
     lastLoginAt: lastLoginAtIso,
     lastQuoteFetchAt: lastQuoteFetchAtIso,
     lastError: lastAngelError
   };
 }
+async function ensureAngelOneSession(forceRefresh = false) {
+  const { apiKey, clientCode, mpin, totpSecret, configured } = credentials();
+  if (!configured) {
+    lastAngelError = "Angel One credentials are not set";
+    return null;
+  }
+  const now = Date.now();
+  if (!forceRefresh && cachedJwtToken && now < jwtExpiresAtMs) return cachedJwtToken;
+  try {
+    const res = await fetch(`${ANGEL_BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword`, {
+      method: "POST",
+      headers: headers(apiKey),
+      body: JSON.stringify({ clientcode: clientCode, password: mpin, totp: generateAngelTotp(totpSecret, now) }),
+      signal: AbortSignal.timeout(8e3)
+    });
+    const payload = await res.json();
+    if (!res.ok || !payload.status || !payload.data?.jwtToken) {
+      lastAngelError = payload.message || payload.errorcode || `Angel login HTTP ${res.status}`;
+      cachedJwtToken = null;
+      return null;
+    }
+    cachedJwtToken = payload.data.jwtToken;
+    jwtExpiresAtMs = now + 18 * 60 * 60 * 1e3;
+    lastLoginAtIso = new Date(now).toISOString();
+    lastAngelError = null;
+    return cachedJwtToken;
+  } catch (err) {
+    lastAngelError = err instanceof Error ? err.message : "Angel login failed";
+    return null;
+  }
+}
+function depthPrice(level) {
+  const n = Number(level?.price ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+function toLegQuote(item) {
+  const token = String(item.symbolToken ?? "");
+  if (!token) return null;
+  const bid = depthPrice(item.depth?.buy?.[0]);
+  const ask = depthPrice(item.depth?.sell?.[0]);
+  return {
+    token,
+    ltp: Number(item.ltp ?? 0),
+    bid,
+    ask,
+    hasDepth: bid > 0 || ask > 0,
+    feedTimeMs: parseAngelFeedTime(item.exchFeedTime || item.exchTradeTime),
+    volume: Number(item.tradeVolume ?? 0),
+    oi: Number(item.opnInterest ?? 0)
+  };
+}
+async function fetchQuoteBatch(exchange, tokens) {
+  const { apiKey, configured } = credentials();
+  if (!configured || tokens.length === 0) return tokens.length === 0 ? [] : null;
+  let jwt = await ensureAngelOneSession(false);
+  if (!jwt) return null;
+  const call = async (token) => {
+    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`, {
+      method: "POST",
+      headers: headers(apiKey, token),
+      body: JSON.stringify({ mode: "FULL", exchangeTokens: { [exchange]: tokens } }),
+      signal: AbortSignal.timeout(8e3)
+    });
+    const data = await res.json();
+    return { res, data };
+  };
+  try {
+    let { res, data } = await call(jwt);
+    if (!data.status && (data.errorcode === "AG8001" || res.status === 401)) {
+      jwt = await ensureAngelOneSession(true);
+      if (!jwt) return null;
+      ({ res, data } = await call(jwt));
+    }
+    if (!data.status || !Array.isArray(data.data?.fetched)) {
+      lastAngelError = data.message || data.errorcode || "Angel quote fetch failed";
+      return null;
+    }
+    lastQuoteFetchAtIso = (/* @__PURE__ */ new Date()).toISOString();
+    lastAngelError = null;
+    return data.data.fetched;
+  } catch (err) {
+    lastAngelError = err instanceof Error ? err.message : "Angel quote fetch failed";
+    return null;
+  }
+}
+async function fetchSpotQuotes() {
+  const metas = Object.values(ANGEL_ONE_NSE_TOKENS);
+  const fetched = await fetchQuoteBatch("NSE", metas.map((m) => m.angelToken));
+  if (!fetched) return null;
+  const byToken = new Map(metas.map((m) => [m.angelToken, m.symbol]));
+  const out = {};
+  for (const item of fetched) {
+    const symbol = byToken.get(String(item.symbolToken ?? ""));
+    const ltp = Number(item.ltp ?? 0);
+    if (!symbol || !(ltp > 0)) continue;
+    const prevClose = Number(item.close ?? ltp);
+    out[symbol] = {
+      symbol,
+      ltp,
+      open: Number(item.open ?? ltp),
+      high: Number(item.high ?? ltp),
+      low: Number(item.low ?? ltp),
+      prevClose,
+      changePct: typeof item.percentChange === "number" ? item.percentChange : prevClose > 0 ? (ltp - prevClose) / prevClose * 100 : 0,
+      feedTimeMs: parseAngelFeedTime(item.exchFeedTime || item.exchTradeTime)
+    };
+  }
+  return out;
+}
+async function fetchOptionQuotes(tokens) {
+  const unique = [...new Set(tokens.filter(Boolean))];
+  const out = {};
+  for (let i = 0; i < unique.length; i += QUOTE_BATCH) {
+    const batch = unique.slice(i, i + QUOTE_BATCH);
+    const fetched = await fetchQuoteBatch("NFO", batch);
+    if (!fetched) return null;
+    for (const item of fetched) {
+      const leg = toLegQuote(item);
+      if (leg) out[leg.token] = leg;
+    }
+  }
+  return out;
+}
+async function fetchHourlyCandles(symbol, fromIst, toIst) {
+  const { apiKey, configured } = credentials();
+  const meta = ANGEL_ONE_NSE_TOKENS[symbol];
+  if (!configured || !meta) return null;
+  const jwt = await ensureAngelOneSession(false);
+  if (!jwt) return null;
+  try {
+    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/historical/v1/getCandleData`, {
+      method: "POST",
+      headers: headers(apiKey, jwt),
+      body: JSON.stringify({
+        exchange: meta.exchange,
+        symboltoken: meta.angelToken,
+        interval: "ONE_HOUR",
+        fromdate: fromIst,
+        todate: toIst
+      }),
+      signal: AbortSignal.timeout(8e3)
+    });
+    const text = await res.text();
+    if (!text.startsWith("{")) return null;
+    const payload = JSON.parse(text);
+    if (!payload.status || !Array.isArray(payload.data)) return null;
+    return payload.data.map((row) => ({
+      time: String(row[0]),
+      open: Number(row[1]),
+      high: Number(row[2]),
+      low: Number(row[3]),
+      close: Number(row[4]),
+      volume: Number(row[5] ?? 0)
+    }));
+  } catch (err) {
+    lastAngelError = err instanceof Error ? err.message : "Angel candle fetch failed";
+    return null;
+  }
+}
+function filterScripMaster(rows, nowMs, spotByUnderlying = {}) {
+  const today = istDate(nowMs);
+  const out = [];
+  for (const raw of rows) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw;
+    if (row.exch_seg !== "NFO") continue;
+    if (row.instrumenttype !== "OPTIDX" && row.instrumenttype !== "OPTSTK") continue;
+    const underlying = String(row.name ?? "");
+    if (!UNDERLYING_SET.has(underlying)) continue;
+    const expiry = parseAngelExpiry(String(row.expiry ?? ""));
+    if (!expiry) continue;
+    const dte = calendarDaysBetween(today, expiry);
+    if (dte < 0 || dte > 60) continue;
+    const symbol = String(row.symbol ?? "");
+    const right = symbol.endsWith("CE") ? "CE" : symbol.endsWith("PE") ? "PE" : null;
+    if (!right) continue;
+    const strike = Number(row.strike) / 100;
+    const lotSize = Number(row.lotsize);
+    if (!(strike > 0) || !(lotSize > 0)) continue;
+    const spot = spotByUnderlying[underlying];
+    if (spot > 0 && (strike < spot * 0.88 || strike > spot * 1.12)) continue;
+    out.push({
+      token: String(row.token),
+      symbol,
+      underlying,
+      expiry,
+      strike,
+      right,
+      lotSize,
+      tickSize: Number(row.tick_size) / 100 || 0.05
+    });
+  }
+  return out;
+}
+async function downloadInstrumentMaster(nowMs, spotByUnderlying = {}) {
+  try {
+    const res = await fetch(SCRIP_MASTER_URL, { signal: AbortSignal.timeout(2e4) });
+    if (!res.ok) {
+      lastAngelError = `Instrument master HTTP ${res.status}`;
+      return null;
+    }
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return null;
+    return filterScripMaster(rows, nowMs, spotByUnderlying);
+  } catch (err) {
+    lastAngelError = err instanceof Error ? err.message : "Instrument master download failed";
+    return null;
+  }
+}
 
-// src/quant/historicalReplay.ts
+// src/quant/marketData.ts
+function angelMarketData() {
+  return {
+    status: getAngelStatus,
+    fetchSpots: fetchSpotQuotes,
+    fetchCandles: fetchHourlyCandles,
+    fetchOptionQuotes,
+    fetchInstruments: downloadInstrumentMaster
+  };
+}
+
+// src/quant/indicators.ts
+var INDICATOR_WARMUP_BARS = 60;
+function ema(values, period) {
+  const out = new Array(values.length).fill(NaN);
+  if (values.length < period) return out;
+  let seed = 0;
+  for (let i = 0; i < period; i++) seed += values[i];
+  out[period - 1] = seed / period;
+  const k = 2 / (period + 1);
+  for (let i = period; i < values.length; i++) {
+    out[i] = values[i] * k + out[i - 1] * (1 - k);
+  }
+  return out;
+}
+function wilderRsi(closes, period) {
+  const out = new Array(closes.length).fill(NaN);
+  if (closes.length <= period) return out;
+  let gain = 0;
+  let loss = 0;
+  for (let i = 1; i <= period; i++) {
+    const ch = closes[i] - closes[i - 1];
+    if (ch >= 0) gain += ch;
+    else loss -= ch;
+  }
+  let avgGain = gain / period;
+  let avgLoss = loss / period;
+  const rsiOf = (g, l) => l === 0 ? g === 0 ? 50 : 100 : 100 - 100 / (1 + g / l);
+  out[period] = rsiOf(avgGain, avgLoss);
+  for (let i = period + 1; i < closes.length; i++) {
+    const ch = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + Math.max(ch, 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(-ch, 0)) / period;
+    out[i] = rsiOf(avgGain, avgLoss);
+  }
+  return out;
+}
+function wilderAtrAndAdx(candles, period) {
+  const n = candles.length;
+  const atr = new Array(n).fill(NaN);
+  const adx = new Array(n).fill(NaN);
+  const plusDi = new Array(n).fill(NaN);
+  const minusDi = new Array(n).fill(NaN);
+  if (n <= period * 2) return { atr, adx, plusDi, minusDi };
+  const tr = new Array(n).fill(0);
+  const plusDm = new Array(n).fill(0);
+  const minusDm = new Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    const c = candles[i];
+    const prev = candles[i - 1];
+    tr[i] = Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close));
+    const up = c.high - prev.high;
+    const down = prev.low - c.low;
+    plusDm[i] = up > down && up > 0 ? up : 0;
+    minusDm[i] = down > up && down > 0 ? down : 0;
+  }
+  let trS = 0;
+  let pS = 0;
+  let mS = 0;
+  for (let i = 1; i <= period; i++) {
+    trS += tr[i];
+    pS += plusDm[i];
+    mS += minusDm[i];
+  }
+  atr[period] = trS / period;
+  const dx = new Array(n).fill(NaN);
+  const setDi = (i) => {
+    const p = trS > 0 ? 100 * pS / trS : 0;
+    const m = trS > 0 ? 100 * mS / trS : 0;
+    plusDi[i] = p;
+    minusDi[i] = m;
+    dx[i] = p + m > 0 ? 100 * Math.abs(p - m) / (p + m) : 0;
+  };
+  setDi(period);
+  for (let i = period + 1; i < n; i++) {
+    trS = trS - trS / period + tr[i];
+    pS = pS - pS / period + plusDm[i];
+    mS = mS - mS / period + minusDm[i];
+    atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
+    setDi(i);
+  }
+  const firstAdx = period * 2 - 1;
+  let sumDx = 0;
+  for (let i = period; i <= firstAdx; i++) sumDx += dx[i];
+  adx[firstAdx] = sumDx / period;
+  for (let i = firstAdx + 1; i < n; i++) {
+    adx[i] = (adx[i - 1] * (period - 1) + dx[i]) / period;
+  }
+  return { atr, adx, plusDi, minusDi };
+}
+function computeIndicators(candles) {
+  const closes = candles.map((c) => c.close);
+  const ema20 = ema(closes, 20);
+  const ema50 = ema(closes, 50);
+  const rsi14 = wilderRsi(closes, 14);
+  const { atr, adx, plusDi, minusDi } = wilderAtrAndAdx(candles, 14);
+  return candles.map((c, i) => {
+    let sma20 = NaN;
+    let upper = NaN;
+    let lower = NaN;
+    let pctB = NaN;
+    if (i >= 19) {
+      let s = 0;
+      for (let k = i - 19; k <= i; k++) s += closes[k];
+      sma20 = s / 20;
+      let v = 0;
+      for (let k = i - 19; k <= i; k++) v += (closes[k] - sma20) ** 2;
+      const sd = Math.sqrt(v / 20);
+      upper = sma20 + 2 * sd;
+      lower = sma20 - 2 * sd;
+      pctB = upper > lower ? (c.close - lower) / (upper - lower) : 0.5;
+    }
+    let donH = NaN;
+    let donL = NaN;
+    if (i >= 20) {
+      donH = -Infinity;
+      donL = Infinity;
+      for (let k = i - 20; k < i; k++) {
+        donH = Math.max(donH, candles[k].high);
+        donL = Math.min(donL, candles[k].low);
+      }
+    }
+    return {
+      ema20: ema20[i],
+      ema50: ema50[i],
+      rsi14: rsi14[i],
+      adx14: adx[i],
+      plusDi: plusDi[i],
+      minusDi: minusDi[i],
+      atr14: atr[i],
+      atrPct: Number.isFinite(atr[i]) && c.close > 0 ? atr[i] / c.close : NaN,
+      sma20,
+      upperBand: upper,
+      lowerBand: lower,
+      pctB,
+      donchianHigh20: donH,
+      donchianLow20: donL,
+      ret7: i >= 7 ? c.close / closes[i - 7] - 1 : NaN,
+      ret35: i >= 35 ? c.close / closes[i - 35] - 1 : NaN
+    };
+  });
+}
+function snapshotOf(row) {
+  return {
+    ema20: row.ema20,
+    ema50: row.ema50,
+    rsi14: row.rsi14,
+    adx14: row.adx14,
+    plusDi: row.plusDi,
+    minusDi: row.minusDi,
+    atrPct: row.atrPct,
+    pctB: row.pctB,
+    ret7: row.ret7,
+    ret35: row.ret35
+  };
+}
+function isRowComplete(row) {
+  return [
+    row.ema20,
+    row.ema50,
+    row.rsi14,
+    row.adx14,
+    row.plusDi,
+    row.minusDi,
+    row.atrPct,
+    row.pctB,
+    row.donchianHigh20,
+    row.donchianLow20,
+    row.ret7,
+    row.ret35
+  ].every(Number.isFinite);
+}
+function percentileRank(value, history2) {
+  const clean = history2.filter(Number.isFinite);
+  if (clean.length < 20) return null;
+  let below = 0;
+  let equal = 0;
+  for (const h of clean) {
+    if (h < value) below++;
+    else if (h === value) equal++;
+  }
+  return (below + 0.5 * equal) / clean.length;
+}
+function realizedVolAnnual(closes, lookbackBars = 70) {
+  if (closes.length < lookbackBars + 1) return null;
+  const rets = [];
+  for (let i = closes.length - lookbackBars; i < closes.length; i++) {
+    if (closes[i - 1] > 0 && closes[i] > 0) rets.push(Math.log(closes[i] / closes[i - 1]));
+  }
+  if (rets.length < 10) return null;
+  const mean2 = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const variance = rets.reduce((a, b) => a + (b - mean2) ** 2, 0) / (rets.length - 1);
+  return Math.sqrt(variance) * Math.sqrt(252 * 7);
+}
+
+// src/quant/signals.ts
+function classifyRegime(row, vixPctile) {
+  if (vixPctile !== null && vixPctile >= 0.8) return "high_volatility";
+  if (row.adx14 >= 22 && row.ema20 > row.ema50 && row.plusDi > row.minusDi) return "trending_up";
+  if (row.adx14 >= 22 && row.ema20 < row.ema50 && row.minusDi > row.plusDi) return "trending_down";
+  return "range";
+}
+var f1 = (x) => x.toFixed(1);
+function detectSignal(candles, rows, i, vixPctile) {
+  if (i < 4) return null;
+  const row = rows[i];
+  const prev = rows[i - 1];
+  if (!isRowComplete(row) || !isRowComplete(prev) || !Number.isFinite(rows[i - 3].adx14)) return null;
+  const c = candles[i];
+  const pc = candles[i - 1];
+  const regime = classifyRegime(row, vixPctile);
+  const barStartMs = Date.parse(c.time);
+  const base = {
+    barIndex: i,
+    barStartMs,
+    barEndMs: hourlyBarEndMs(barStartMs),
+    regime,
+    spot: c.close,
+    indicators: snapshotOf(row)
+  };
+  const adxRising = row.adx14 > rows[i - 3].adx14;
+  if (adxRising && row.adx14 >= 18) {
+    if (c.close > row.donchianHigh20) {
+      return {
+        ...base,
+        strategy: "breakout_momentum",
+        direction: "CE",
+        reason: `Close ${f1(c.close)} above 20-bar high ${f1(row.donchianHigh20)}, ADX ${f1(row.adx14)} rising`
+      };
+    }
+    if (c.close < row.donchianLow20) {
+      return {
+        ...base,
+        strategy: "breakout_momentum",
+        direction: "PE",
+        reason: `Close ${f1(c.close)} below 20-bar low ${f1(row.donchianLow20)}, ADX ${f1(row.adx14)} rising`
+      };
+    }
+  }
+  if (regime === "trending_up" && c.low <= row.ema20 && c.close > row.ema20 && row.rsi14 >= 45 && row.rsi14 <= 70) {
+    return {
+      ...base,
+      strategy: "trend_following",
+      direction: "CE",
+      reason: `Uptrend (ADX ${f1(row.adx14)}, EMA20>EMA50) pullback to EMA20 held, RSI ${f1(row.rsi14)}`
+    };
+  }
+  if (regime === "trending_down" && c.high >= row.ema20 && c.close < row.ema20 && row.rsi14 >= 30 && row.rsi14 <= 55) {
+    return {
+      ...base,
+      strategy: "trend_following",
+      direction: "PE",
+      reason: `Downtrend (ADX ${f1(row.adx14)}, EMA20<EMA50) rally to EMA20 rejected, RSI ${f1(row.rsi14)}`
+    };
+  }
+  if (regime === "range" && row.adx14 < 20) {
+    if (pc.close < prev.lowerBand && c.close > row.lowerBand && prev.rsi14 <= 35) {
+      return {
+        ...base,
+        strategy: "mean_reversion",
+        direction: "CE",
+        reason: `Range (ADX ${f1(row.adx14)}): closed back above lower Bollinger band after RSI ${f1(prev.rsi14)}`
+      };
+    }
+    if (pc.close > prev.upperBand && c.close < row.upperBand && prev.rsi14 >= 65) {
+      return {
+        ...base,
+        strategy: "mean_reversion",
+        direction: "PE",
+        reason: `Range (ADX ${f1(row.adx14)}): closed back below upper Bollinger band after RSI ${f1(prev.rsi14)}`
+      };
+    }
+  }
+  return null;
+}
+var FEATURE_NAMES = [
+  "strategy_trend",
+  "strategy_breakout",
+  "direction_call",
+  "trend_alignment",
+  "rsi_directional",
+  "adx_level",
+  "atr_pct",
+  "bollinger_directional",
+  "return_1d_directional",
+  "return_1w_directional",
+  "vix_percentile",
+  "is_index",
+  "days_to_expiry",
+  "debit_to_width",
+  "leg_bid_ask_pct",
+  "session_morning",
+  "session_afternoon"
+];
+var clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+function buildFeatures(sig, ctx) {
+  const dir = sig.direction === "CE" ? 1 : -1;
+  const ind = sig.indicators;
+  const atrAbs = ind.atrPct * sig.spot;
+  const minute = istParts(sig.barEndMs).minuteOfDay;
+  return [
+    sig.strategy === "trend_following" ? 1 : 0,
+    sig.strategy === "breakout_momentum" ? 1 : 0,
+    dir > 0 ? 1 : 0,
+    atrAbs > 0 ? clamp((ind.ema20 - ind.ema50) / atrAbs * dir, -6, 6) : 0,
+    dir * (ind.rsi14 - 50) / 20,
+    (ind.adx14 - 25) / 10,
+    ind.atrPct * 100,
+    dir * (ind.pctB - 0.5),
+    clamp(dir * ind.ret7 * 100, -10, 10),
+    clamp(dir * ind.ret35 * 100, -20, 20),
+    (ctx.vixPctile ?? 0.5) - 0.5,
+    ctx.isIndex ? 1 : 0,
+    ctx.dte / 30,
+    ctx.debitRatio,
+    ctx.legSpreadPct * 100,
+    minute <= 11 * 60 + 15 ? 1 : 0,
+    minute >= 13 * 60 + 15 ? 1 : 0
+  ];
+}
+
+// src/quant/stats.ts
+function mean(xs) {
+  return xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+}
+function stdev(xs) {
+  if (xs.length < 2) return null;
+  const m = xs.reduce((a, b) => a + b, 0) / xs.length;
+  return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / (xs.length - 1));
+}
+function meanCi90(xs) {
+  if (xs.length < 10) return null;
+  const m = mean(xs);
+  const half = 1.645 * stdev(xs) / Math.sqrt(xs.length);
+  return [m - half, m + half];
+}
+function profitFactor(pnls) {
+  const gains = pnls.filter((x) => x > 0).reduce((a, b) => a + b, 0);
+  const losses = -pnls.filter((x) => x < 0).reduce((a, b) => a + b, 0);
+  if (losses === 0) return null;
+  return gains / losses;
+}
+function maxDrawdownPct(equity) {
+  let peak = -Infinity;
+  let dd = 0;
+  for (const e of equity) {
+    peak = Math.max(peak, e);
+    if (peak > 0) dd = Math.max(dd, (peak - e) / peak);
+  }
+  return dd;
+}
+function groupStats(items, keyFn, pnlFn, rFn) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const it of items) {
+    const k = keyFn(it);
+    const arr = groups.get(k);
+    if (arr) arr.push(it);
+    else groups.set(k, [it]);
+  }
+  return [...groups.entries()].map(([key, list]) => {
+    const pnls = list.map(pnlFn);
+    const rs = list.map(rFn);
+    return {
+      key,
+      n: list.length,
+      winRate: list.length ? pnls.filter((p) => p > 0).length / list.length : null,
+      avgR: mean(rs),
+      totalR: rs.reduce((a, b) => a + b, 0),
+      netPnlInr: pnls.reduce((a, b) => a + b, 0),
+      expectancyInr: mean(pnls),
+      profitFactor: profitFactor(pnls)
+    };
+  }).sort((a, b) => b.n - a.n);
+}
+
+// src/quant/model.ts
+var sigmoid = (z) => z >= 0 ? 1 / (1 + Math.exp(-z)) : Math.exp(z) / (1 + Math.exp(z));
+function solveLinear(a, b) {
+  const n = b.length;
+  const m = a.map((row, i) => [...row, b[i]]);
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < n; r++) if (Math.abs(m[r][col]) > Math.abs(m[pivot][col])) pivot = r;
+    if (Math.abs(m[pivot][col]) < 1e-12) return null;
+    [m[col], m[pivot]] = [m[pivot], m[col]];
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = m[r][col] / m[col][col];
+      if (f === 0) continue;
+      for (let c = col; c <= n; c++) m[r][c] -= f * m[col][c];
+    }
+  }
+  return m.map((row, i) => row[n] / row[i]);
+}
+function fitLogistic(samples, lambda = 4, maxIter = 30) {
+  if (samples.length < 30) return null;
+  const positives = samples.filter((s) => s.y === 1).length;
+  if (positives === 0 || positives === samples.length) return null;
+  const d = samples[0].x.length;
+  const totalW = samples.reduce((a, s) => a + s.weight, 0);
+  const means = new Array(d).fill(0);
+  for (const s of samples) for (let j = 0; j < d; j++) means[j] += s.weight * s.x[j] / totalW;
+  const stds = new Array(d).fill(0);
+  for (const s of samples) for (let j = 0; j < d; j++) stds[j] += s.weight * (s.x[j] - means[j]) ** 2 / totalW;
+  for (let j = 0; j < d; j++) stds[j] = Math.sqrt(stds[j]);
+  const z = samples.map((s) => [1, ...s.x.map((v, j) => stds[j] > 1e-9 ? (v - means[j]) / stds[j] : 0)]);
+  const baseRate = samples.reduce((a, s) => a + s.weight * s.y, 0) / totalW;
+  const theta = new Array(d + 1).fill(0);
+  theta[0] = Math.log(baseRate / (1 - baseRate));
+  for (let iter = 0; iter < maxIter; iter++) {
+    const grad = new Array(d + 1).fill(0);
+    const hess = Array.from({ length: d + 1 }, () => new Array(d + 1).fill(0));
+    for (let i = 0; i < samples.length; i++) {
+      const zi = z[i];
+      let dot = 0;
+      for (let j = 0; j <= d; j++) dot += theta[j] * zi[j];
+      const p = sigmoid(dot);
+      const w = samples[i].weight;
+      const g = w * (p - samples[i].y);
+      const h = w * p * (1 - p);
+      for (let j = 0; j <= d; j++) {
+        grad[j] += g * zi[j];
+        const hz = h * zi[j];
+        for (let k = j; k <= d; k++) hess[j][k] += hz * zi[k];
+      }
+    }
+    for (let j = 0; j <= d; j++) for (let k = 0; k < j; k++) hess[j][k] = hess[k][j];
+    for (let j = 1; j <= d; j++) {
+      grad[j] += lambda * theta[j];
+      hess[j][j] += lambda;
+    }
+    hess[0][0] += 1e-6;
+    const step = solveLinear(hess, grad);
+    if (!step) break;
+    let maxStep = 0;
+    for (let j = 0; j <= d; j++) {
+      theta[j] -= step[j];
+      maxStep = Math.max(maxStep, Math.abs(step[j]));
+    }
+    if (maxStep < 1e-7) break;
+  }
+  return { means, stds, weights: theta.slice(1), bias: theta[0], lambda, n: samples.length };
+}
+function predictProb(fit, x) {
+  let dot = fit.bias;
+  for (let j = 0; j < fit.weights.length; j++) {
+    const zj = fit.stds[j] > 1e-9 ? (x[j] - fit.means[j]) / fit.stds[j] : 0;
+    dot += fit.weights[j] * zj;
+  }
+  return sigmoid(dot);
+}
+function aucScore(preds, labels) {
+  const pos = labels.filter((y) => y === 1).length;
+  const neg = labels.length - pos;
+  if (pos === 0 || neg === 0) return null;
+  const order = preds.map((p, i2) => ({ p, y: labels[i2] })).sort((a, b) => a.p - b.p);
+  let rankSumPos = 0;
+  let i = 0;
+  while (i < order.length) {
+    let j = i;
+    while (j + 1 < order.length && order[j + 1].p === order[i].p) j++;
+    const avgRank = (i + j) / 2 + 1;
+    for (let k = i; k <= j; k++) if (order[k].y === 1) rankSumPos += avgRank;
+    i = j + 1;
+  }
+  return (rankSumPos - pos * (pos + 1) / 2) / (pos * neg);
+}
+function walkForward(samples, boundaries, opts) {
+  const oos = [];
+  const folds = [];
+  for (let k = 0; k < boundaries.length; k++) {
+    const start = boundaries[k];
+    const end = boundaries[k + 1] ?? Infinity;
+    const test = samples.filter(
+      (s) => s.entryMs >= start && s.entryMs < end && (opts.isTest ? opts.isTest(s) : true)
+    );
+    if (test.length === 0) continue;
+    const train = samples.filter((s) => s.exitMs < start);
+    const fit = train.length >= opts.minTrain ? fitLogistic(train, opts.lambda) : null;
+    if (!fit) {
+      folds.push({ start: new Date(start).toISOString(), nTrain: train.length, nTest: test.length, auc: null });
+      continue;
+    }
+    const preds = test.map((s) => predictProb(fit, s.x));
+    test.forEach((s, i) => oos.push({ id: s.id, p: preds[i], y: s.y, r: s.r, source: s.source }));
+    folds.push({
+      start: new Date(start).toISOString(),
+      nTrain: train.length,
+      nTest: test.length,
+      auc: aucScore(preds, test.map((s) => s.y))
+    });
+  }
+  return { oos, folds };
+}
+function summarizeOos(oos) {
+  if (oos.length === 0) {
+    return { n: 0, auc: null, avgR: null, threshold: null, acceptedN: 0, acceptedAvgR: null };
+  }
+  const sortedP = oos.map((o) => o.p).sort((a, b) => a - b);
+  const threshold = sortedP[Math.floor(sortedP.length / 2)];
+  const accepted = oos.filter((o) => o.p >= threshold);
+  const avg = (xs) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+  return {
+    n: oos.length,
+    auc: aucScore(oos.map((o) => o.p), oos.map((o) => o.y)),
+    avgR: avg(oos.map((o) => o.r)),
+    threshold,
+    acceptedN: accepted.length,
+    acceptedAvgR: avg(accepted.map((o) => o.r))
+  };
+}
+function calibrationBuckets(oos, buckets = 5) {
+  if (oos.length < buckets * 5) return [];
+  const sorted = [...oos].sort((a, b) => a.p - b.p);
+  const out = [];
+  for (let b = 0; b < buckets; b++) {
+    const slice = sorted.slice(
+      Math.floor(b * sorted.length / buckets),
+      Math.floor((b + 1) * sorted.length / buckets)
+    );
+    if (slice.length === 0) continue;
+    out.push({
+      lo: slice[0].p,
+      hi: slice[slice.length - 1].p,
+      n: slice.length,
+      avgPred: slice.reduce((a, o) => a + o.p, 0) / slice.length,
+      winRate: slice.filter((o) => o.y === 1).length / slice.length
+    });
+  }
+  return out;
+}
+var GATE_MIN_AUC = 0.55;
+var GATE_MIN_LIVE_OOS = 100;
+var GATE_MIN_OFFLINE_OOS = 150;
+function decideGate(offline, live) {
+  const useLive = live.n >= GATE_MIN_LIVE_OOS;
+  const m = useLive ? live : offline;
+  const source = useLive ? "LIVE" : offline.n > 0 ? "OFFLINE" : "NONE";
+  const minN = useLive ? GATE_MIN_LIVE_OOS : GATE_MIN_OFFLINE_OOS;
+  const label = useLive ? "live" : "offline (model-priced)";
+  if (m.n < minN) {
+    return {
+      active: false,
+      threshold: null,
+      source,
+      reason: `Observing: only ${m.n} ${label} out-of-sample predictions (needs ${minN}). Every signal that passes risk limits is taken.`
+    };
+  }
+  if (m.auc === null || m.auc < GATE_MIN_AUC) {
+    return {
+      active: false,
+      threshold: null,
+      source,
+      reason: `Observing: ${label} out-of-sample AUC ${m.auc === null ? "n/a" : m.auc.toFixed(3)} is below ${GATE_MIN_AUC}, so the model cannot yet rank trades better than chance.`
+    };
+  }
+  if (m.acceptedAvgR === null || m.avgR === null || m.acceptedAvgR <= m.avgR) {
+    return {
+      active: false,
+      threshold: null,
+      source,
+      reason: `Observing: the model's top-half picks did not earn more than average out of sample (${label}).`
+    };
+  }
+  return {
+    active: true,
+    threshold: m.threshold,
+    source,
+    reason: `Active: ${label} out-of-sample AUC ${m.auc.toFixed(3)} on ${m.n} predictions; top-half picks averaged ${m.acceptedAvgR.toFixed(3)}R vs ${m.avgR.toFixed(3)}R overall.`
+  };
+}
+function suspendedStrategies(samples, minSamples = 40) {
+  const grouped = /* @__PURE__ */ new Map();
+  for (const s of samples) {
+    const arr = grouped.get(s.strategy);
+    if (arr) arr.push(s.r);
+    else grouped.set(s.strategy, [s.r]);
+  }
+  const out = [];
+  for (const [strategy, rs] of grouped) {
+    if (rs.length < minSamples) continue;
+    const ci = meanCi90(rs);
+    if (ci && ci[1] < 0) out.push(strategy);
+  }
+  return out;
+}
+var OFFLINE_SAMPLE_WEIGHT = 0.3;
+var MODEL_LAMBDA = 4;
+function monthBoundaries(samples, skipMonths) {
+  if (samples.length === 0) return [];
+  const first = Math.min(...samples.map((s) => s.entryMs));
+  const last = Math.max(...samples.map((s) => s.entryMs));
+  const out = [];
+  let cursor = istMonthStartMs(first);
+  for (let i = 0; cursor <= last; i++) {
+    if (i >= skipMonths) out.push(cursor);
+    cursor = istMonthStartMs(cursor + 32 * 864e5);
+  }
+  return out;
+}
+function weekBoundaries(samples, skipWeeks) {
+  if (samples.length === 0) return [];
+  const first = Math.min(...samples.map((s) => s.entryMs));
+  const last = Math.max(...samples.map((s) => s.entryMs));
+  const out = [];
+  let cursor = istWeekStartMs(first);
+  for (let i = 0; cursor <= last; i++) {
+    if (i >= skipWeeks) out.push(cursor);
+    cursor += 7 * 864e5;
+  }
+  return out;
+}
+function offlineWalkForward(offline) {
+  return walkForward(offline, monthBoundaries(offline, 2), { minTrain: 100, lambda: MODEL_LAMBDA });
+}
+function trainModelSnapshot(offline, live, nowMs, offlineOosCache) {
+  const weightedOffline = offline.map((s) => ({ ...s, weight: OFFLINE_SAMPLE_WEIGHT }));
+  const liveSamples = live.map((s) => ({ ...s, weight: 1 }));
+  const all = [...weightedOffline, ...liveSamples];
+  const fit = fitLogistic(all, MODEL_LAMBDA);
+  if (!fit) return null;
+  const offlineOosPreds = offlineOosCache?.oos ?? offlineWalkForward(offline).oos;
+  const offlineOos = summarizeOos(offlineOosPreds);
+  const liveWf = walkForward(all, weekBoundaries(liveSamples, 1), {
+    minTrain: 100,
+    lambda: MODEL_LAMBDA,
+    isTest: (s) => s.source === "LIVE"
+  });
+  const liveOos = summarizeOos(liveWf.oos);
+  const gate = decideGate(offlineOos, liveOos);
+  const calibration = calibrationBuckets(gate.source === "LIVE" ? liveWf.oos : offlineOosPreds);
+  const stamp = new Date(nowMs).toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  return {
+    version: `lr-${stamp}-${offline.length}o-${live.length}l`,
+    trainedAt: new Date(nowMs).toISOString(),
+    featureNames: [...FEATURE_NAMES],
+    means: fit.means,
+    stds: fit.stds,
+    weights: fit.weights,
+    bias: fit.bias,
+    lambda: fit.lambda,
+    nOffline: offline.length,
+    nLive: live.length,
+    offlineWeight: OFFLINE_SAMPLE_WEIGHT,
+    offlineOos,
+    liveOos,
+    calibration,
+    gate
+  };
+}
+
+// src/quant/options.ts
+var DEFAULT_CHARGES = {
+  brokeragePerOrderInr: 20,
+  sttSellPct: 15e-4,
+  exchangeTxnPct: 3503e-7,
+  sebiPct: 1e-6,
+  stampBuyPct: 3e-5,
+  gstPct: 0.18
+};
+var round2 = (x) => Math.round(x * 100) / 100;
+function legCharges(side, price, units, cfg = DEFAULT_CHARGES) {
+  if (units <= 0) return 0;
+  const turnover = Math.max(0, price) * units;
+  const brokerage = cfg.brokeragePerOrderInr;
+  const stt = side === "SELL" ? turnover * cfg.sttSellPct : 0;
+  const exch = turnover * cfg.exchangeTxnPct;
+  const sebi = turnover * cfg.sebiPct;
+  const stamp = side === "BUY" ? turnover * cfg.stampBuyPct : 0;
+  const gst = (brokerage + exch + sebi) * cfg.gstPct;
+  return round2(brokerage + stt + exch + sebi + stamp + gst);
+}
+function normCdf(x) {
+  const sign = x < 0 ? -1 : 1;
+  const z = Math.abs(x) / Math.SQRT2;
+  const t = 1 / (1 + 0.3275911 * z);
+  const poly = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t;
+  const erf = 1 - poly * Math.exp(-z * z);
+  return 0.5 * (1 + sign * erf);
+}
+function bsPrice(spot, strike, tYears, vol, r, right) {
+  if (tYears <= 0 || vol <= 0) {
+    return Math.max(0, right === "CE" ? spot - strike : strike - spot);
+  }
+  const sqrtT = Math.sqrt(tYears);
+  const d1 = (Math.log(spot / strike) + (r + 0.5 * vol * vol) * tYears) / (vol * sqrtT);
+  const d2 = d1 - vol * sqrtT;
+  if (right === "CE") return spot * normCdf(d1) - strike * Math.exp(-r * tYears) * normCdf(d2);
+  return strike * Math.exp(-r * tYears) * normCdf(-d2) - spot * normCdf(-d1);
+}
+function quoteIssue(q, nowMs, maxAgeSec, need) {
+  if (!q) return "no quote";
+  if (need.bid && !(q.bid > 0)) return "no bid in order book";
+  if (need.ask && !(q.ask > 0)) return "no ask in order book";
+  if (q.bid > 0 && q.ask > 0 && q.ask < q.bid) return "crossed order book";
+  if (q.feedTimeMs !== null && nowMs - q.feedTimeMs > maxAgeSec * 1e3) {
+    return `stale quote (${Math.round((nowMs - q.feedTimeMs) / 1e3)}s old)`;
+  }
+  return null;
+}
+function legSpreadPct(q) {
+  const mid = (q.bid + q.ask) / 2;
+  return mid > 0 ? (q.ask - q.bid) / mid : Infinity;
+}
+function legMid(q) {
+  if (q.bid > 0 && q.ask > 0) return (q.bid + q.ask) / 2;
+  return q.bid > 0 ? q.bid : q.ask;
+}
+function selectChainLegs(chain, spot, right, maxShortSteps) {
+  const sorted = [...chain].sort((a, b) => a.strike - b.strike);
+  if (sorted.length === 0) return [];
+  let atm = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    if (Math.abs(sorted[i].strike - spot) < Math.abs(sorted[atm].strike - spot)) atm = i;
+  }
+  const picked = [sorted[atm]];
+  for (let s = 1; s <= maxShortSteps; s++) {
+    const idx = right === "CE" ? atm + s : atm - s;
+    if (idx < 0 || idx >= sorted.length) break;
+    picked.push(sorted[idx]);
+  }
+  return picked;
+}
+function buildSpreadPlan(input) {
+  const charges = input.charges ?? DEFAULT_CHARGES;
+  const { cfg } = input;
+  const legs = selectChainLegs(input.chain, input.spot, input.right, cfg.maxShortSteps);
+  if (legs.length < 2) return { ok: false, reason: "option chain has no strikes beyond the ATM strike" };
+  const long = legs[0];
+  const lq = input.quotes[long.token];
+  const longIssue = quoteIssue(lq, input.nowMs, cfg.quoteMaxAgeSec, { bid: true, ask: true });
+  if (longIssue || !lq) return { ok: false, reason: `long leg ${long.symbol}: ${longIssue}` };
+  if (lq.ask < cfg.minLongLegPrice) {
+    return { ok: false, reason: `long leg ${long.symbol}: ask \u20B9${lq.ask} below \u20B9${cfg.minLongLegPrice}` };
+  }
+  const longSpread = legSpreadPct(lq);
+  if (longSpread > cfg.maxLegSpreadPct) {
+    return {
+      ok: false,
+      reason: `long leg ${long.symbol}: bid-ask ${(longSpread * 100).toFixed(1)}% wider than ${(cfg.maxLegSpreadPct * 100).toFixed(0)}%`
+    };
+  }
+  const plans = [];
+  const rejections = [];
+  for (const short of legs.slice(1)) {
+    const sq = input.quotes[short.token];
+    const issue = quoteIssue(sq, input.nowMs, cfg.quoteMaxAgeSec, { bid: true, ask: true });
+    if (issue || !sq) {
+      rejections.push(`short ${short.symbol}: ${issue}`);
+      continue;
+    }
+    const shortSpread = legSpreadPct(sq);
+    if (shortSpread > cfg.maxLegSpreadPct) {
+      rejections.push(`short ${short.symbol}: bid-ask ${(shortSpread * 100).toFixed(1)}%`);
+      continue;
+    }
+    if (short.lotSize !== long.lotSize) {
+      rejections.push(`short ${short.symbol}: lot size mismatch`);
+      continue;
+    }
+    const width = Math.abs(short.strike - long.strike);
+    const debit = round2(lq.ask - sq.bid);
+    if (!(debit > 0) || width <= 0) {
+      rejections.push(`short ${short.symbol}: non-positive debit`);
+      continue;
+    }
+    const debitRatio = debit / width;
+    if (debitRatio < cfg.minDebitRatio || debitRatio > cfg.maxDebitRatio) {
+      rejections.push(`short ${short.symbol}: debit/width ${debitRatio.toFixed(2)} outside range`);
+      continue;
+    }
+    const lot = long.lotSize;
+    const entryChargesPerLot = round2(legCharges("BUY", lq.ask, lot, charges) + legCharges("SELL", sq.bid, lot, charges));
+    const exitChargesWorstPerLot = round2(legCharges("SELL", 0, lot, charges) + legCharges("BUY", 0, lot, charges));
+    const exitChargesBestPerLot = round2(legCharges("SELL", width, lot, charges) + legCharges("BUY", 0, lot, charges));
+    plans.push({
+      underlying: input.underlying,
+      right: input.right,
+      expiry: input.expiry,
+      dte: input.dte,
+      lotSize: lot,
+      spotAtEntry: input.spot,
+      long: { token: long.token, symbol: long.symbol, strike: long.strike, bid: lq.bid, ask: lq.ask },
+      short: { token: short.token, symbol: short.symbol, strike: short.strike, bid: sq.bid, ask: sq.ask },
+      width,
+      entryDebit: debit,
+      midDebit: round2(legMid(lq) - legMid(sq)),
+      debitRatio: Number(debitRatio.toFixed(4)),
+      legSpreadPct: Number(((longSpread + shortSpread) / 2).toFixed(4)),
+      entryChargesPerLot,
+      exitChargesWorstPerLot,
+      maxLossPerLot: round2(debit * lot + entryChargesPerLot + exitChargesWorstPerLot),
+      maxGainPerLot: round2((width - debit) * lot - entryChargesPerLot - exitChargesBestPerLot)
+    });
+  }
+  if (plans.length === 0) {
+    return { ok: false, reason: rejections[0] ?? "no valid short strike" };
+  }
+  const affordable = plans.filter((p) => p.maxLossPerLot <= input.budgetPerTradeInr);
+  if (affordable.length > 0) {
+    affordable.sort((a, b) => b.width - a.width);
+    return { ok: true, plan: affordable[0], affordable: true };
+  }
+  plans.sort((a, b) => a.maxLossPerLot - b.maxLossPerLot);
+  return { ok: true, plan: plans[0], affordable: false };
+}
+function markSpread(plan, quotes, nowMs, maxAgeSec) {
+  const lq = quotes[plan.long.token];
+  const sq = quotes[plan.short.token];
+  const li = quoteIssue(lq, nowMs, maxAgeSec, { bid: true, ask: false });
+  if (li || !lq) return { ok: false, reason: `long ${plan.long.symbol}: ${li}` };
+  const si = quoteIssue(sq, nowMs, maxAgeSec, { bid: false, ask: true });
+  if (si || !sq) return { ok: false, reason: `short ${plan.short.symbol}: ${si}` };
+  return {
+    ok: true,
+    mark: {
+      at: new Date(nowMs).toISOString(),
+      longBid: lq.bid,
+      longAsk: lq.ask,
+      shortBid: sq.bid,
+      shortAsk: sq.ask,
+      liquidationValue: round2(lq.bid - sq.ask),
+      midValue: round2(legMid(lq) - legMid(sq))
+    }
+  };
+}
+function exitLevels(plan, cfg) {
+  return {
+    target: round2(plan.entryDebit + cfg.takeProfitFracOfMaxGain * (plan.width - plan.entryDebit)),
+    stop: round2(plan.entryDebit * (1 - cfg.stopLossFracOfDebit))
+  };
+}
+function evaluateSpreadExit(input) {
+  if (input.dte <= input.cfg.exitAtDte) return "EXPIRY_RISK";
+  const { target, stop } = exitLevels(input.plan, input.cfg);
+  if (input.liquidationValue >= target) return "TAKE_PROFIT";
+  if (input.liquidationValue <= stop) return "STOP_LOSS";
+  if (input.sessionsHeld > input.cfg.maxHoldSessions) return "TIME_STOP";
+  return null;
+}
+function entryChargesFor(plan, units, charges = DEFAULT_CHARGES) {
+  return round2(legCharges("BUY", plan.long.ask, units, charges) + legCharges("SELL", plan.short.bid, units, charges));
+}
+function exitChargesFor(longBid, shortAsk, units, charges = DEFAULT_CHARGES) {
+  return round2(legCharges("SELL", longBid, units, charges) + legCharges("BUY", shortAsk, units, charges));
+}
+function maxLossFor(plan, lots, charges = DEFAULT_CHARGES) {
+  const units = lots * plan.lotSize;
+  return round2(
+    plan.entryDebit * units + entryChargesFor(plan, units, charges) + exitChargesFor(0, 0, units, charges)
+  );
+}
+function estimateShortLegMargin(plan, lots, isIndex, cfg) {
+  const pct = isIndex ? cfg.exposureMarginPctIndex : cfg.exposureMarginPctStock;
+  return round2(plan.spotAtEntry * lots * plan.lotSize * pct);
+}
+
+// src/quant/research.ts
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-var INITIAL_REAL_CAPITAL_INR = 1e4;
-function getStrikeStep(underlying) {
-  switch (underlying) {
-    case "NIFTY":
-    case "FINNIFTY":
-      return 50;
-    case "BANKNIFTY":
-      return 100;
-    case "TCS":
-      return 50;
-    case "RELIANCE":
-    case "INFY":
-    case "HDFCBANK":
-    case "ICICIBANK":
-      return 20;
-    case "SBIN":
-      return 10;
-    default:
-      return 50;
+
+// src/quant/risk.ts
+var DEFAULT_ENGINE_CONFIG = {
+  startingCapitalInr: 5e4,
+  riskPerTradePct: 0.04,
+  maxOpenPositions: 3,
+  maxOpenRiskPct: 0.1,
+  maxPositionsPerUnderlying: 1,
+  dailyLossHaltPct: 0.03,
+  drawdownKillPct: 0.1,
+  maxCapitalUsePct: 0.9,
+  exposureMarginPctIndex: 0.02,
+  exposureMarginPctStock: 0.035,
+  entryStartMinuteIst: 9 * 60 + 30,
+  entryEndMinuteIst: 15 * 60,
+  minDte: 7,
+  maxDte: 35,
+  exitAtDte: 2,
+  takeProfitFracOfMaxGain: 0.5,
+  stopLossFracOfDebit: 0.5,
+  maxHoldSessions: 5,
+  maxLegSpreadPct: 0.08,
+  minLongLegPrice: 1,
+  maxShortSteps: 4,
+  minDebitRatio: 0.2,
+  maxDebitRatio: 0.8,
+  quoteMaxAgeSec: 120,
+  cycleMinIntervalSec: 240
+};
+var MAX_LOTS = 10;
+var RISK_REJECT_LABELS = {
+  PAUSED: "Entries paused",
+  KILL_SWITCH: "Drawdown kill switch active",
+  DAILY_HALT: "Daily loss limit hit",
+  MAX_POSITIONS: "Max open positions reached",
+  SAME_UNDERLYING: "Already holding that underlying",
+  PER_TRADE_RISK: "1 lot risks more than the per-trade limit",
+  OPEN_RISK: "Total open risk limit",
+  CAPITAL: "Not enough free capital for debit + margin"
+};
+var inr = (x) => `\u20B9${Math.round(x).toLocaleString("en-IN")}`;
+function evaluateEntryRisk(input) {
+  const { cfg, plan } = input;
+  if (!input.entriesEnabled) return { allowed: false, code: "PAUSED", reason: "New entries are paused" };
+  if (input.killSwitchActive) {
+    return { allowed: false, code: "KILL_SWITCH", reason: "Drawdown kill switch is active" };
   }
-}
-function getTimeBucket(isoTs) {
-  const timePart = isoTs.split("T")[1] || "10:00:00";
-  const hhmm = timePart.slice(0, 5);
-  if (hhmm <= "10:15") return "OPEN_0915_1015";
-  if (hhmm <= "13:30") return "MIDDAY_1015_1330";
-  return "AFTERNOON_1330_1530";
-}
-function formatExpiryTagFromDate(dateStr) {
-  const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-  const dt = new Date(dateStr);
-  const yr = String(dt.getUTCFullYear()).slice(-2);
-  const mo = months[dt.getUTCMonth()] || "OCT";
-  return `28${mo}${yr}`;
-}
-var __replayFilename = fileURLToPath(import.meta.url);
-var __replayDirname = path.dirname(__replayFilename);
-function computeSmartFundAwarePositionSize(params) {
-  const availableCashInr = Math.max(0, params.currentEquityInr - params.openLockedCapitalInr);
-  const rawLotPremium = params.rawSpreadMidPerUnit * params.lotSize;
-  let adjustedUnitMidPrice = params.rawSpreadMidPerUnit;
-  if (rawLotPremium > 1650) {
-    const targetLotPrem = 1150 + rawLotPremium % 450;
-    adjustedUnitMidPrice = Number(Math.max(1.25, targetLotPrem / params.lotSize).toFixed(2));
-  } else if (rawLotPremium < 900) {
-    const targetLotPrem = 1050 + rawLotPremium % 350;
-    adjustedUnitMidPrice = Number(Math.max(1.25, targetLotPrem / params.lotSize).toFixed(2));
+  if (input.dailyHalt) {
+    return { allowed: false, code: "DAILY_HALT", reason: "Daily loss limit hit; no new entries until the next session" };
   }
-  const spreadHalf = Math.max(0.05, Number((adjustedUnitMidPrice * 5e-3).toFixed(2)));
-  const conservativeUnitEntryPrice = Number(
-    (adjustedUnitMidPrice + 0.35 * (spreadHalf * 2)).toFixed(2)
-  );
-  const costPerLotInr = Number(
-    (conservativeUnitEntryPrice * params.lotSize + params.entryFeePerLotInr).toFixed(2)
-  );
-  const baseFraction = params.qualityGateProb >= 0.8 ? 0.15 : params.qualityGateProb >= 0.74 ? 0.13 : 0.11;
-  const banditBoost = Math.max(0.85, Math.min(1.12, params.banditRiskMultiplier));
-  const targetTradeBudgetInr = Math.min(
-    availableCashInr * 0.85,
-    params.currentEquityInr * baseFraction * banditBoost
-  );
-  let lotsQty = Math.floor(targetTradeBudgetInr / Math.max(costPerLotInr, 1));
-  if (lotsQty < 1 && availableCashInr >= costPerLotInr * 1.12) {
-    lotsQty = 1;
-  }
-  lotsQty = Math.min(5, lotsQty);
-  if (lotsQty < 1) {
+  if (input.openPositions.length >= cfg.maxOpenPositions) {
     return {
       allowed: false,
-      lotsQty: 0,
-      adjustedUnitMidPrice,
-      conservativeUnitEntryPrice,
-      costPerLotInr,
-      totalCapitalCommittedInr: 0,
-      allocationPctOfEquity: 0,
-      sizingReason: `Insufficient free cash (Available \u20B9${availableCashInr.toFixed(
-        0
-      )} < 1 Lot cost \u20B9${costPerLotInr.toFixed(0)})`
+      code: "MAX_POSITIONS",
+      reason: `Already ${input.openPositions.length} open positions (max ${cfg.maxOpenPositions})`
     };
   }
-  const totalCapitalCommittedInr = Number((lotsQty * costPerLotInr).toFixed(2));
-  const allocationPctOfEquity = Number(
-    (totalCapitalCommittedInr / Math.max(params.currentEquityInr, 1) * 100).toFixed(1)
-  );
+  const sameUnderlying = input.openPositions.filter((p) => p.underlying === plan.underlying).length;
+  if (sameUnderlying >= cfg.maxPositionsPerUnderlying) {
+    return { allowed: false, code: "SAME_UNDERLYING", reason: `Already holding a ${plan.underlying} position` };
+  }
+  const budget = input.equity * cfg.riskPerTradePct;
+  let lots = Math.min(MAX_LOTS, Math.floor(budget / plan.maxLossPerLot));
+  if (lots < 1) {
+    return {
+      allowed: false,
+      code: "PER_TRADE_RISK",
+      reason: `1 lot risks ${inr(plan.maxLossPerLot)}, above the ${inr(budget)} per-trade limit (${(cfg.riskPerTradePct * 100).toFixed(0)}% of equity)`
+    };
+  }
+  const openRisk = input.openPositions.reduce((a, p) => a + p.maxLossInr, 0);
+  const riskRoom = input.equity * cfg.maxOpenRiskPct - openRisk;
+  lots = Math.min(lots, Math.floor(riskRoom / plan.maxLossPerLot));
+  if (lots < 1) {
+    return {
+      allowed: false,
+      code: "OPEN_RISK",
+      reason: `Open risk ${inr(openRisk)} plus this trade would exceed ${inr(input.equity * cfg.maxOpenRiskPct)} (${(cfg.maxOpenRiskPct * 100).toFixed(0)}% of equity)`
+    };
+  }
+  const blocked = input.openPositions.reduce((a, p) => a + p.marginBlockedInr, 0);
+  const capitalLimit = input.cash * cfg.maxCapitalUsePct - blocked;
+  for (; lots >= 1; lots--) {
+    const units2 = lots * plan.lotSize;
+    const cashOut = plan.entryDebit * units2 + entryChargesFor(plan, units2);
+    const margin = estimateShortLegMargin(plan, lots, input.isIndex, cfg);
+    if (cashOut + margin <= capitalLimit) {
+      return { allowed: true, lots, maxLossInr: maxLossFor(plan, lots), marginInr: margin, cashOutInr: cashOut };
+    }
+  }
+  const units = plan.lotSize;
+  const need = plan.entryDebit * units + entryChargesFor(plan, units) + estimateShortLegMargin(plan, 1, input.isIndex, cfg);
   return {
-    allowed: true,
-    lotsQty,
-    adjustedUnitMidPrice,
-    conservativeUnitEntryPrice,
-    costPerLotInr,
-    totalCapitalCommittedInr,
-    allocationPctOfEquity,
-    sizingReason: `Sized ${lotsQty} Lot${lotsQty > 1 ? "s" : ""} (\u20B9${totalCapitalCommittedInr.toLocaleString(
-      "en-IN"
-    )} = ${allocationPctOfEquity}% of \u20B9${Math.round(params.currentEquityInr).toLocaleString(
-      "en-IN"
-    )} account @ P(gain)=${(params.qualityGateProb * 100).toFixed(1)}%)`
+    allowed: false,
+    code: "CAPITAL",
+    reason: `Needs ${inr(need)} (debit + estimated short-leg margin) but only ${inr(Math.max(0, capitalLimit))} is free`
   };
-}
-var lastReplayReport = null;
-function getLastHistoricalReplayReport() {
-  return lastReplayReport;
-}
-async function runRealOneYearHistoricalReplay(state2, fromDateIst = "2025-11-01 09:15", toDateIst = "2026-10-30 15:30", startingCapitalInr = INITIAL_REAL_CAPITAL_INR, forceLiveFetch = false) {
-  const underlyings = Object.keys(NSE_LOT_SIZES);
-  const allSymbols = [...underlyings, "INDIA_VIX"];
-  const candlesBySymbol = {};
-  let totalCandlesFetched = 0;
-  const cacheCandidates = [
-    path.join(__replayDirname, "angelOne1YearCache.json"),
-    path.join(process.cwd(), "src", "quant", "angelOne1YearCache.json")
-  ];
-  if (!forceLiveFetch) {
-    for (const cachePath of cacheCandidates) {
-      try {
-        if (fs.existsSync(cachePath)) {
-          const parsed = JSON.parse(fs.readFileSync(cachePath, "utf-8"));
-          for (const sym of allSymbols) {
-            if (Array.isArray(parsed[sym]) && parsed[sym].length > 500) {
-              candlesBySymbol[sym] = parsed[sym];
-              totalCandlesFetched += parsed[sym].length;
-            }
-          }
-          if (candlesBySymbol["NIFTY"]?.length > 1e3) break;
-        }
-      } catch {
-      }
-    }
-  }
-  if (!candlesBySymbol["NIFTY"] || candlesBySymbol["NIFTY"].length < 500) {
-    totalCandlesFetched = 0;
-    for (const sym of allSymbols) {
-      let candles = await fetchAngelOneHistoricalCandles(sym, fromDateIst, toDateIst, "ONE_HOUR");
-      if (!candles || candles.length === 0) {
-        await new Promise((r) => setTimeout(r, 750));
-        candles = await fetchAngelOneHistoricalCandles(sym, fromDateIst, toDateIst, "ONE_HOUR");
-      }
-      if (candles && candles.length > 0) {
-        candlesBySymbol[sym] = candles;
-        totalCandlesFetched += candles.length;
-      }
-      await new Promise((r) => setTimeout(r, 380));
-    }
-  }
-  const niftyCandles = candlesBySymbol["NIFTY"] || [];
-  if (niftyCandles.length < 100) {
-    throw new Error(
-      `Insufficient real Angel One 1-year candles fetched (${niftyCandles.length} NIFTY bars). Verify Angel One SmartAPI credentials.`
-    );
-  }
-  const vixByTs = /* @__PURE__ */ new Map();
-  for (const c of candlesBySymbol["INDIA_VIX"] || []) {
-    vixByTs.set(c.timestamp, c.close);
-  }
-  const indexBySymTs = {};
-  for (const u of underlyings) {
-    const map = /* @__PURE__ */ new Map();
-    const arr = candlesBySymbol[u] || [];
-    for (let i = 0; i < arr.length; i++) {
-      map.set(arr[i].timestamp, i);
-    }
-    indexBySymTs[u] = map;
-  }
-  const activeModelVersion = "v2.1.0-nse-gbdt-1y-real";
-  const activeModelType = "Gradient-Boosted Decision Trees (80-Tree Depth-3 GBDT Trained on 1Y Real Angel One Candles)";
-  state2.learning.championVersion = activeModelVersion;
-  state2.control.activeChampionVersion = activeModelVersion;
-  state2.learning.modelType = activeModelType;
-  state2.control.strictLiveMarketHoursOnly = true;
-  let runningConsEquity = startingCapitalInr;
-  let runningPaperEquity = startingCapitalInr;
-  let peakConsEquity = startingCapitalInr;
-  let maxDrawdownPct = 0;
-  let totalFeesPaidInr = 0;
-  const openPositions = [];
-  const closedTrades = [];
-  const skippedSignals = [];
-  const equitySeries = [];
-  const learningLog = [];
-  const dailyMap = /* @__PURE__ */ new Map();
-  const entryEquityByTradeId = /* @__PURE__ */ new Map();
-  for (const b of state2.learning.banditAllocations) {
-    b.wins = 0;
-    b.losses = 0;
-    b.totalTrades = 0;
-    b.allocationWeight = 0.16;
-    b.riskBudgetMultiplier = 0.95;
-    b.status = "Learning on 1Y Real Angel One Data";
-  }
-  const niftyStartSpot = niftyCandles[0].close;
-  let lastVix = 14.2;
-  let lastTradingDate = "";
-  let tradeSeq = 1;
-  let skipSeq = 1;
-  let snapSeq = 1;
-  equitySeries.push({
-    snapshotId: `HIST-1Y-SNAP-0000`,
-    recordedAt: niftyCandles[0].timestamp,
-    conservativeEquityInr: startingCapitalInr,
-    brokerPaperEquityInr: startingCapitalInr,
-    niftyBenchmarkEquityInr: startingCapitalInr,
-    realizedPnlInr: 0,
-    unrealizedPnlInr: 0,
-    drawdownPct: 0,
-    openPositionsCount: 0
-  });
-  for (let barIdx = 35; barIdx < niftyCandles.length; barIdx++) {
-    const niftyBar = niftyCandles[barIdx];
-    const ts = niftyBar.timestamp;
-    const dateOnly = ts.slice(0, 10);
-    const timeOnly = (ts.split("T")[1] || "").slice(0, 5);
-    const isNewDay = dateOnly !== lastTradingDate;
-    if (isNewDay) {
-      lastTradingDate = dateOnly;
-      for (const pos of openPositions) {
-        pos.tradingDaysHeld += 1;
-        pos.dte = Math.max(1, pos.dte - 1);
-      }
-    }
-    const currentVix = vixByTs.get(ts) ?? lastVix;
-    lastVix = currentVix;
-    state2.health.indiaVixLevel = Number(currentVix.toFixed(2));
-    state2.health.niftySpot = niftyBar.close;
-    const bnfIdx = indexBySymTs["BANKNIFTY"]?.get(ts);
-    if (bnfIdx !== void 0) {
-      state2.health.bankNiftySpot = candlesBySymbol["BANKNIFTY"][bnfIdx].close;
-    }
-    if (!dailyMap.has(dateOnly)) {
-      dailyMap.set(dateOnly, {
-        dateIst: dateOnly,
-        niftyClose: niftyBar.close,
-        indiaVixClose: currentVix,
-        tradesClosed: 0,
-        wins: 0,
-        losses: 0,
-        dayNetPnlInr: 0,
-        endingEquityInr: runningConsEquity,
-        drawdownPct: 0
-      });
-    }
-    const daySummary = dailyMap.get(dateOnly);
-    daySummary.niftyClose = niftyBar.close;
-    daySummary.indiaVixClose = Number(currentVix.toFixed(2));
-    const remaining = [];
-    for (const pos of openPositions) {
-      const uIdx = indexBySymTs[pos.underlying]?.get(ts);
-      const uCandles = candlesBySymbol[pos.underlying];
-      if (uIdx === void 0 || !uCandles) {
-        remaining.push(pos);
-        continue;
-      }
-      const uBar = uCandles[uIdx];
-      const spotNow = uBar.close;
-      const isIdxPos = pos.underlying === "NIFTY" || pos.underlying === "BANKNIFTY" || pos.underlying === "FINNIFTY";
-      const entryUnderlyingSpot = pos.strike;
-      const signedUnderlyingMovePct = pos.right === "CE" ? (spotNow - entryUnderlyingSpot) / Math.max(entryUnderlyingSpot, 1) : (entryUnderlyingSpot - spotNow) / Math.max(entryUnderlyingSpot, 1);
-      const favorableExtremeSpot = pos.right === "CE" ? uBar.high : uBar.low;
-      const favorableMovePct = pos.right === "CE" ? (favorableExtremeSpot - entryUnderlyingSpot) / Math.max(entryUnderlyingSpot, 1) : (entryUnderlyingSpot - favorableExtremeSpot) / Math.max(entryUnderlyingSpot, 1);
-      const spreadLeverage = isIdxPos ? 15 : 11.5;
-      const closeSpreadReturnPct = Math.max(
-        -0.32,
-        Math.min(0.85, signedUnderlyingMovePct * spreadLeverage)
-      );
-      const peakSpreadReturnPct = Math.max(
-        closeSpreadReturnPct,
-        Math.min(0.9, favorableMovePct * spreadLeverage)
-      );
-      const baseMidEntry = Math.max(pos.brokerPaperEntryPrice, 0.5);
-      const closeMark = Math.max(
-        0.5,
-        Number((baseMidEntry * (1 + closeSpreadReturnPct)).toFixed(2))
-      );
-      const intrabarPeakMark = Math.max(
-        closeMark,
-        Number((baseMidEntry * (1 + peakSpreadReturnPct)).toFixed(2))
-      );
-      pos.peakMarkPrice = Math.max(pos.peakMarkPrice, intrabarPeakMark);
-      pos.troughMarkPrice = Math.min(pos.troughMarkPrice, closeMark);
-      const hoursHeld = Math.max(
-        1,
-        Math.round((Date.parse(ts) - Date.parse(pos.openedAt)) / (3600 * 1e3))
-      );
-      const barsHeldApprox = Math.max(1, pos.tradingDaysHeld * 7 + Math.min(6, hoursHeld));
-      const mfePctNow = (pos.peakMarkPrice - baseMidEntry) / baseMidEntry;
-      const closeGainPct = (closeMark - baseMidEntry) / baseMidEntry;
-      const hitRestingTakeProfit = mfePctNow >= 0.25;
-      const hitTrailingProfitLock = barsHeldApprox >= 2 && mfePctNow >= 0.12;
-      const hitStructuralStop = barsHeldApprox >= 10 && closeGainPct <= -0.26;
-      const hitTimeStop = pos.tradingDaysHeld >= 4 || barsHeldApprox >= 28;
-      if (hitRestingTakeProfit) {
-        pos.currentMarkPrice = Number((baseMidEntry * 1.27).toFixed(2));
-      } else if (hitTrailingProfitLock) {
-        pos.currentMarkPrice = Number(
-          (baseMidEntry * Math.max(1.18, 1 + Math.min(0.25, mfePctNow * 0.92))).toFixed(2)
-        );
-      } else if (hitTimeStop && mfePctNow >= 0.09) {
-        pos.currentMarkPrice = Number((baseMidEntry * 1.14).toFixed(2));
-      } else if (hitStructuralStop || hitTimeStop) {
-        pos.currentMarkPrice = Number(
-          (baseMidEntry * Math.max(0.89, 1 + Math.max(-0.11, closeGainPct))).toFixed(2)
-        );
-      } else {
-        pos.currentMarkPrice = closeMark;
-      }
-      const legFeeInr = 15;
-      const exitSpreadHalf = Math.max(0.05, Number((pos.currentMarkPrice * 4e-3).toFixed(2)));
-      const exitBid = Number(Math.max(0.25, pos.currentMarkPrice - exitSpreadHalf).toFixed(2));
-      const exitAsk = Number((pos.currentMarkPrice + exitSpreadHalf).toFixed(2));
-      const exitSim = simulatePessimisticFill(
-        "SELL",
-        pos.lotsQty,
-        exitBid,
-        exitAsk,
-        pos.lotSize,
-        void 0,
-        {
-          spreadSlippageFraction: 0.35,
-          feePerLotInr: legFeeInr,
-          rejectZeroBid: true
-        }
-      );
-      const entryCost = pos.conservativeEntryPrice * pos.lotsQty * pos.lotSize + pos.lotsQty * legFeeInr;
-      pos.unrealizedPnlInr = Number((exitSim.conservativeTotalCashInr - entryCost).toFixed(2));
-      pos.unrealizedPnlPct = Number((pos.unrealizedPnlInr / Math.max(entryCost, 1)).toFixed(4));
-      const activeMarketMinsHeld = barsHeldApprox * 60;
-      if (hitRestingTakeProfit || hitTrailingProfitLock || hitStructuralStop || hitTimeStop) {
-        const exitReason = hitRestingTakeProfit ? "TAKE_PROFIT" : hitTrailingProfitLock || hitTimeStop && mfePctNow >= 0.09 ? "TRAILING_STOP" : hitTimeStop ? "TIME_STOP_DAYS" : "STOP_LOSS";
-        const entrySpreadHalf = Math.max(0.05, Number((baseMidEntry * 4e-3).toFixed(2)));
-        const entryBid = Number(Math.max(0.25, baseMidEntry - entrySpreadHalf).toFixed(2));
-        const entryAsk = Number((baseMidEntry + entrySpreadHalf).toFixed(2));
-        const entryFill = simulatePessimisticFill(
-          "BUY",
-          pos.lotsQty,
-          entryBid,
-          entryAsk,
-          pos.lotSize,
-          void 0,
-          {
-            spreadSlippageFraction: 0.35,
-            feePerLotInr: legFeeInr,
-            rejectZeroBid: true
-          }
-        );
-        const rt = calculateRoundtripPnl(pos.lotsQty, entryFill, exitSim);
-        const feesTotal = Number((entryFill.feeInr + exitSim.feeInr).toFixed(2));
-        totalFeesPaidInr += feesTotal;
-        runningConsEquity = Number((runningConsEquity + rt.conservativePnlInr).toFixed(2));
-        runningPaperEquity = Number((runningPaperEquity + rt.brokerPaperPnlInr).toFixed(2));
-        peakConsEquity = Math.max(peakConsEquity, runningConsEquity);
-        const ddNow = Number(
-          ((peakConsEquity - runningConsEquity) / Math.max(peakConsEquity, 1)).toFixed(4)
-        );
-        maxDrawdownPct = Math.max(maxDrawdownPct, ddNow);
-        daySummary.tradesClosed += 1;
-        if (rt.conservativePnlInr > 0) daySummary.wins += 1;
-        else daySummary.losses += 1;
-        daySummary.dayNetPnlInr = Number(
-          (daySummary.dayNetPnlInr + rt.conservativePnlInr).toFixed(2)
-        );
-        daySummary.endingEquityInr = runningConsEquity;
-        daySummary.drawdownPct = ddNow;
-        const mfePct = Number(mfePctNow.toFixed(4));
-        const maePct = Number(
-          ((pos.troughMarkPrice - baseMidEntry) / baseMidEntry).toFixed(4)
-        );
-        const pmLabel = classifyTradePostMortem({
-          exitReason,
-          conservativePnlInr: rt.conservativePnlInr,
-          conservativePnlPct: rt.conservativePnlPct,
-          brokerPaperPnlInr: rt.brokerPaperPnlInr,
-          mfePct,
-          spreadPctAtEntry: entryFill.spreadPctOfMid,
-          signedUnderlyingMovePct,
-          ivChangePct: 0,
-          postExit60mOptionReturnPct: 0.02,
-          regimeAtEntry: pos.regimeAtEntry,
-          regimeAtExit: pos.regimeAtEntry
-        });
-        const structureTag = pos.right === "CE" ? "Bull Call Spread (-65% Theta)" : "Bear Put Spread (-65% Theta)";
-        const tId = `HIST-1Y-${String(tradeSeq++).padStart(3, "0")}`;
-        const metaEntry = entryEquityByTradeId.get(pos.tradeId) ?? {
-          equityAtEntry: runningConsEquity - rt.conservativePnlInr,
-          capitalUsed: Math.abs(entryFill.conservativeTotalCashInr)
-        };
-        entryEquityByTradeId.set(tId, metaEntry);
-        closedTrades.unshift({
-          tradeId: tId,
-          contractSymbol: pos.contractSymbol,
-          underlying: pos.underlying,
-          right: pos.right,
-          lotSize: pos.lotSize,
-          strategyName: pos.strategyName,
-          regimeAtEntry: pos.regimeAtEntry,
-          regimeAtExit: pos.regimeAtEntry,
-          isShadowChallenger: false,
-          modelVersion: activeModelVersion,
-          lotsQty: pos.lotsQty,
-          dteAtEntry: pos.dte + pos.tradingDaysHeld,
-          deltaAtEntry: pos.delta,
-          ivRankAtEntry: pos.ivRankPct,
-          spreadPctAtEntry: entryFill.spreadPctOfMid,
-          confidenceAtEntry: 0.79,
-          rsiAtEntry: 56.4,
-          adxAtEntry: 27.8,
-          atrPctAtEntry: 0.0115,
-          indiaVixAtEntry: Number(currentVix.toFixed(2)),
-          timeOfDayBucket: getTimeBucket(pos.openedAt),
-          conservativeEntryPrice: entryFill.conservativeFillPrice,
-          conservativeExitPrice: exitSim.conservativeFillPrice,
-          brokerPaperEntryPrice: entryFill.brokerPaperFillPrice,
-          brokerPaperExitPrice: exitSim.brokerPaperFillPrice,
-          feesTotalInr: feesTotal,
-          conservativePnlInr: rt.conservativePnlInr,
-          conservativePnlPct: rt.conservativePnlPct,
-          brokerPaperPnlInr: rt.brokerPaperPnlInr,
-          brokerPaperPnlPct: rt.brokerPaperPnlPct,
-          maePct,
-          mfePct,
-          holdMinutes: activeMarketMinsHeld,
-          entryReason: `[1Y Real Angel One \xB7 ${pos.lotsQty} Lot${pos.lotsQty > 1 ? "s" : ""} (\u20B9${metaEntry.capitalUsed.toFixed(0)} of \u20B9${metaEntry.equityAtEntry.toFixed(
-            0
-          )} fund)] ${structureTag} on ${pos.underlying} (${pos.strategyName})`,
-          exitReason,
-          postMortemLabel: pmLabel,
-          diagnosisNotes: `1Y Real Angel One Candle (${pos.openedAt.slice(0, 16).replace("T", " ")} -> ${ts.slice(0, 16).replace("T", " ")} IST): ${pos.lotsQty}L (${pos.lotsQty * pos.lotSize} units) \xB7 Cons \u20B9${entryFill.conservativeFillPrice.toFixed(
-            2
-          )} -> \u20B9${exitSim.conservativeFillPrice.toFixed(2)} (Net ${rt.conservativePnlInr >= 0 ? "+" : ""}\u20B9${rt.conservativePnlInr.toFixed(2)} \xB7 New Equity: \u20B9${runningConsEquity.toLocaleString(
-            "en-IN"
-          )}).`,
-          openedAt: pos.openedAt,
-          closedAt: ts,
-          quoteSource: "ANGEL_ONE_SPOT_BS"
-        });
-        const bucketMatch = state2.learning.banditAllocations.find(
-          (b) => b.bucketKey.includes(pos.strategyName) || b.bucketKey.includes(pos.underlying)
-        );
-        if (bucketMatch) {
-          if (rt.conservativePnlInr > 0) bucketMatch.wins += 1;
-          else bucketMatch.losses += 1;
-          bucketMatch.totalTrades = bucketMatch.wins + bucketMatch.losses;
-          const winRatio = bucketMatch.wins / Math.max(1, bucketMatch.totalTrades);
-          bucketMatch.allocationWeight = Number(
-            Math.max(0.05, Math.min(0.42, winRatio * 0.38)).toFixed(3)
-          );
-          bucketMatch.riskBudgetMultiplier = Number(
-            Math.max(0.85, Math.min(1.25, winRatio * 1.48)).toFixed(2)
-          );
-          bucketMatch.status = bucketMatch.totalTrades >= 15 ? `Active 1Y Real Adaptation (${bucketMatch.totalTrades} trades \xB7 ${(winRatio * 100).toFixed(0)}% WR)` : `1Y Real Warmup (${bucketMatch.totalTrades}/15 trades)`;
-        }
-        if (closedTrades.length % 15 === 0) {
-          const winsSoFar = closedTrades.filter((x) => x.conservativePnlInr > 0).length;
-          const wrSoFar = winsSoFar / closedTrades.length * 100;
-          const expSoFar = (runningConsEquity - startingCapitalInr) / Math.max(1, closedTrades.length);
-          state2.learning.walkForwardAuc = Number(
-            Math.min(0.848, 0.725 + wrSoFar / 100 * 0.12).toFixed(3)
-          );
-          learningLog.unshift({
-            logId: `LL-1Y-REAL-${closedTrades.length}`,
-            loggedAt: ts,
-            changeCategory: "WALK_FORWARD_1Y_REAL_RETRAIN",
-            modelVersion: activeModelVersion,
-            parameterOrBucket: `N=${closedTrades.length} Real 1Y Trades \xB7 Account Equity \u20B9${Math.round(
-              runningConsEquity
-            ).toLocaleString("en-IN")}`,
-            oldValue: `AUC ${(state2.learning.walkForwardAuc - 6e-3).toFixed(3)}`,
-            newValue: `AUC ${state2.learning.walkForwardAuc.toFixed(3)} \xB7 WR ${wrSoFar.toFixed(1)}%`,
-            sampleSize: closedTrades.length,
-            bootstrapCi90: `[+\u20B9${Math.round(expSoFar * 0.65)}, +\u20B9${Math.round(
-              expSoFar * 1.35
-            )}] / trade`,
-            reasonAndEvidence: `Walk-forward GBDT + Bandit retrain on ${closedTrades.length} real Angel One 1Y trades (${dateOnly}). Dynamic lot sizing scaled up to ${Math.max(
-              ...closedTrades.map((x) => x.lotsQty),
-              1
-            )} lots as \u20B910k fund grew to \u20B9${Math.round(runningConsEquity).toLocaleString("en-IN")}.`
-          });
-        }
-      } else {
-        remaining.push(pos);
-      }
-    }
-    openPositions.length = 0;
-    openPositions.push(...remaining);
-    const isHighLiquidityHour = timeOnly === "09:15" || timeOnly === "10:15" || timeOnly === "13:15" || timeOnly === "14:15";
-    if (isHighLiquidityHour && openPositions.length < 3) {
-      const rankedUnderlyings = [...underlyings].sort((a, b) => {
-        const idxA = indexBySymTs[a]?.get(ts);
-        const idxB = indexBySymTs[b]?.get(ts);
-        const cA = candlesBySymbol[a];
-        const cB = candlesBySymbol[b];
-        const trA = idxA !== void 0 && idxA >= 50 && cA ? Math.abs((cA[idxA].close - cA[idxA - 50].close) / Math.max(cA[idxA - 50].close, 1)) : 0;
-        const trB = idxB !== void 0 && idxB >= 50 && cB ? Math.abs((cB[idxB].close - cB[idxB - 50].close) / Math.max(cB[idxB - 50].close, 1)) : 0;
-        return trB - trA;
-      });
-      for (const u of rankedUnderlyings) {
-        if (openPositions.length >= 3) break;
-        if (openPositions.some((p) => p.underlying === u)) continue;
-        const uIdx = indexBySymTs[u]?.get(ts);
-        const uCandles = candlesBySymbol[u];
-        if (uIdx === void 0 || uIdx < 55 || !uCandles) continue;
-        const recentSameSym = closedTrades.find((ct) => ct.underlying === u);
-        if (recentSameSym && Math.abs(Date.parse(ts) - Date.parse(recentSameSym.openedAt)) < 7 * 3600 * 1e3) {
-          continue;
-        }
-        const windowCandles = uCandles.slice(Math.max(0, uIdx - 35), uIdx + 1);
-        const tech = computeTechnicalIndicatorsFromCandles(windowCandles);
-        const bar0 = uCandles[uIdx];
-        const barPrev1 = uCandles[uIdx - 1];
-        const spot = bar0.close;
-        const sma20 = uCandles.slice(uIdx - 20, uIdx).reduce((acc, c) => acc + c.close, 0) / 20;
-        const sma50 = uCandles.slice(uIdx - 50, uIdx).reduce((acc, c) => acc + c.close, 0) / 50;
-        const chg3 = (spot - uCandles[uIdx - 3].close) / Math.max(uCandles[uIdx - 3].close, 1);
-        const isIndex = u === "NIFTY" || u === "BANKNIFTY" || u === "FINNIFTY";
-        let optRight = null;
-        let strat = "trend_following";
-        let regime = "trending_up";
-        if (spot > sma50 * 1.004 && sma20 >= sma50 && chg3 <= -25e-4 && chg3 >= -0.014 && bar0.close > bar0.open && bar0.close > barPrev1.close) {
-          optRight = "CE";
-          strat = Math.abs(chg3) >= 6e-3 ? "mean_reversion" : "trend_following";
-          regime = "trending_up";
-        } else if (spot < sma50 * 0.996 && sma20 <= sma50 && chg3 >= 25e-4 && chg3 <= 0.014 && bar0.close < bar0.open && bar0.close < barPrev1.close) {
-          optRight = "PE";
-          strat = Math.abs(chg3) >= 6e-3 ? "mean_reversion" : "trend_following";
-          regime = "trending_down";
-        }
-        if (!optRight) continue;
-        const isMidday = timeOnly === "11:15" || timeOnly === "12:15";
-        const baseIv = isIndex ? 0.135 : 0.22;
-        const ivAnnual = Math.max(
-          0.11,
-          baseIv + (currentVix - 14) / 100 * (isIndex ? 0.65 : 0.45)
-        );
-        const ivRankPct = Number(
-          Math.max(25, Math.min(85, (currentVix - 10.5) / 8 * 100)).toFixed(1)
-        );
-        const strikeStep = getStrikeStep(u);
-        const atmStrike = Math.round(spot / strikeStep) * strikeStep;
-        const strike = atmStrike;
-        const shortStrike = optRight === "CE" ? atmStrike + strikeStep * 2 : Math.max(strikeStep, atmStrike - strikeStep * 2);
-        const dte = 10;
-        const lotSize = NSE_LOT_SIZES[u] ?? 75;
-        const longBs = blackScholesOptionPrice({
-          spot,
-          strike,
-          dteDays: dte,
-          ivAnnual,
-          riskFreeRate: 0.068,
-          right: optRight
-        });
-        const shortBs = blackScholesOptionPrice({
-          spot,
-          strike: shortStrike,
-          dteDays: dte,
-          ivAnnual,
-          riskFreeRate: 0.068,
-          right: optRight
-        });
-        const rawSpreadMid = Math.max(1, Number((longBs.mid - shortBs.mid).toFixed(2)));
-        const rawSpreadPct = Number(
-          ((longBs.ask - longBs.bid) / Math.max(longBs.mid, 1) * 0.55).toFixed(4)
-        );
-        const confidence = Number(
-          Math.min(0.94, Math.max(0.76, tech.signalConfidence + 0.12)).toFixed(2)
-        );
-        const rawGateEval = predictLearnedQualityGateProb(state2, {
-          confidence,
-          spreadPct: rawSpreadPct,
-          adx14: Math.max(tech.adx14, 25),
-          ivRankPct,
-          isMiddayIst: isMidday,
-          dte,
-          isVerticalSpread: true
-        });
-        const effectiveProb = isMidday ? Number(Math.min(0.64, rawGateEval.prob - 0.12).toFixed(4)) : rawGateEval.prob;
-        const gatePassed = !isMidday && effectiveProb >= Math.max(0.67, state2.learning.qualityGateThreshold);
-        const expiryTag = formatExpiryTagFromDate(dateOnly);
-        const contractSym = `${u}${expiryTag}${strike}/${shortStrike}${optRight}_SPREAD`;
-        if (!gatePassed) {
-          skippedSignals.unshift({
-            signalId: `HIST-1Y-SKIP-${skipSeq++}`,
-            generatedAt: ts,
-            underlying: u,
-            strategyName: strat,
-            direction: optRight,
-            regime,
-            confidence,
-            qualityGateProb: effectiveProb,
-            skipReason: `1Y Real Gate Rejected P(gain)=${(effectiveProb * 100).toFixed(1)}% < ${(state2.learning.qualityGateThreshold * 100).toFixed(0)}% (ADX ${tech.adx14.toFixed(1)}, IVR ${ivRankPct}%) on ${dateOnly}`,
-            counterfactualContract: contractSym,
-            counterfactualEntryPrice: rawSpreadMid,
-            counterfactualExitPrice: Number((rawSpreadMid * 0.85).toFixed(2)),
-            counterfactualPnlPct: -0.15
-          });
-          if (skippedSignals.length > 50) skippedSignals.pop();
-          continue;
-        }
-        const openLockedInr = openPositions.reduce(
-          (acc, p) => acc + p.conservativeEntryPrice * p.lotsQty * p.lotSize + p.lotsQty * 15,
-          0
-        );
-        const banditBucket = state2.learning.banditAllocations.find(
-          (b) => b.bucketKey.includes(u)
-        );
-        const smartSize = computeSmartFundAwarePositionSize({
-          currentEquityInr: runningConsEquity,
-          openLockedCapitalInr: openLockedInr,
-          qualityGateProb: effectiveProb,
-          banditRiskMultiplier: banditBucket?.riskBudgetMultiplier ?? 1,
-          lotSize,
-          rawSpreadMidPerUnit: rawSpreadMid,
-          entryFeePerLotInr: 15
-        });
-        if (!smartSize.allowed) {
-          skippedSignals.unshift({
-            signalId: `HIST-1Y-SKIP-${skipSeq++}`,
-            generatedAt: ts,
-            underlying: u,
-            strategyName: strat,
-            direction: optRight,
-            regime,
-            confidence,
-            qualityGateProb: effectiveProb,
-            skipReason: smartSize.sizingReason,
-            counterfactualContract: contractSym,
-            counterfactualEntryPrice: smartSize.adjustedUnitMidPrice,
-            counterfactualExitPrice: smartSize.adjustedUnitMidPrice,
-            counterfactualPnlPct: 0
-          });
-          if (skippedSignals.length > 50) skippedSignals.pop();
-          continue;
-        }
-        const posTradeId = `HIST-OPEN-${ts}-${u}`;
-        entryEquityByTradeId.set(posTradeId, {
-          equityAtEntry: runningConsEquity,
-          capitalUsed: smartSize.totalCapitalCommittedInr
-        });
-        openPositions.push({
-          positionId: `POS-1Y-${tradeSeq}-${u}`,
-          tradeId: posTradeId,
-          contractSymbol: contractSym,
-          underlying: u,
-          right: optRight,
-          strike: spot,
-          // store exact underlying spot at entry for exact delta return pricing
-          lotSize,
-          expirationDate: dateOnly,
-          dte,
-          strategyName: strat,
-          regimeAtEntry: regime,
-          lotsQty: smartSize.lotsQty,
-          conservativeEntryPrice: smartSize.conservativeUnitEntryPrice,
-          brokerPaperEntryPrice: smartSize.adjustedUnitMidPrice,
-          currentMarkPrice: smartSize.adjustedUnitMidPrice,
-          peakMarkPrice: smartSize.adjustedUnitMidPrice,
-          troughMarkPrice: smartSize.adjustedUnitMidPrice,
-          unrealizedPnlInr: -(smartSize.lotsQty * 15),
-          unrealizedPnlPct: -0.012,
-          delta: Number((longBs.delta - shortBs.delta).toFixed(3)),
-          theta: Number((-smartSize.adjustedUnitMidPrice * 0.012).toFixed(2)),
-          ivRankPct,
-          stopLossPrice: Number((smartSize.adjustedUnitMidPrice * 0.78).toFixed(2)),
-          takeProfitPrice: Number((smartSize.adjustedUnitMidPrice * 1.27).toFixed(2)),
-          trailingStopActivationPrice: Number((smartSize.adjustedUnitMidPrice * 1.18).toFixed(2)),
-          tradingDaysHeld: 0,
-          isIntradayFlagged: false,
-          openedAt: ts,
-          structureType: optRight === "CE" ? "BULL_CALL_SPREAD" : "BEAR_PUT_SPREAD",
-          shortStrike,
-          quoteSource: "ANGEL_ONE_SPOT_BS"
-        });
-      }
-    }
-    if (timeOnly === "15:15" && barIdx % 2 === 0) {
-      const unrealizedInr = openPositions.reduce((acc, p) => acc + p.unrealizedPnlInr, 0);
-      const niftyBenchEq = Number(
-        (startingCapitalInr * (niftyBar.close / Math.max(niftyStartSpot, 1))).toFixed(2)
-      );
-      const ddPct = Number(
-        ((peakConsEquity - runningConsEquity) / Math.max(peakConsEquity, 1)).toFixed(4)
-      );
-      equitySeries.push({
-        snapshotId: `HIST-1Y-SNAP-${String(snapSeq++).padStart(4, "0")}`,
-        recordedAt: ts,
-        conservativeEquityInr: runningConsEquity,
-        brokerPaperEquityInr: runningPaperEquity,
-        niftyBenchmarkEquityInr: niftyBenchEq,
-        realizedPnlInr: Number((runningConsEquity - startingCapitalInr).toFixed(2)),
-        unrealizedPnlInr: Number(unrealizedInr.toFixed(2)),
-        drawdownPct: ddPct,
-        openPositionsCount: openPositions.length
-      });
-    }
-  }
-  openPositions.length = 0;
-  const finalNiftyBar = niftyCandles[niftyCandles.length - 1];
-  const finalNiftyBenchEq = Number(
-    (startingCapitalInr * (finalNiftyBar.close / Math.max(niftyStartSpot, 1))).toFixed(2)
-  );
-  const finalDdPct = Number(
-    ((peakConsEquity - runningConsEquity) / Math.max(peakConsEquity, 1)).toFixed(4)
-  );
-  equitySeries.push({
-    snapshotId: `HIST-1Y-SNAP-${String(snapSeq++).padStart(4, "0")}`,
-    recordedAt: finalNiftyBar.timestamp,
-    conservativeEquityInr: runningConsEquity,
-    brokerPaperEquityInr: runningPaperEquity,
-    niftyBenchmarkEquityInr: finalNiftyBenchEq,
-    realizedPnlInr: Number((runningConsEquity - startingCapitalInr).toFixed(2)),
-    unrealizedPnlInr: 0,
-    drawdownPct: finalDdPct,
-    openPositionsCount: 0
-  });
-  state2.openPositions = [];
-  state2.closedTrades = closedTrades;
-  state2.skippedSignals = skippedSignals;
-  state2.equitySeries = equitySeries;
-  state2.learning.closedTradesCount = closedTrades.length;
-  state2.learning.tradesNeededForGbdt = Math.max(0, 200 - closedTrades.length);
-  if (learningLog.length > 0) {
-    state2.learning.learningLog = learningLog.slice(0, 25);
-  }
-  const wins = closedTrades.filter((t) => t.conservativePnlInr > 0);
-  const losses = closedTrades.filter((t) => t.conservativePnlInr <= 0);
-  const grossProfit = wins.reduce((a, b) => a + b.conservativePnlInr, 0);
-  const grossLoss = Math.abs(losses.reduce((a, b) => a + b.conservativePnlInr, 0));
-  const netConsPnl = Number((runningConsEquity - startingCapitalInr).toFixed(2));
-  const avgWinInr = wins.length > 0 ? Number((grossProfit / wins.length).toFixed(2)) : 0;
-  const avgLossInr = losses.length > 0 ? Number((losses.reduce((a, b) => a + b.conservativePnlInr, 0) / losses.length).toFixed(2)) : 0;
-  const profitFactor = grossLoss > 0 ? Number((grossProfit / grossLoss).toFixed(2)) : grossProfit > 0 ? 9.99 : 0;
-  const expectancyPerTradeInr = closedTrades.length > 0 ? Number((netConsPnl / closedTrades.length).toFixed(2)) : 0;
-  const winRatePct = closedTrades.length > 0 ? Number((wins.length / closedTrades.length * 100).toFixed(1)) : 0;
-  const lotsList = closedTrades.map((t) => t.lotsQty);
-  const minLotsTraded = lotsList.length > 0 ? Math.min(...lotsList) : 1;
-  const maxLotsTraded = lotsList.length > 0 ? Math.max(...lotsList) : 1;
-  const avgLotsTraded = lotsList.length > 0 ? Number((lotsList.reduce((a, b) => a + b, 0) / lotsList.length).toFixed(2)) : 1;
-  const niftyEndSpot = niftyCandles[niftyCandles.length - 1].close;
-  const endingNiftyBenchInr = Number(
-    (startingCapitalInr * (niftyEndSpot / Math.max(niftyStartSpot, 1))).toFixed(2)
-  );
-  const niftyReturnPct = Number(
-    ((niftyEndSpot - niftyStartSpot) / Math.max(niftyStartSpot, 1) * 100).toFixed(2)
-  );
-  const strategies = ["trend_following", "breakout_momentum", "mean_reversion"];
-  state2.backtestResults = strategies.map((sName) => {
-    const sTrades = closedTrades.filter((t) => t.strategyName === sName);
-    const sWins = sTrades.filter((t) => t.conservativePnlInr > 0);
-    const sLosses = sTrades.filter((t) => t.conservativePnlInr <= 0);
-    const sGrossWin = sWins.reduce((a, b) => a + b.conservativePnlInr, 0);
-    const sGrossLoss = Math.abs(sLosses.reduce((a, b) => a + b.conservativePnlInr, 0));
-    const sNet = sTrades.reduce((a, b) => a + b.conservativePnlInr, 0);
-    return {
-      strategyName: sName,
-      tradeCount: sTrades.length,
-      winRate: sTrades.length > 0 ? Number((sWins.length / sTrades.length).toFixed(3)) : 0,
-      expectancyInr: sTrades.length > 0 ? Number((sNet / sTrades.length).toFixed(2)) : 0,
-      profitFactor: sGrossLoss > 0 ? Number((sGrossWin / sGrossLoss).toFixed(2)) : sGrossWin > 0 ? 4.5 : 0,
-      maxDrawdownPct,
-      sharpeRatio: 2.85
-    };
-  });
-  const dailyList = Array.from(dailyMap.values());
-  const dailyReturns = dailyList.map((d) => d.dayNetPnlInr / startingCapitalInr);
-  const meanDaily = dailyReturns.reduce((a, b) => a + b, 0) / Math.max(dailyReturns.length, 1);
-  const stdDaily = Math.sqrt(
-    dailyReturns.reduce((a, b) => a + Math.pow(b - meanDaily, 2), 0) / Math.max(dailyReturns.length - 1, 1)
-  );
-  const sharpeRatio = stdDaily > 0 ? Number((meanDaily / stdDaily * Math.sqrt(252)).toFixed(2)) : 0;
-  const byUnderlying = underlyings.map((u) => {
-    const uTrades = closedTrades.filter((t) => t.underlying === u);
-    const uWins = uTrades.filter((t) => t.conservativePnlInr > 0);
-    const uPnl = Number(
-      uTrades.reduce((a, b) => a + b.conservativePnlInr, 0).toFixed(2)
-    );
-    const uCandles = candlesBySymbol[u] || [];
-    const startSpot = uCandles[0]?.close ?? 0;
-    const endSpot = uCandles[uCandles.length - 1]?.close ?? 0;
-    const uRetPct = startSpot > 0 ? Number(((endSpot - startSpot) / startSpot * 100).toFixed(2)) : 0;
-    return {
-      underlying: u,
-      trades: uTrades.length,
-      wins: uWins.length,
-      winRatePct: uTrades.length > 0 ? Number((uWins.length / uTrades.length * 100).toFixed(1)) : 0,
-      netPnlInr: uPnl,
-      startSpot,
-      endSpot,
-      underlyingReturnPct: uRetPct
-    };
-  });
-  state2.learning.championVsChallenger.championExpectancyInr = Math.max(
-    expectancyPerTradeInr,
-    50
-  );
-  state2.learning.championVsChallenger.challengerExpectancyInr = Number(
-    (Math.max(expectancyPerTradeInr, 50) * 1.14).toFixed(2)
-  );
-  state2.learning.championVsChallenger.championMaxDrawdownPct = maxDrawdownPct;
-  state2.learning.championVsChallenger.challengerMaxDrawdownPct = Number(
-    (maxDrawdownPct * 0.88).toFixed(4)
-  );
-  state2.learning.championVsChallenger.shadowTradesCompleted = closedTrades.length;
-  state2.learning.championVsChallenger.statusSummary = `1-Year Real Angel One Historical Training (${fromDateIst.slice(
-    0,
-    10
-  )} to ${toDateIst.slice(0, 10)} \xB7 Starting Capital \u20B9${startingCapitalInr.toLocaleString(
-    "en-IN"
-  )}): ${closedTrades.length} real trades \xB7 Win Rate ${winRatePct}% \xB7 Dynamic Lot Scaling ${minLotsTraded}L\u2013${maxLotsTraded}L (avg ${avgLotsTraded}L) \xB7 Ending Equity \u20B9${runningConsEquity.toLocaleString(
-    "en-IN"
-  )} (+${(netConsPnl / startingCapitalInr * 100).toFixed(1)}%).`;
-  const report = {
-    executedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    dataSource: `Angel One SmartAPI 1-Year Real Hourly Candles (${getAngelOneConnectionStatus().clientCodeMasked})`,
-    fromDateIst,
-    toDateIst,
-    tradingDaysCount: dailyList.length,
-    totalFiveMinCandlesProcessed: totalCandlesFetched,
-    startingCapitalInr,
-    endingConservativeEquityInr: runningConsEquity,
-    endingBrokerPaperEquityInr: runningPaperEquity,
-    endingNiftyBuyHoldEquityInr: endingNiftyBenchInr,
-    netConservativePnlInr: netConsPnl,
-    netConservativeReturnPct: Number((netConsPnl / startingCapitalInr * 100).toFixed(2)),
-    niftyBuyHoldReturnPct: niftyReturnPct,
-    totalTradesClosed: closedTrades.length,
-    winsCount: wins.length,
-    lossesCount: losses.length,
-    winRatePct,
-    avgWinInr,
-    avgLossInr,
-    profitFactor,
-    expectancyPerTradeInr,
-    maxDrawdownPct: Number((maxDrawdownPct * 100).toFixed(2)),
-    sharpeRatio,
-    totalStatutoryChargesPaidInr: Number(totalFeesPaidInr.toFixed(2)),
-    signalsSkippedByGateCount: skippedSignals.length,
-    minLotsTraded,
-    maxLotsTraded,
-    avgLotsTraded,
-    byUnderlying,
-    dailyBreakdown: dailyList.filter((d) => d.tradesClosed > 0),
-    replayTrades: closedTrades.slice(0, 60).map((t) => {
-      const m = entryEquityByTradeId.get(t.tradeId) ?? {
-        equityAtEntry: startingCapitalInr,
-        capitalUsed: 1200
-      };
-      return {
-        id: t.tradeId,
-        sym: t.contractSymbol,
-        underlying: t.underlying,
-        lotsQty: t.lotsQty,
-        capitalUsedInr: m.capitalUsed,
-        accountEquityAtEntryInr: m.equityAtEntry,
-        open: t.openedAt,
-        close: t.closedAt,
-        entry: t.conservativeEntryPrice,
-        exit: t.conservativeExitPrice,
-        pnl: t.conservativePnlInr,
-        reason: t.exitReason
-      };
-    })
-  };
-  lastReplayReport = report;
-  computeLearningEffectiveness(state2);
-  return report;
 }
 
-// src/quant/livePaperRunner.ts
-var YAHOO_TICKER_MAP = {
-  NIFTY: "%5ENSEI",
-  BANKNIFTY: "%5ENSEBANK",
-  INDIA_VIX: "%5EINDIAVIX",
-  RELIANCE: "RELIANCE.NS",
-  TCS: "TCS.NS",
-  HDFCBANK: "HDFCBANK.NS",
-  INFY: "INFY.NS",
-  ICICIBANK: "ICICIBANK.NS",
-  SBIN: "SBIN.NS"
+// src/quant/research.ts
+var RESEARCH_LOT_SIZES = {
+  NIFTY: 65,
+  BANKNIFTY: 30,
+  FINNIFTY: 60,
+  RELIANCE: 500,
+  TCS: 225,
+  HDFCBANK: 650,
+  INFY: 400,
+  ICICIBANK: 700,
+  SBIN: 750
 };
-var BASE_SPOTS = {
-  NIFTY: 24482.6,
-  BANKNIFTY: 51845.2,
-  FINNIFTY: 23920,
-  RELIANCE: 1365,
-  TCS: 4120,
-  HDFCBANK: 1745,
-  INFY: 1860,
-  ICICIBANK: 1295,
-  SBIN: 842,
-  INDIA_VIX: 14.25
-};
-var lastRealFetchMs = 0;
-var monotonicSeq = 1e3;
-var rotationCursor = 0;
-var cachedSpots = {};
-var cachedTechnicals = {};
-var cachedNfoPairsByUnderlying = {};
-var cachedOpenPositionNfoMarks = {};
-for (const [sym, px] of Object.entries(BASE_SPOTS)) {
-  cachedSpots[sym] = {
-    symbol: sym,
-    angelToken: ANGEL_ONE_NSE_TOKENS[sym]?.angelToken,
-    spot: px,
-    changePct: 0.18,
-    source: "NSE_SIM_BAR",
-    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-  };
-}
-function getStrikeStep2(underlying) {
-  return underlying === "BANKNIFTY" ? 100 : underlying === "NIFTY" || underlying === "FINNIFTY" ? 50 : 20;
-}
-async function refreshLiveNseQuotes(openPositionTokens = []) {
-  const now = Date.now();
-  if (now - lastRealFetchMs < 15e3) {
-    return cachedSpots;
+var CACHE_FILE = "angelOne1YearCache.json";
+var YEAR_MS = 365 * 864e5;
+var RISK_FREE = 0.06;
+var MODEL_SPREAD_PCT = { NIFTY: 5e-3, BANKNIFTY: 6e-3, FINNIFTY: 0.015 };
+var STOCK_SPREAD_PCT = 0.025;
+var cacheMemo;
+function loadHistoricalCache() {
+  if (cacheMemo !== void 0) return cacheMemo;
+  let here = process.cwd();
+  try {
+    here = path.dirname(fileURLToPath(import.meta.url));
+  } catch {
   }
-  lastRealFetchMs = now;
-  const angelQuotes = await fetchAngelOneFullMarketQuotes();
-  if (angelQuotes && Object.keys(angelQuotes).length > 0) {
-    for (const [sym, item] of Object.entries(angelQuotes)) {
-      const prev = cachedSpots[sym];
-      cachedSpots[sym] = {
-        ...prev,
-        symbol: sym,
-        angelToken: item.angelToken,
-        spot: item.ltp,
-        changePct: item.percentChange,
-        bestBid: item.bestBid,
-        bestAsk: item.bestAsk,
-        tradeVolume: item.tradeVolume,
-        openInterest: item.openInterest,
-        source: "ANGEL_ONE_LIVE",
-        updatedAt: item.updatedAt
-      };
-      BASE_SPOTS[sym] = item.ltp;
-    }
-    const tradeableUnderlyings = Object.keys(NSE_LOT_SIZES);
-    const activeSym = tradeableUnderlyings[rotationCursor % tradeableUnderlyings.length];
-    rotationCursor++;
+  const candidates = [
+    path.join(process.cwd(), "src", "quant", CACHE_FILE),
+    path.join(here, CACHE_FILE),
+    path.join(here, "..", "src", "quant", CACHE_FILE)
+  ];
+  for (const file of candidates) {
     try {
-      const candles = await fetchAngelOneFiveMinCandles(
-        activeSym,
-        "2026-10-20 09:15",
-        "2026-11-05 15:30"
-      );
-      if (candles && candles.length >= 15) {
-        const ind = computeTechnicalIndicatorsFromCandles(candles);
-        cachedTechnicals[activeSym] = ind;
-        if (cachedSpots[activeSym]) {
-          cachedSpots[activeSym].rsi14 = ind.rsi14;
-          cachedSpots[activeSym].adx14 = ind.adx14;
-          cachedSpots[activeSym].atrPct = ind.atrPct;
-        }
+      if (!fs.existsSync(file)) continue;
+      const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+      const out = {};
+      for (const [symbol, bars] of Object.entries(raw)) {
+        if (!Array.isArray(bars)) continue;
+        out[symbol] = bars.map((b) => ({
+          time: String(b.timestamp ?? b.time),
+          open: Number(b.open),
+          high: Number(b.high),
+          low: Number(b.low),
+          close: Number(b.close),
+          volume: Number(b.volume ?? 0)
+        })).filter((c) => Number.isFinite(Date.parse(c.time)) && c.close > 0 && c.high >= c.low).sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
       }
-      const spotPx = cachedSpots[activeSym]?.spot ?? BASE_SPOTS[activeSym] ?? 23050;
-      const step = getStrikeStep2(activeSym);
-      const rightChoice = cachedTechnicals[activeSym]?.trendSignal ?? "CE";
-      const targetStrike = Math.round(spotPx / step) * step;
-      const shortStrike = rightChoice === "CE" ? targetStrike + step * 2 : Math.max(step, targetStrike - step * 2);
-      const nfoPair = await fetchAngelOneLiveOptionPairQuotes({
-        underlying: activeSym,
-        targetStrike,
-        shortStrike,
-        right: rightChoice
-      });
-      if (nfoPair.longLeg) {
-        cachedNfoPairsByUnderlying[activeSym] = nfoPair;
-        if (cachedSpots[activeSym]) {
-          cachedSpots[activeSym].nfoContractSymbol = nfoPair.longLeg.tradingSymbol;
-          cachedSpots[activeSym].nfoToken = nfoPair.longLeg.symbolToken;
-          cachedSpots[activeSym].nfoOptionLtp = nfoPair.longLeg.ltp;
-          cachedSpots[activeSym].nfoBestBid = nfoPair.longLeg.bestBid;
-          cachedSpots[activeSym].nfoBestAsk = nfoPair.longLeg.bestAsk;
-        }
-      }
-      if (openPositionTokens.length > 0) {
-        const liveMarks = await fetchAngelOneNfoQuotesByTokens(openPositionTokens);
-        for (const [tok, mk] of Object.entries(liveMarks)) {
-          const prevEntry = cachedOpenPositionNfoMarks[tok];
-          cachedOpenPositionNfoMarks[tok] = {
-            ...mk,
-            prevLtp: prevEntry ? prevEntry.ltp : mk.ltp
-          };
-        }
-      }
+      cacheMemo = out;
+      return out;
     } catch {
     }
-    fetchAngelOneOptionGreeks("NIFTY").catch(() => {
-    });
-    return cachedSpots;
   }
-  const symbolsToFetch = [
-    "NIFTY",
-    "BANKNIFTY",
-    "INDIA_VIX",
-    "RELIANCE",
-    "TCS",
-    "HDFCBANK",
-    "INFY",
-    "ICICIBANK",
-    "SBIN"
-  ];
-  await Promise.all(
-    symbolsToFetch.map(async (sym) => {
-      const yTicker = YAHOO_TICKER_MAP[sym];
-      if (!yTicker) return;
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 2500);
-        const res = await fetch(
-          `https://query1.finance.yahoo.com/v8/finance/chart/${yTicker}?interval=5m&range=1d`,
-          {
-            signal: controller.signal,
-            headers: { "User-Agent": "Mozilla/5.0 AegisQuantPaperBot/1.0" }
-          }
-        );
-        clearTimeout(timer);
-        if (!res.ok) return;
-        const data = await res.json();
-        const meta = data?.chart?.result?.[0]?.meta;
-        const price = meta?.regularMarketPrice;
-        const prev = meta?.chartPreviousClose ?? price;
-        if (typeof price === "number" && price > 0) {
-          const chg = prev && prev > 0 ? (price - prev) / prev * 100 : 0;
-          cachedSpots[sym] = {
-            symbol: sym,
-            angelToken: ANGEL_ONE_NSE_TOKENS[sym]?.angelToken,
-            spot: Number(price.toFixed(2)),
-            changePct: Number(chg.toFixed(2)),
-            source: "NSE_LIVE_FEED",
-            updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-          };
-          BASE_SPOTS[sym] = cachedSpots[sym].spot;
-        }
-      } catch {
-      }
-    })
-  );
-  if (cachedSpots.NIFTY && cachedSpots.BANKNIFTY && cachedSpots.FINNIFTY?.source !== "ANGEL_ONE_LIVE") {
-    const finSpot = Number(
-      (cachedSpots.NIFTY.spot * 0.48 + cachedSpots.BANKNIFTY.spot * 0.235).toFixed(2)
-    );
-    cachedSpots.FINNIFTY = {
-      symbol: "FINNIFTY",
-      angelToken: ANGEL_ONE_NSE_TOKENS.FINNIFTY.angelToken,
-      spot: finSpot,
-      changePct: cachedSpots.BANKNIFTY.changePct,
-      source: cachedSpots.NIFTY.source,
-      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-    };
-  }
-  return cachedSpots;
+  cacheMemo = null;
+  return null;
 }
-function predictLearnedQualityGateProb(state2, features) {
-  const weightsMap = /* @__PURE__ */ new Map();
-  for (const f of state2.learning.featureImportances) {
-    weightsMap.set(f.feature, f.weight);
-  }
-  const wConf = weightsMap.get("signal_confidence") ?? 1.42;
-  const wSpread = weightsMap.get("spread_pct_of_mid") ?? -1.38;
-  const wAdx = weightsMap.get("adx_14_trend_strength") ?? 0.89;
-  const wIvr = weightsMap.get("iv_rank_pct_over_70") ?? -1.12;
-  const wMidday = weightsMap.get("midday_1015_1330_ist") ?? -0.74;
-  const wDte = weightsMap.get("dte_14_to_28_bucket") ?? 0.66;
-  let logOdds = 0.42;
-  logOdds += (features.confidence - 0.62) * wConf * 2.1;
-  logOdds += (features.spreadPct - 0.032) / 0.025 * wSpread * 0.55;
-  logOdds += (features.adx14 - 22) / 14 * wAdx * 0.55;
-  if (features.ivRankPct > 65) {
-    logOdds += (features.ivRankPct - 65) / 18 * wIvr * 0.65;
-  } else {
-    logOdds += 0.18;
-  }
-  if (features.isMiddayIst) {
-    logOdds += wMidday * 0.35;
-  }
-  if (features.dte >= 14 && features.dte <= 28) {
-    logOdds += wDte * 0.32;
-  }
-  if (features.isVerticalSpread) {
-    logOdds += 0.26;
-  }
-  const isGbdtActive = state2.learning.modelType.toLowerCase().includes("gbdt") || state2.learning.championVersion.includes("gbdt");
-  if (isGbdtActive) {
-    if (features.isMiddayIst && features.spreadPct > 0.038) {
-      logOdds -= 0.38;
-    }
-    if (features.adx14 >= 25 && features.isVerticalSpread) {
-      logOdds += 0.18;
-    }
-  }
-  const prob = Number((1 / (1 + Math.exp(-logOdds))).toFixed(4));
-  const clamped = Math.max(0.12, Math.min(0.94, prob));
-  const effectiveThreshold = Math.max(0.67, state2.learning.qualityGateThreshold);
+function buildVixSeries(vixCandles, extraDaily = []) {
+  const times = vixCandles.map((c) => Date.parse(c.time));
+  const closes = vixCandles.map((c) => c.close);
+  const daily = /* @__PURE__ */ new Map();
+  for (const c of vixCandles) daily.set(istDate(Date.parse(c.time)), c.close);
+  for (const d of extraDaily) daily.set(d.date, d.close);
+  const dailyCloses = [...daily.entries()].map(([date, close]) => ({ date, close })).sort((a, b) => a.date.localeCompare(b.date));
   return {
-    prob: clamped,
-    passed: clamped >= effectiveThreshold
+    dailyCloses,
+    at(ms) {
+      let lo = 0;
+      let hi = times.length - 1;
+      let found = -1;
+      while (lo <= hi) {
+        const mid = lo + hi >> 1;
+        if (times[mid] <= ms) {
+          found = mid;
+          lo = mid + 1;
+        } else hi = mid - 1;
+      }
+      if (found < 0 || ms - times[found] > 4 * 864e5) return null;
+      return closes[found];
+    },
+    percentile(dateStr, value) {
+      let end = dailyCloses.length;
+      while (end > 0 && dailyCloses[end - 1].date >= dateStr) end--;
+      const hist = dailyCloses.slice(Math.max(0, end - 250), end).map((d) => d.close);
+      return percentileRank(value, hist);
+    }
   };
 }
-function computeLearningEffectiveness(state2) {
-  const chronological = [...state2.closedTrades].filter((t) => !t.isShadowChallenger).reverse();
-  const half = Math.max(1, Math.floor(chronological.length / 2));
-  const early = chronological.slice(0, half);
-  const recent = chronological.slice(half);
-  const avgPnl = (arr) => arr.length > 0 ? Number((arr.reduce((a, b) => a + b.conservativePnlInr, 0) / arr.length).toFixed(2)) : 0;
-  const winRate = (arr) => arr.length > 0 ? Number((arr.filter((x) => x.conservativePnlInr > 0).length / arr.length * 100).toFixed(1)) : 0;
-  const avoidedLosses = state2.skippedSignals.filter((s) => s.counterfactualPnlPct < 0);
-  const savedInr = Number(
-    avoidedLosses.reduce((acc, s) => {
-      const lotSize = NSE_LOT_SIZES[s.underlying] ?? 75;
-      const lossPerUnit = Math.abs(s.counterfactualExitPrice - s.counterfactualEntryPrice);
-      return acc + lossPerUnit * lotSize;
-    }, 0).toFixed(0)
-  );
+function addDays(dateStr, n) {
+  return new Date(Date.parse(`${dateStr}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
+}
+function weekdayOf(dateStr) {
+  return (/* @__PURE__ */ new Date(`${dateStr}T00:00:00Z`)).getUTCDay();
+}
+function lastTuesdayOfMonth(year, month) {
+  const last = new Date(Date.UTC(year, month, 0));
+  const back = (last.getUTCDay() - 2 + 7) % 7;
+  return new Date(last.getTime() - back * 864e5).toISOString().slice(0, 10);
+}
+function modelExpiries(underlying, dateStr) {
+  if (underlying === "NIFTY") {
+    const out2 = [];
+    let d = dateStr;
+    while (weekdayOf(d) !== 2) d = addDays(d, 1);
+    for (let k = 0; k < 6; k++) out2.push(addDays(d, 7 * k));
+    return out2;
+  }
+  const [y, m] = dateStr.split("-").map(Number);
+  const out = [];
+  for (let k = 0; k < 3; k++) {
+    const mm = (m - 1 + k) % 12 + 1;
+    const yy = y + Math.floor((m - 1 + k) / 12);
+    const e = lastTuesdayOfMonth(yy, mm);
+    if (e >= dateStr) out.push(e);
+  }
+  return out;
+}
+function modelStrikeStep(underlying, spot) {
+  if (underlying === "NIFTY" || underlying === "FINNIFTY") return 50;
+  if (underlying === "BANKNIFTY") return 100;
+  if (spot < 250) return 2.5;
+  if (spot < 500) return 5;
+  if (spot < 1e3) return 10;
+  if (spot < 2500) return 20;
+  return 50;
+}
+function modelVol(underlying, vixPct, realized) {
+  const v = vixPct / 100;
+  if (underlying === "NIFTY") return v;
+  if (underlying === "BANKNIFTY") return v * 1.2;
+  if (underlying === "FINNIFTY") return v * 1.1;
+  return Math.max((realized ?? v * 1.2) * 1.15, v * 1.2);
+}
+var round22 = (x) => Math.round(x * 100) / 100;
+var roundTick = (x) => round22(Math.round(x / 0.05) * 0.05);
+function modelQuote(token, mid, spreadPct, atMs) {
+  const half = Math.max(0.05, mid * spreadPct / 2);
   return {
-    earlyTradesExpectancyInr: avgPnl(early),
-    recentTradesExpectancyInr: avgPnl(recent),
-    earlyWinRatePct: winRate(early),
-    recentWinRatePct: winRate(recent),
-    gateAvoidedLossesCount: avoidedLosses.length,
-    gateAvoidedLossesSavedInr: savedInr
+    token,
+    ltp: roundTick(mid),
+    bid: mid - half >= 0.05 ? roundTick(mid - half) : 0,
+    ask: roundTick(mid + half),
+    hasDepth: true,
+    feedTimeMs: atMs,
+    volume: 0,
+    oi: 0
   };
 }
-function executeAutonomousPaperCycles(state2, numCycles = 1) {
-  const safeCycles = Math.max(1, Math.min(250, Math.floor(numCycles)));
-  const underlyings = Object.keys(NSE_LOT_SIZES);
-  const strategies = ["trend_following", "mean_reversion", "breakout_momentum"];
-  const timeBuckets = [
-    "OPEN_0915_1015",
-    "MIDDAY_1015_1330",
-    "AFTERNOON_1330_1530"
-  ];
-  let entriesOpened = 0;
-  let positionsClosed = 0;
-  let signalsSkippedByGate = 0;
-  let retrainsTriggered = 0;
-  let latestActionSummary2 = "Marked open positions to market; holding within risk guardrails.";
-  const istMarketCheck = isNseMarketHoursIst();
-  state2.health.marketOpen = istMarketCheck.isOpen;
-  if (state2.control.strictLiveMarketHoursOnly && safeCycles === 1 && !istMarketCheck.isOpen) {
-    state2.health.heartbeatAt = (/* @__PURE__ */ new Date()).toISOString();
-    latestActionSummary2 = `Strict NSE Market-Hours Mode Active: ${istMarketCheck.reason} \u2014 Holding open positions; synthetic off-market bars paused.`;
-    return {
-      cyclesRun: 0,
-      entriesOpened: 0,
-      positionsClosed: 0,
-      signalsSkippedByGate: 0,
-      retrainsTriggered: 0,
-      latestActionSummary: latestActionSummary2,
-      liveQuotes: cachedSpots,
-      angelOneStatus: getAngelOneConnectionStatus(),
-      learningComparison: computeLearningEffectiveness(state2)
-    };
+function simplifyReason(reason) {
+  return reason.replace(/^(long|short) leg [^:]+:/, "$1 leg:").replace(/^short [^:]+:/, "short leg:").replace(/₹[\d,.]+/g, "\u20B9x").replace(/\d+(\.\d+)?%/g, "x%").replace(/\d+\.\d+/g, "x");
+}
+function simulatePortfolio(trades, cfg) {
+  const ordered = [...trades].sort((a, b) => a.entryMs - b.entryMs);
+  let open = [];
+  let cash = cfg.startingCapitalInr;
+  let realizedEquity = cfg.startingCapitalInr;
+  let peak = realizedEquity;
+  let killAt = null;
+  let taken = 0;
+  const skips = /* @__PURE__ */ new Map();
+  const curve = [{ t: new Date(ordered[0]?.entryMs ?? Date.now()).toISOString(), equity: realizedEquity }];
+  const closeUntil = (ms) => {
+    const due = open.filter((o) => o.t.exitMs <= ms).sort((a, b) => a.t.exitMs - b.t.exitMs);
+    for (const o of due) {
+      const units = o.lots * o.t.lotSize;
+      const cashIn = o.t.exitValue * units - exitChargesFor(o.t.exitLongBid, o.t.exitShortAsk, units);
+      cash += cashIn;
+      realizedEquity += cashIn - o.cashOut;
+      peak = Math.max(peak, realizedEquity);
+      if (!killAt && (peak - realizedEquity) / peak >= cfg.drawdownKillPct) killAt = o.t.exitAt;
+      curve.push({ t: o.t.exitAt, equity: round22(realizedEquity) });
+    }
+    open = open.filter((o) => o.t.exitMs > ms);
+  };
+  for (const t of ordered) {
+    closeUntil(t.entryMs);
+    const decision = evaluateEntryRisk({
+      cfg,
+      equity: realizedEquity,
+      cash,
+      entriesEnabled: true,
+      killSwitchActive: false,
+      dailyHalt: false,
+      openPositions: open,
+      isIndex: t.isIndex,
+      plan: t.plan
+    });
+    if (!decision.allowed) {
+      const key = RISK_REJECT_LABELS[decision.code];
+      skips.set(key, (skips.get(key) ?? 0) + 1);
+      continue;
+    }
+    taken++;
+    cash -= decision.cashOutInr;
+    open.push({
+      t,
+      lots: decision.lots,
+      cashOut: decision.cashOutInr,
+      maxLossInr: decision.maxLossInr,
+      marginBlockedInr: decision.marginInr,
+      underlying: t.underlying
+    });
   }
-  const seenSnapIds = /* @__PURE__ */ new Set();
-  state2.equitySeries.forEach((pt, idx) => {
-    const match = pt.snapshotId.match(/(\d+)/);
-    if (match) {
-      const n = Number(match[1]);
-      if (Number.isFinite(n) && n >= monotonicSeq) {
-        monotonicSeq = n + 1;
+  closeUntil(Infinity);
+  const equities = curve.map((p) => p.equity);
+  return {
+    startingCapitalInr: cfg.startingCapitalInr,
+    endingEquityInr: round22(realizedEquity),
+    returnPct: (realizedEquity / cfg.startingCapitalInr - 1) * 100,
+    maxDrawdownPct: maxDrawdownPct(equities) * 100,
+    taken,
+    skipped: ordered.length - taken,
+    skipReasons: [...skips.entries()].map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n),
+    killSwitchWouldTriggerAt: killAt,
+    curve
+  };
+}
+function simulateTrades(cache, cfg, lotSizes, vix, flipDirection) {
+  const budgetPerTrade = cfg.startingCapitalInr * cfg.riskPerTradePct;
+  const trades = [];
+  const rejections = /* @__PURE__ */ new Map();
+  const counts = { signals: 0, overlapping: 0, rejected: 0, incomplete: 0, trades: 0 };
+  const reject = (reason) => {
+    counts.rejected++;
+    const key = simplifyReason(reason);
+    rejections.set(key, (rejections.get(key) ?? 0) + 1);
+  };
+  for (const u of UNDERLYINGS) {
+    const candles = cache[u];
+    const lot = lotSizes[u];
+    if (!candles || candles.length < INDICATOR_WARMUP_BARS + 10 || !lot) continue;
+    const rows = computeIndicators(candles);
+    const closes = candles.map((c) => c.close);
+    const starts = candles.map((c) => Date.parse(c.time));
+    const ends = starts.map(hourlyBarEndMs);
+    const isIndex = INDEX_UNDERLYINGS.has(u);
+    const spreadPct = MODEL_SPREAD_PCT[u] ?? STOCK_SPREAD_PCT;
+    const busyUntil = { CE: -1, PE: -1 };
+    const volAt = (i) => {
+      const vx = vix.at(starts[i]);
+      if (vx === null) return null;
+      const rv = isIndex ? null : realizedVolAnnual(closes.slice(Math.max(0, i - 70), i + 1));
+      return modelVol(u, vx, rv);
+    };
+    for (let i = INDICATOR_WARMUP_BARS; i < candles.length - 1; i++) {
+      const entryMs = ends[i];
+      const minute = istParts(entryMs).minuteOfDay;
+      if (minute < cfg.entryStartMinuteIst || minute > cfg.entryEndMinuteIst) continue;
+      const dateStr = istDate(entryMs);
+      const vixNow = vix.at(starts[i]);
+      const vixPctile = vixNow === null ? null : vix.percentile(dateStr, vixNow);
+      const detected = detectSignal(candles, rows, i, vixPctile);
+      if (!detected) continue;
+      const sig = flipDirection ? { ...detected, direction: detected.direction === "CE" ? "PE" : "CE" } : detected;
+      counts.signals++;
+      if (i <= busyUntil[sig.direction]) {
+        counts.overlapping++;
+        continue;
       }
-    }
-    if (seenSnapIds.has(pt.snapshotId)) {
-      pt.snapshotId = `${pt.snapshotId}-${idx}`;
-    }
-    seenSnapIds.add(pt.snapshotId);
-  });
-  for (let c = 0; c < safeCycles; c++) {
-    const seq = ++monotonicSeq;
-    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-    const cycleNum = seq + state2.closedTrades.length;
-    const phase = Math.sin(seq * 12.9898 + state2.closedTrades.length * 78.233) * 43758.5453;
-    const rand = phase - Math.floor(phase);
-    for (const sym of underlyings) {
-      const existing = cachedSpots[sym];
-      const cur = existing?.spot ?? BASE_SPOTS[sym] ?? 1e3;
-      if (c === 0 && safeCycles === 1 && existing?.source === "ANGEL_ONE_LIVE") {
-        cachedSpots[sym] = {
-          ...existing,
-          updatedAt: nowIso
-        };
-      } else {
-        const symHash = sym.charCodeAt(0) + sym.charCodeAt(sym.length - 1) + cycleNum;
-        const microShock = Math.sin(symHash * 0.73) * 42e-4 + (rand - 0.482) * 55e-4;
-        const nextSpot = Number(Math.max(50, cur * (1 + microShock)).toFixed(2));
-        cachedSpots[sym] = {
-          ...existing,
-          symbol: sym,
-          angelToken: existing?.angelToken ?? ANGEL_ONE_NSE_TOKENS[sym]?.angelToken,
-          spot: nextSpot,
-          changePct: Number((microShock * 100).toFixed(2)),
-          source: existing?.source ?? "NSE_SIM_BAR",
-          updatedAt: nowIso
-        };
-      }
-    }
-    if (c === 0 && safeCycles === 1 && cachedSpots.INDIA_VIX?.source === "ANGEL_ONE_LIVE") {
-      state2.health.indiaVixLevel = cachedSpots.INDIA_VIX.spot;
-    } else {
-      const vixDrift = (rand - 0.495) * 0.35;
-      state2.health.indiaVixLevel = Number(
-        Math.max(10.5, Math.min(28, state2.health.indiaVixLevel + vixDrift)).toFixed(2)
-      );
-    }
-    state2.health.niftySpot = cachedSpots.NIFTY.spot;
-    state2.health.bankNiftySpot = cachedSpots.BANKNIFTY.spot;
-    if (state2.health.indiaVixLevel >= 21.5) {
-      state2.health.currentRegime = "high_volatility";
-    } else if (cachedSpots.NIFTY.changePct > 0.08) {
-      state2.health.currentRegime = "trending_up";
-    } else if (cachedSpots.NIFTY.changePct < -0.12) {
-      state2.health.currentRegime = "trending_down";
-    } else {
-      state2.health.currentRegime = "range";
-    }
-    const remainingPositions = [];
-    for (const pos of state2.openPositions) {
-      const posHash = pos.positionId.charCodeAt(pos.positionId.length - 1) + seq;
-      const posPhase = Math.sin(posHash * 19.19) * 1e4;
-      const posRand = posPhase - Math.floor(posPhase);
-      const isSpreadPos = pos.contractSymbol.includes("SPREAD");
-      const liveLongNfo = pos.angelToken ? cachedOpenPositionNfoMarks[pos.angelToken] : void 0;
-      const liveShortNfo = pos.shortAngelToken ? cachedOpenPositionNfoMarks[pos.shortAngelToken] : void 0;
-      let nextMark = pos.currentMarkPrice;
-      let exitBid = Number(Math.max(0.5, nextMark * 0.988).toFixed(2));
-      let exitAsk = Number((nextMark * 1.012).toFixed(2));
-      const liveRawMark = liveLongNfo && liveLongNfo.ltp > 0 ? isSpreadPos && liveShortNfo && liveShortNfo.ltp > 0 ? Number(Math.max(1, liveLongNfo.ltp - liveShortNfo.ltp).toFixed(2)) : Number(liveLongNfo.ltp.toFixed(2)) : 0;
-      const brokerTickDelta = liveLongNfo && liveLongNfo.prevLtp !== void 0 ? Math.abs(liveLongNfo.ltp - liveLongNfo.prevLtp) : 0;
-      const hasActiveLiveTick = c === 0 && safeCycles === 1 && istMarketCheck.isOpen && liveRawMark > 0 && brokerTickDelta >= 0.05;
-      if (hasActiveLiveTick && liveLongNfo) {
-        nextMark = liveRawMark;
-        if (isSpreadPos && liveShortNfo && liveShortNfo.ltp > 0) {
-          exitBid = Number(Math.max(0.5, liveLongNfo.bestBid - liveShortNfo.bestAsk).toFixed(2));
-          exitAsk = Number(
-            Math.max(exitBid + 0.25, liveLongNfo.bestAsk - liveShortNfo.bestBid).toFixed(2)
-          );
-        } else {
-          exitBid = liveLongNfo.bestBid;
-          exitAsk = liveLongNfo.bestAsk;
-        }
-        pos.quoteSource = "ANGEL_ONE_NFO_L2";
-      } else {
-        if (liveLongNfo && liveLongNfo.ltp > 0) {
-          pos.quoteSource = "ANGEL_ONE_NFO_L2";
-        }
-        const edgeBias = (state2.learning.walkForwardAuc > 0.75 ? 0.024 : state2.learning.walkForwardAuc > 0.68 ? 0.018 : 0.012) + (isSpreadPos ? 7e-3 : 0);
-        const optionPctMove = (posRand - 0.468) * 0.34 + edgeBias;
-        nextMark = Number(
-          Math.max(1, pos.currentMarkPrice * (1 + optionPctMove)).toFixed(2)
-        );
-        const halfSpreadFrac = liveLongNfo && liveLongNfo.ltp > 0 ? Math.min(
-          0.015,
-          Math.max(
-            4e-3,
-            (liveLongNfo.bestAsk - liveLongNfo.bestBid) / (2 * Math.max(liveLongNfo.ltp, 1))
-          )
-        ) : 0.011;
-        exitBid = Number(Math.max(0.5, nextMark * (1 - halfSpreadFrac)).toFixed(2));
-        exitAsk = Number((nextMark * (1 + halfSpreadFrac)).toFixed(2));
-      }
-      pos.peakMarkPrice = Number(Math.max(pos.peakMarkPrice, nextMark).toFixed(2));
-      const mfeSoFar = (pos.peakMarkPrice - pos.conservativeEntryPrice) / pos.conservativeEntryPrice;
-      const breakevenLocked = mfeSoFar >= 0.18 && nextMark <= pos.conservativeEntryPrice * 1.032;
-      if (breakevenLocked) {
-        nextMark = Number((pos.conservativeEntryPrice * 1.035).toFixed(2));
-        exitBid = Number(Math.max(0.5, nextMark * 0.99).toFixed(2));
-        exitAsk = Number((nextMark * 1.01).toFixed(2));
-      }
-      pos.currentMarkPrice = nextMark;
-      pos.troughMarkPrice = Number(Math.min(pos.troughMarkPrice, nextMark).toFixed(2));
-      const legFeeInr = isSpreadPos ? 70 : 35;
-      const exitSim = simulatePessimisticFill(
-        "SELL",
-        pos.lotsQty,
-        exitBid,
-        exitAsk,
-        pos.lotSize,
-        void 0,
-        {
-          spreadSlippageFraction: 0.35,
-          feePerLotInr: legFeeInr,
-          rejectZeroBid: true
-        }
-      );
-      const entryCost = pos.conservativeEntryPrice * pos.lotsQty * pos.lotSize + pos.lotsQty * legFeeInr;
-      pos.unrealizedPnlInr = Number((exitSim.conservativeTotalCashInr - entryCost).toFixed(2));
-      pos.unrealizedPnlPct = Number((pos.unrealizedPnlInr / Math.max(entryCost, 1)).toFixed(4));
-      if (seq % 5 === 0) {
-        pos.tradingDaysHeld += 1;
-        pos.dte = Math.max(1, pos.dte - 1);
-      }
-      const rawExitDecision = evaluatePositionExit({
-        dte: pos.dte,
-        isIntradayFlagged: pos.isIntradayFlagged,
-        isPreCloseWindow: pos.tradingDaysHeld >= 1 && seq % 18 === 0,
-        entryPrice: pos.conservativeEntryPrice,
-        currentMarkPrice: pos.currentMarkPrice,
-        peakMarkPrice: pos.peakMarkPrice,
-        tradingDaysHeld: pos.tradingDaysHeld,
-        positionRight: pos.right
+      const expiry = modelExpiries(u, dateStr).find((e) => {
+        const d = calendarDaysBetween(dateStr, e);
+        return d >= cfg.minDte && d <= cfg.maxDte;
       });
-      const exitDecision = breakevenLocked ? {
-        ...rawExitDecision,
-        shouldExit: true,
-        exitReason: "TRAILING_STOP",
-        detail: "Breakeven-Lock Capital Preservation Stop (+3.5% locked after +18% MFE)"
-      } : rawExitDecision;
-      if (exitDecision.shouldExit) {
-        positionsClosed++;
-        const entryBid = Number((pos.brokerPaperEntryPrice * 0.986).toFixed(2));
-        const entryAsk = Number((pos.brokerPaperEntryPrice * 1.014).toFixed(2));
-        const entryFill = simulatePessimisticFill(
-          "BUY",
-          pos.lotsQty,
-          entryBid,
-          entryAsk,
-          pos.lotSize,
-          void 0,
-          {
-            spreadSlippageFraction: 0.35,
-            feePerLotInr: legFeeInr,
-            rejectZeroBid: true
-          }
-        );
-        const rt = calculateRoundtripPnl(pos.lotsQty, entryFill, exitSim);
-        const mfePct = Number(
-          ((pos.peakMarkPrice - pos.conservativeEntryPrice) / pos.conservativeEntryPrice).toFixed(4)
-        );
-        const maePct = Number(
-          ((pos.troughMarkPrice - pos.conservativeEntryPrice) / pos.conservativeEntryPrice).toFixed(
-            4
-          )
-        );
-        const pmLabel = classifyTradePostMortem({
-          exitReason: exitDecision.exitReason,
-          conservativePnlInr: rt.conservativePnlInr,
-          conservativePnlPct: rt.conservativePnlPct,
-          brokerPaperPnlInr: rt.brokerPaperPnlInr,
-          mfePct,
-          spreadPctAtEntry: entryFill.spreadPctOfMid,
-          signedUnderlyingMovePct: rt.conservativePnlInr > 0 ? 0.012 : -8e-3,
-          ivChangePct: -0.015,
-          postExit60mOptionReturnPct: 0.04,
-          regimeAtEntry: pos.regimeAtEntry,
-          regimeAtExit: state2.health.currentRegime
+      if (!expiry) {
+        reject("no expiry inside the DTE window");
+        continue;
+      }
+      const vol = volAt(i);
+      if (vol === null) {
+        reject("no volatility input");
+        continue;
+      }
+      const dte = calendarDaysBetween(dateStr, expiry);
+      const expiryMs = istToMs(expiry, 15, 30);
+      const spot = closes[i];
+      const step = modelStrikeStep(u, spot);
+      const atm = Math.round(spot / step) * step;
+      const chain = [];
+      const quotes = {};
+      for (let k = -(cfg.maxShortSteps + 1); k <= cfg.maxShortSteps + 1; k++) {
+        const strike = round22(atm + k * step);
+        if (strike <= 0) continue;
+        const token = `${u}-${expiry}-${strike}-${sig.direction}`;
+        chain.push({ token, symbol: `${u} ${expiry} ${strike} ${sig.direction}`, strike, lotSize: lot });
+        const mid = bsPrice(spot, strike, (expiryMs - entryMs) / YEAR_MS, vol, RISK_FREE, sig.direction);
+        quotes[token] = modelQuote(token, mid, spreadPct, entryMs);
+      }
+      const built = buildSpreadPlan({
+        underlying: u,
+        right: sig.direction,
+        expiry,
+        dte,
+        spot,
+        chain,
+        quotes,
+        budgetPerTradeInr: budgetPerTrade,
+        nowMs: entryMs,
+        cfg
+      });
+      if (!built.ok) {
+        reject(built.reason);
+        continue;
+      }
+      const plan = built.plan;
+      let exitIdx = -1;
+      let exitValue = 0;
+      let exitReason = null;
+      let exitLongBid = 0;
+      let exitShortAsk = 0;
+      let sessions = 1;
+      let lastDate = dateStr;
+      for (let j = i + 1; j < candles.length; j++) {
+        const tj = ends[j];
+        const dj = istDate(tj);
+        if (dj !== lastDate) {
+          sessions++;
+          lastDate = dj;
+        }
+        const volJ = volAt(j) ?? vol;
+        const tYears = (expiryMs - tj) / YEAR_MS;
+        const lq = modelQuote(plan.long.token, bsPrice(closes[j], plan.long.strike, tYears, volJ, RISK_FREE, plan.right), spreadPct, tj);
+        const sq = modelQuote(plan.short.token, bsPrice(closes[j], plan.short.strike, tYears, volJ, RISK_FREE, plan.right), spreadPct, tj);
+        const liq = Math.max(0, round22(lq.bid - sq.ask));
+        const reason = evaluateSpreadExit({
+          plan,
+          liquidationValue: liq,
+          sessionsHeld: sessions,
+          dte: calendarDaysBetween(dj, expiry),
+          cfg
         });
-        const structureTag = isSpreadPos ? pos.right === "CE" ? "Bull Call Spread (-65% Theta)" : "Bear Put Spread (-65% Theta)" : `Single-Leg ${pos.right}`;
-        const posTech = cachedTechnicals[pos.underlying];
-        const tradeId = `NSE-TRD-${1001 + state2.closedTrades.length}`;
-        state2.closedTrades.unshift({
-          tradeId,
-          contractSymbol: pos.contractSymbol,
-          underlying: pos.underlying,
-          right: pos.right,
-          lotSize: pos.lotSize,
-          strategyName: pos.strategyName,
-          regimeAtEntry: pos.regimeAtEntry,
-          regimeAtExit: state2.health.currentRegime,
-          isShadowChallenger: false,
-          modelVersion: state2.control.activeChampionVersion,
-          lotsQty: pos.lotsQty,
-          dteAtEntry: pos.dte + pos.tradingDaysHeld,
-          deltaAtEntry: pos.delta,
-          ivRankAtEntry: pos.ivRankPct,
-          spreadPctAtEntry: entryFill.spreadPctOfMid,
-          confidenceAtEntry: posTech?.signalConfidence ?? 0.76,
-          rsiAtEntry: posTech?.rsi14 ?? 55.2,
-          adxAtEntry: posTech?.adx14 ?? 25.8,
-          atrPctAtEntry: posTech?.atrPct ?? 0.0125,
-          indiaVixAtEntry: state2.health.indiaVixLevel,
-          timeOfDayBucket: timeBuckets[cycleNum % timeBuckets.length],
-          conservativeEntryPrice: entryFill.conservativeFillPrice,
-          conservativeExitPrice: exitSim.conservativeFillPrice,
-          brokerPaperEntryPrice: entryFill.brokerPaperFillPrice,
-          brokerPaperExitPrice: exitSim.brokerPaperFillPrice,
-          feesTotalInr: Number((entryFill.feeInr + exitSim.feeInr).toFixed(2)),
-          conservativePnlInr: rt.conservativePnlInr,
-          conservativePnlPct: rt.conservativePnlPct,
-          brokerPaperPnlInr: rt.brokerPaperPnlInr,
-          brokerPaperPnlPct: rt.brokerPaperPnlPct,
-          maePct,
-          mfePct,
-          holdMinutes: Math.max(45, pos.tradingDaysHeld * 180 + 60),
-          entryReason: `${structureTag} on ${pos.underlying}${pos.angelToken ? ` [Angel Token #${pos.angelToken}]` : ""} (${pos.strategyName}) approved by Quality Gate ${state2.control.activeChampionVersion}`,
-          exitReason: exitDecision.exitReason,
-          postMortemLabel: pmLabel,
-          diagnosisNotes: `Closed ${structureTag} via ${exitDecision.exitReason} (${pmLabel}): Cons \u20B9${entryFill.conservativeFillPrice.toFixed(2)} -> \u20B9${exitSim.conservativeFillPrice.toFixed(2)} (Net ${rt.conservativePnlInr >= 0 ? "+" : ""}\u20B9${rt.conservativePnlInr.toFixed(2)}).`,
-          openedAt: pos.openedAt,
-          closedAt: nowIso,
-          angelToken: pos.angelToken,
-          quoteSource: pos.quoteSource ?? "ANGEL_ONE_SPOT_BS"
-        });
-        const bucketMatch = state2.learning.banditAllocations.find(
-          (b) => b.bucketKey.includes(pos.strategyName) && b.bucketKey.includes(pos.underlying)
-        );
-        if (bucketMatch) {
-          if (rt.conservativePnlInr > 0) bucketMatch.wins += 1;
-          else bucketMatch.losses += 1;
-          bucketMatch.totalTrades = bucketMatch.wins + bucketMatch.losses;
-          const winRatio = bucketMatch.wins / Math.max(1, bucketMatch.totalTrades);
-          bucketMatch.allocationWeight = Number(
-            Math.max(0.05, Math.min(0.4, winRatio * 0.42)).toFixed(3)
-          );
-          bucketMatch.riskBudgetMultiplier = Number(
-            Math.max(0.5, Math.min(1, winRatio * 1.45)).toFixed(2)
-          );
-          if (bucketMatch.totalTrades >= 30) {
-            bucketMatch.status = `Active Adaptation (${bucketMatch.totalTrades} trades)`;
-          }
+        if (reason) {
+          exitIdx = j;
+          exitValue = liq;
+          exitReason = reason;
+          exitLongBid = lq.bid;
+          exitShortAsk = sq.ask;
+          break;
         }
-        state2.learning.championVsChallenger.shadowTradesCompleted += 1;
-        state2.learning.closedTradesCount = state2.closedTrades.length;
-        state2.learning.tradesNeededForGbdt = Math.max(0, 200 - state2.closedTrades.length);
-        latestActionSummary2 = `Closed ${pos.contractSymbol} via ${exitDecision.exitReason} (${rt.conservativePnlInr >= 0 ? "+" : ""}\u20B9${rt.conservativePnlInr.toFixed(2)}) \xB7 Post-mortem: ${pmLabel}`;
-      } else {
-        remainingPositions.push(pos);
       }
-    }
-    state2.openPositions = remainingPositions;
-    const candidateUnderlying = underlyings[cycleNum % underlyings.length];
-    const liveTech = cachedTechnicals[candidateUnderlying];
-    const candidateStrat = c === 0 && safeCycles === 1 && liveTech ? liveTech.recommendedStrategy : strategies[cycleNum % strategies.length];
-    const lotSize = NSE_LOT_SIZES[candidateUnderlying] ?? 75;
-    const spot = cachedSpots[candidateUnderlying]?.spot ?? BASE_SPOTS[candidateUnderlying] ?? 24480;
-    const optRight = c === 0 && safeCycles === 1 && liveTech ? liveTech.trendSignal : state2.health.currentRegime === "trending_down" ? "PE" : rand > 0.3 ? "CE" : "PE";
-    const strikeStep = getStrikeStep2(candidateUnderlying);
-    const nfoPair = cachedNfoPairsByUnderlying[candidateUnderlying];
-    const hasLiveNfo = c === 0 && safeCycles === 1 && Boolean(nfoPair?.longLeg && nfoPair.longLeg.right === optRight && nfoPair.longLeg.ltp > 0);
-    const strike = hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.strike : Math.round(spot * (optRight === "CE" ? 1.003 : 0.997) / strikeStep) * strikeStep;
-    const dte = 14 + cycleNum % 14;
-    const ivAnnual = Math.max(0.13, state2.health.indiaVixLevel / 100);
-    const bsFallback = blackScholesOptionPrice({
-      spot,
-      strike,
-      dteDays: dte,
-      ivAnnual,
-      riskFreeRate: 0.068,
-      right: optRight
-    });
-    const longBid = hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.bestBid : bsFallback.bid;
-    const longAsk = hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.bestAsk : bsFallback.ask;
-    const longMid = Number(((longBid + longAsk) / 2).toFixed(2));
-    const solvedLongGreeks = solveImpliedVolatilityAndGreeks({
-      marketPrice: longMid,
-      spot,
-      strike,
-      dteDays: dte,
-      riskFreeRate: 0.068,
-      right: optRight
-    });
-    const spreadPct = Number(((longAsk - longBid) / Math.max(longMid, 1)).toFixed(4));
-    const confidence = c === 0 && safeCycles === 1 && liveTech ? liveTech.signalConfidence : Number((0.56 + rand * 0.34).toFixed(2));
-    const adx14 = c === 0 && safeCycles === 1 && liveTech ? liveTech.adx14 : Number((18 + rand * 18).toFixed(1));
-    const ivRankPct = hasLiveNfo ? Number(
-      Math.max(
-        15,
-        Math.min(90, (solvedLongGreeks.impliedVolAnnual * 100 - 11) / 14 * 100)
-      ).toFixed(1)
-    ) : Number((25 + rand * 55).toFixed(1));
-    const isMidday = cycleNum % 3 === 1;
-    const useVerticalSpread = ivRankPct >= 45 || state2.health.indiaVixLevel >= 14.5;
-    const shortStrike = hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike ? nfoPair.shortLeg.strike : optRight === "CE" ? strike + strikeStep * 2 : Math.max(strikeStep, strike - strikeStep * 2);
-    const shortBsFallback = blackScholesOptionPrice({
-      spot,
-      strike: shortStrike,
-      dteDays: dte,
-      ivAnnual,
-      riskFreeRate: 0.068,
-      right: optRight
-    });
-    const shortBid = hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike ? nfoPair.shortLeg.bestBid : shortBsFallback.bid;
-    const shortAsk = hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike ? nfoPair.shortLeg.bestAsk : shortBsFallback.ask;
-    const shortDelta = hasLiveNfo && nfoPair?.shortLeg && nfoPair.shortLeg.strike !== strike ? solveImpliedVolatilityAndGreeks({
-      marketPrice: (shortBid + shortAsk) / 2,
-      spot,
-      strike: shortStrike,
-      dteDays: dte,
-      riskFreeRate: 0.068,
-      right: optRight
-    }).delta : shortBsFallback.delta;
-    const gateEval = predictLearnedQualityGateProb(state2, {
-      confidence,
-      spreadPct,
-      adx14,
-      ivRankPct,
-      isMiddayIst: isMidday,
-      dte,
-      isVerticalSpread: useVerticalSpread
-    });
-    const expiryTag = hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.expiryCode : "23NOV26";
-    const contractSym = useVerticalSpread ? `${candidateUnderlying}${expiryTag}${strike}/${shortStrike}${optRight}_SPREAD` : hasLiveNfo && nfoPair?.longLeg ? nfoPair.longLeg.tradingSymbol : `${candidateUnderlying}${expiryTag}${strike}${optRight}`;
-    if (!gateEval.passed) {
-      signalsSkippedByGate++;
-      const activeThresholdPct = (Math.max(0.67, state2.learning.qualityGateThreshold) * 100).toFixed(1);
-      const cfMove = gateEval.prob < 0.67 ? -(0.12 + rand * 0.18) : (rand - 0.55) * 0.22;
-      const cfExit = Number(Math.max(0.5, longMid * (1 + cfMove)).toFixed(2));
-      state2.skippedSignals.unshift({
-        signalId: `SIG-SKIP-${seq}`,
-        generatedAt: nowIso,
-        underlying: candidateUnderlying,
-        strategyName: candidateStrat,
-        direction: optRight,
-        regime: state2.health.currentRegime,
-        confidence,
-        qualityGateProb: gateEval.prob,
-        skipReason: `Capital-Preservation Gate P(gain)=${(gateEval.prob * 100).toFixed(1)}% < ${activeThresholdPct}% threshold (Hard Floor 67% \u2014 IVR ${ivRankPct}%, Spread ${(spreadPct * 100).toFixed(1)}%)`,
-        counterfactualContract: contractSym,
-        counterfactualEntryPrice: longMid,
-        counterfactualExitPrice: cfExit,
-        counterfactualPnlPct: Number(cfMove.toFixed(4))
-      });
-      if (state2.skippedSignals.length > 40) {
-        state2.skippedSignals.pop();
+      if (exitIdx < 0 || !exitReason) {
+        counts.incomplete++;
+        continue;
       }
-    } else {
-      const latestSnap = state2.equitySeries[state2.equitySeries.length - 1];
-      const baseCapitalInr = state2.equitySeries[0]?.conservativeEquityInr ?? INITIAL_REAL_CAPITAL_INR;
-      const peakEq = Math.max(
-        ...state2.equitySeries.map((s) => s.conservativeEquityInr),
-        baseCapitalInr
-      );
-      const openPrem = state2.openPositions.reduce(
-        (acc, p) => acc + p.conservativeEntryPrice * p.lotsQty * p.lotSize,
-        0
-      );
-      let rawConsUnitPx = 0;
-      let entryFeePerLotInr = 35;
-      let netDelta = solvedLongGreeks.delta;
-      let netTheta = solvedLongGreeks.thetaPerDay;
-      if (useVerticalSpread) {
-        const spreadSim = simulateVerticalDebitSpreadFill({
-          right: optRight,
-          lotsQty: 1,
-          longBid,
-          longAsk,
-          shortBid,
-          shortAsk,
-          lotSize
-        });
-        rawConsUnitPx = spreadSim.conservativeNetDebitPerUnit;
-        entryFeePerLotInr = spreadSim.totalEntryFeeInr;
-        netDelta = Number((solvedLongGreeks.delta - shortDelta).toFixed(3));
-        netTheta = Number((solvedLongGreeks.thetaPerDay * 0.35).toFixed(2));
-      } else {
-        const entrySim = simulatePessimisticFill("BUY", 1, longBid, longAsk, lotSize);
-        rawConsUnitPx = entrySim.conservativeFillPrice;
-        entryFeePerLotInr = entrySim.feeInr;
-      }
-      const bucketHit = state2.learning.banditAllocations.find(
-        (b) => b.strategy === candidateStrat && (b.underlying === candidateUnderlying || b.underlying === "STOCK_FNO" && !["NIFTY", "BANKNIFTY", "FINNIFTY"].includes(candidateUnderlying))
-      );
-      const smartSizing = computeSmartFundAwarePositionSize({
-        currentEquityInr: latestSnap.conservativeEquityInr,
-        openLockedCapitalInr: openPrem,
-        rawSpreadMidPerUnit: rawConsUnitPx,
-        entryFeePerLotInr,
-        lotSize,
-        qualityGateProb: gateEval.prob,
-        banditRiskMultiplier: bucketHit ? bucketHit.riskBudgetMultiplier : 0.85
-      });
-      const effectiveEntryPx = smartSizing.conservativeUnitEntryPrice;
-      const sizedLots = Math.max(1, smartSizing.lotsQty);
-      const totalEntryFeeInr = Number((entryFeePerLotInr * sizedLots).toFixed(2));
-      const riskCheck = evaluateRiskAndSize({
-        currentEquityInr: Math.max(latestSnap.conservativeEquityInr, 1e6),
-        peakEquityInr: Math.max(latestSnap.conservativeEquityInr, 1e6),
-        dailyStartEquityInr: Math.max(latestSnap.conservativeEquityInr, 1e6),
-        openPositionsCount: state2.openPositions.length,
-        openPositionsForUnderlying: state2.openPositions.filter(
-          (p) => p.underlying === candidateUnderlying
-        ).length,
-        currentOpenPremiumInr: Math.min(openPrem, 5e4),
-        conservativeEntryPrice: effectiveEntryPx,
-        lotSize,
-        feePerLotInr: entryFeePerLotInr,
-        newEntriesEnabled: state2.control.newEntriesEnabled
-      });
-      if (riskCheck.allowed && smartSizing.lotsQty >= 1 && state2.openPositions.length < 5) {
-        entriesOpened++;
-        const angelLongTok = hasLiveNfo ? nfoPair?.longLeg?.symbolToken : void 0;
-        const angelShortTok = hasLiveNfo && useVerticalSpread ? nfoPair?.shortLeg?.symbolToken : void 0;
-        const newPos = {
-          positionId: `POS-NSE-${seq}`,
-          tradeId: `NSE-TRD-${seq}`,
-          contractSymbol: contractSym,
-          underlying: candidateUnderlying,
-          right: optRight,
-          strike,
-          lotSize,
-          expirationDate: "2026-11-26",
+      busyUntil[sig.direction] = exitIdx;
+      const entryCash = plan.entryDebit * lot + plan.entryChargesPerLot;
+      const exitCash = exitValue * lot - exitChargesFor(exitLongBid, exitShortAsk, lot);
+      const pnl = round22(exitCash - entryCash);
+      trades.push({
+        id: `R-${u}-${sig.direction}-${starts[i]}`,
+        underlying: u,
+        strategy: sig.strategy,
+        direction: sig.direction,
+        regime: sig.regime,
+        entryAt: new Date(entryMs).toISOString(),
+        exitAt: new Date(ends[exitIdx]).toISOString(),
+        entryMs,
+        exitMs: ends[exitIdx],
+        expiry,
+        dte,
+        spot,
+        longStrike: plan.long.strike,
+        shortStrike: plan.short.strike,
+        lotSize: lot,
+        entryDebit: plan.entryDebit,
+        exitValue,
+        pnlPerLotInr: pnl,
+        maxLossPerLotInr: plan.maxLossPerLot,
+        rMultiple: pnl / plan.maxLossPerLot,
+        sessionsHeld: sessions,
+        exitReason,
+        vixPctile,
+        features: buildFeatures(sig, {
+          vixPctile,
+          isIndex,
           dte,
-          strategyName: candidateStrat,
-          regimeAtEntry: state2.health.currentRegime,
-          lotsQty: sizedLots,
-          conservativeEntryPrice: effectiveEntryPx,
-          brokerPaperEntryPrice: Number((effectiveEntryPx * 0.988).toFixed(2)),
-          currentMarkPrice: effectiveEntryPx,
-          peakMarkPrice: effectiveEntryPx,
-          troughMarkPrice: effectiveEntryPx,
-          unrealizedPnlInr: -totalEntryFeeInr,
-          unrealizedPnlPct: -3e-3,
-          delta: netDelta,
-          theta: netTheta,
-          ivRankPct,
-          stopLossPrice: Number((effectiveEntryPx * 0.72).toFixed(2)),
-          takeProfitPrice: Number((effectiveEntryPx * 1.48).toFixed(2)),
-          trailingStopActivationPrice: Number((effectiveEntryPx * 1.24).toFixed(2)),
-          tradingDaysHeld: 0,
-          isIntradayFlagged: candidateStrat === "breakout_momentum",
-          openedAt: nowIso,
-          angelToken: angelLongTok,
-          shortAngelToken: angelShortTok,
-          underlyingSpotAtEntry: spot,
-          quoteSource: hasLiveNfo ? "ANGEL_ONE_NFO_L2" : "ANGEL_ONE_SPOT_BS"
-        };
-        state2.openPositions.unshift(newPos);
-        const structLabel = useVerticalSpread ? optRight === "CE" ? "Bull Call Debit Spread (-65% Theta)" : "Bear Put Debit Spread (-65% Theta)" : `Long ${optRight}`;
-        const feedTag = angelLongTok ? ` \xB7 Angel NFO #${angelLongTok}` : "";
-        latestActionSummary2 = `Opened ${sizedLots} lot${sizedLots > 1 ? "s" : ""} (${sizedLots * lotSize} units \xB7 \u20B9${smartSizing.totalCapitalCommittedInr.toFixed(0)}/${latestSnap.conservativeEquityInr.toFixed(
-          0
-        )} fund) ${contractSym} [${structLabel}${feedTag}] @ \u20B9${effectiveEntryPx.toFixed(
-          2
-        )} via ${candidateStrat} (P(gain)=${(gateEval.prob * 100).toFixed(1)}%)`;
-      }
-    }
-    const baseCapitalForSnap = state2.equitySeries[0]?.conservativeEquityInr ?? INITIAL_REAL_CAPITAL_INR;
-    const totalClosedConsPnl = state2.closedTrades.filter((t) => !t.isShadowChallenger).reduce((acc, t) => acc + t.conservativePnlInr, 0);
-    const totalClosedPaperPnl = state2.closedTrades.filter((t) => !t.isShadowChallenger).reduce((acc, t) => acc + t.brokerPaperPnlInr, 0);
-    const totalUnrealized = state2.openPositions.reduce((acc, p) => acc + p.unrealizedPnlInr, 0);
-    const newConsEquity = Number((baseCapitalForSnap + totalClosedConsPnl).toFixed(2));
-    const newPaperEquity = Number((baseCapitalForSnap + totalClosedPaperPnl).toFixed(2));
-    const newNiftyEq = Number(
-      (baseCapitalForSnap + state2.closedTrades.length * 7.5 + seq % 11 * 1.2).toFixed(2)
-    );
-    const peakCons = Math.max(
-      ...state2.equitySeries.map((s) => s.conservativeEquityInr),
-      newConsEquity
-    );
-    const ddPct = Number(((peakCons - newConsEquity) / peakCons).toFixed(4));
-    state2.equitySeries.push({
-      snapshotId: `SNAP-${seq}`,
-      recordedAt: nowIso,
-      conservativeEquityInr: newConsEquity,
-      brokerPaperEquityInr: newPaperEquity,
-      niftyBenchmarkEquityInr: newNiftyEq,
-      realizedPnlInr: Number(totalClosedConsPnl.toFixed(2)),
-      unrealizedPnlInr: Number(totalUnrealized.toFixed(2)),
-      drawdownPct: ddPct,
-      openPositionsCount: state2.openPositions.length
-    });
-    if (state2.equitySeries.length > 220) {
-      state2.equitySeries.shift();
-    }
-    const nTrades = state2.closedTrades.length;
-    state2.learning.closedTradesCount = nTrades;
-    state2.learning.tradesNeededForGbdt = state2.learning.championVersion.includes("gbdt") ? 0 : Math.max(0, 200 - nTrades);
-    if (nTrades >= 200 && !state2.learning.championVersion.includes("gbdt")) {
-      retrainsTriggered++;
-      const prevChamp = state2.learning.championVersion;
-      const newGbdtChamp = "v2.0.0-nse-gbdt-ensemble";
-      state2.learning.previousChampionVersion = prevChamp;
-      state2.learning.championVersion = newGbdtChamp;
-      state2.control.previousChampionVersion = prevChamp;
-      state2.control.activeChampionVersion = newGbdtChamp;
-      state2.learning.challengerVersion = "v2.1.0-nse-gbdt-shadow";
-      state2.learning.modelType = "Gradient-Boosted Decision Trees (60-Tree Depth-2 GBDT + L2 Calibration)";
-      state2.learning.walkForwardAuc = Math.max(0.786, state2.learning.walkForwardAuc);
-      state2.learning.championVsChallenger.readyToPromote = false;
-      state2.learning.championVsChallenger.shadowTradesCompleted = 18;
-      state2.learning.championVsChallenger.championMaxDrawdownPct = 0.01;
-      state2.learning.championVsChallenger.challengerMaxDrawdownPct = 9e-3;
-      const effNow = computeLearningEffectiveness(state2);
-      state2.learning.championVsChallenger.championExpectancyInr = Math.max(
-        1450,
-        effNow.recentTradesExpectancyInr
-      );
-      state2.learning.championVsChallenger.challengerExpectancyInr = Number(
-        (state2.learning.championVsChallenger.championExpectancyInr * 1.15).toFixed(2)
-      );
-      state2.learning.championVsChallenger.statusSummary = `200-Trade Milestone Passed (${nTrades}/200 trades): Active Champion ${newGbdtChamp} (60-Tree Depth-2 GBDT, AUC ${state2.learning.walkForwardAuc.toFixed(
-        3
-      )}) is live. Next-gen Challenger ${state2.learning.challengerVersion} is evaluating in shadow mode (18/50 shadow trades).`;
-      state2.learning.learningLog.unshift({
-        logId: `LL-GBDT-PROMO-${seq}`,
-        loggedAt: nowIso,
-        changeCategory: "GBDT_200_TRADE_MILESTONE_PROMOTION",
-        modelVersion: newGbdtChamp,
-        parameterOrBucket: "active_champion_version (L2 Logistic -> 60-Tree Depth-2 GBDT)",
-        oldValue: `${prevChamp} (AUC 0.742)`,
-        newValue: `${newGbdtChamp} (Walk-Forward AUC 0.786)`,
-        sampleSize: nTrades,
-        bootstrapCi90: `[+\u20B9${Math.round(effNow.recentTradesExpectancyInr * 0.68)}, +\u20B9${Math.round(
-          effNow.recentTradesExpectancyInr * 1.38
-        )}] / trade`,
-        reasonAndEvidence: `200-trade statistical milestone reached (N=${nTrades} closed trades). Promoted GBDT Challenger ${newGbdtChamp} after beating L2 Logistic Champion on out-of-time walk-forward expectancy (+\u20B9${effNow.recentTradesExpectancyInr.toFixed(
-          0
-        )}/trade) and capturing Vertical Spread x INDIA VIX non-linear interactions.`
+          debitRatio: plan.debitRatio,
+          legSpreadPct: plan.legSpreadPct
+        }),
+        reason: sig.reason,
+        plan,
+        exitLongBid,
+        exitShortAsk,
+        isIndex
       });
-      latestActionSummary2 = `200-Trade Milestone Reached (N=${nTrades}): Auto-promoted ${newGbdtChamp} (Walk-Forward AUC 0.786) with Defined-Risk Vertical Spread interactions!`;
-    } else if (nTrades >= 260 && state2.learning.championVersion === "v2.0.0-nse-gbdt-ensemble" && state2.learning.championVsChallenger.shadowTradesCompleted >= 50) {
-      retrainsTriggered++;
-      const prevChamp = state2.learning.championVersion;
-      const nextGbdtChamp = "v2.1.0-nse-gbdt-ensemble";
-      state2.learning.previousChampionVersion = prevChamp;
-      state2.learning.championVersion = nextGbdtChamp;
-      state2.control.previousChampionVersion = prevChamp;
-      state2.control.activeChampionVersion = nextGbdtChamp;
-      state2.learning.challengerVersion = "v2.2.0-nse-gbdt-shadow";
-      state2.learning.modelType = "Gradient-Boosted Decision Trees (80-Tree Depth-3 GBDT + Isotonic Calibration)";
-      state2.learning.walkForwardAuc = Math.max(0.804, state2.learning.walkForwardAuc);
-      state2.learning.championVsChallenger.readyToPromote = false;
-      state2.learning.championVsChallenger.shadowTradesCompleted = 12;
-      const effNow = computeLearningEffectiveness(state2);
-      state2.learning.championVsChallenger.statusSummary = `Active Champion ${nextGbdtChamp} (80-Tree Depth-3 GBDT, AUC ${state2.learning.walkForwardAuc.toFixed(
-        3
-      )}) promoted at N=${nTrades} trades. Shadow Challenger ${state2.learning.challengerVersion} is evaluating online (12/50 shadow trades).`;
-      state2.learning.learningLog.unshift({
-        logId: `LL-GBDT-V21-${seq}`,
-        loggedAt: nowIso,
-        changeCategory: "CHAMPION_PROMOTION",
-        modelVersion: nextGbdtChamp,
-        parameterOrBucket: "active_champion_version (v2.0.0 -> v2.1.0 Depth-3 GBDT)",
-        oldValue: prevChamp,
-        newValue: `${nextGbdtChamp} (Walk-Forward AUC ${state2.learning.walkForwardAuc.toFixed(3)})`,
-        sampleSize: nTrades,
-        bootstrapCi90: `[+\u20B9${Math.round(effNow.recentTradesExpectancyInr * 0.72)}, +\u20B9${Math.round(
-          effNow.recentTradesExpectancyInr * 1.35
-        )}] / trade`,
-        reasonAndEvidence: `Promoted ${nextGbdtChamp} after completing 50+ out-of-sample shadow trades on live Angel One NFO orderbook spreads.`
-      });
-      latestActionSummary2 = `Auto-promoted ${nextGbdtChamp} (80-Tree Depth-3 GBDT, AUC ${state2.learning.walkForwardAuc.toFixed(
-        3
-      )}) at N=${nTrades} closed trades!`;
-    } else if (seq % 5 === 0) {
-      retrainsTriggered++;
-      const baseAuc = state2.learning.championVersion.includes("v2.1") ? 0.802 : state2.learning.championVersion.includes("gbdt") ? 0.786 : 0.695;
-      state2.learning.walkForwardAuc = Number(
-        Math.max(
-          state2.learning.walkForwardAuc,
-          Math.min(0.828, baseAuc + nTrades / 900 * 0.06)
-        ).toFixed(3)
-      );
-      const recent15 = state2.closedTrades.slice(0, 15);
-      const wideSpreadLosses = recent15.filter(
-        (t) => t.postMortemLabel === "bad_fill_wide_spread"
-      ).length;
-      const vixCrushLosses = recent15.filter(
-        (t) => t.postMortemLabel === "theta_or_iv_crush"
-      ).length;
-      for (const fi of state2.learning.featureImportances) {
-        if (fi.feature === "spread_pct_of_mid" && wideSpreadLosses > 0) {
-          fi.weight = Number(Math.max(-1.95, fi.weight - 0.02).toFixed(2));
-        }
-        if (fi.feature === "iv_rank_pct_over_70" && vixCrushLosses > 0) {
-          fi.weight = Number(Math.max(-1.65, fi.weight - 0.02).toFixed(2));
-        }
-        if (fi.feature === "signal_confidence") {
-          fi.weight = Number(Math.min(1.75, fi.weight + 0.01).toFixed(2));
-        }
-      }
-      const eff = computeLearningEffectiveness(state2);
-      if (nTrades >= 6) {
-        state2.learning.championVsChallenger.championExpectancyInr = Math.max(
-          350,
-          eff.recentTradesExpectancyInr
-        );
-        state2.learning.championVsChallenger.challengerExpectancyInr = Number(
-          (state2.learning.championVsChallenger.championExpectancyInr * 1.16).toFixed(2)
-        );
-      }
-      if (state2.learning.championVsChallenger.shadowTradesCompleted >= state2.learning.championVsChallenger.minShadowTradesRequired) {
-        state2.learning.championVsChallenger.readyToPromote = true;
-      }
-      state2.learning.championVsChallenger.statusSummary = `Active Champion ${state2.learning.championVersion} (${state2.learning.modelType}, AUC ${state2.learning.walkForwardAuc.toFixed(
-        3
-      )}) vs Shadow Challenger ${state2.learning.challengerVersion} (${state2.learning.championVsChallenger.shadowTradesCompleted}/${state2.learning.championVsChallenger.minShadowTradesRequired} shadow trades \xB7 Expectancy +\u20B9${state2.learning.championVsChallenger.challengerExpectancyInr.toFixed(
-        0
-      )} vs +\u20B9${state2.learning.championVsChallenger.championExpectancyInr.toFixed(0)}/trade).`;
-      state2.learning.learningLog.unshift({
-        logId: `LL-LIVE-${seq}`,
-        loggedAt: nowIso,
-        changeCategory: "WALK_FORWARD_ONLINE_RETRAIN",
-        modelVersion: state2.learning.championVersion,
-        parameterOrBucket: `Walk-Forward AUC -> ${state2.learning.walkForwardAuc.toFixed(3)}`,
-        oldValue: `N=${Math.max(64, nTrades - 3)} trades`,
-        newValue: `N=${nTrades} trades (Recent Expectancy: +\u20B9${eff.recentTradesExpectancyInr.toFixed(
-          0
-        )}/trade)`,
-        sampleSize: nTrades,
-        bootstrapCi90: `[+\u20B9${Math.round(eff.recentTradesExpectancyInr * 0.55)}, +\u20B9${Math.round(
-          eff.recentTradesExpectancyInr * 1.45
-        )}] / trade`,
-        reasonAndEvidence: `Online walk-forward retrain completed across ${nTrades} closed NSE trades and ${state2.skippedSignals.length} counterfactual skipped signals (Gate saved ~\u20B9${eff.gateAvoidedLossesSavedInr.toLocaleString(
-          "en-IN"
-        )} across ${eff.gateAvoidedLossesCount} avoided losing setups).`
-      });
-      if (state2.learning.learningLog.length > 20) {
-        state2.learning.learningLog.pop();
-      }
     }
-    state2.health.heartbeatAt = nowIso;
-    state2.health.lastCycleAt = nowIso;
-    state2.health.lastDbWriteAt = nowIso;
   }
+  counts.trades = trades.length;
+  return { trades, counts, rejections };
+}
+function summarize(trades) {
+  const rs = trades.map((t) => t.rMultiple);
+  const pnls = trades.map((t) => t.pnlPerLotInr);
   return {
-    cyclesRun: safeCycles,
-    entriesOpened,
-    positionsClosed,
-    signalsSkippedByGate,
-    retrainsTriggered,
-    latestActionSummary: latestActionSummary2,
-    liveQuotes: cachedSpots,
-    angelOneStatus: getAngelOneConnectionStatus(),
-    learningComparison: computeLearningEffectiveness(state2)
+    n: trades.length,
+    winRate: trades.length ? pnls.filter((p) => p > 0).length / trades.length : null,
+    avgR: mean(rs),
+    rCi90: meanCi90(rs),
+    totalR: rs.reduce((a, b) => a + b, 0),
+    expectancyPerLotInr: mean(pnls),
+    profitFactor: profitFactor(pnls),
+    avgSessionsHeld: mean(trades.map((t) => t.sessionsHeld))
+  };
+}
+function runOfflineResearch(cache, opts = {}) {
+  const cfg = opts.cfg ?? DEFAULT_ENGINE_CONFIG;
+  const lotSizes = opts.lotSizes ?? RESEARCH_LOT_SIZES;
+  const vix = buildVixSeries(cache.INDIA_VIX ?? []);
+  const { trades, counts, rejections } = simulateTrades(cache, cfg, lotSizes, vix, false);
+  const flipped = simulateTrades(cache, cfg, lotSizes, vix, true);
+  const samples = trades.map((t) => ({
+    id: t.id,
+    x: t.features,
+    y: t.pnlPerLotInr > 0 ? 1 : 0,
+    r: t.rMultiple,
+    entryMs: t.entryMs,
+    exitMs: t.exitMs,
+    weight: 1,
+    source: "OFFLINE"
+  }));
+  const wf = offlineWalkForward(samples);
+  const pnlOf = (t) => t.pnlPerLotInr;
+  const rOf = (t) => t.rMultiple;
+  const allTimes = UNDERLYINGS.flatMap((u) => (cache[u] ?? []).map((c) => Date.parse(c.time)));
+  const bars = {};
+  for (const [k, v] of Object.entries(cache)) bars[k] = v.length;
+  const buyAndHold = Object.entries(cache).filter(([sym, v]) => sym !== "INDIA_VIX" && v.length > 1).map(([symbol, v]) => ({
+    symbol,
+    from: v[0].time,
+    to: v[v.length - 1].time,
+    returnPct: (v[v.length - 1].close / v[0].close - 1) * 100
+  }));
+  const publicTrade = ({ plan, exitLongBid, exitShortAsk, isIndex, ...rest }) => rest;
+  const sortedByEntry = [...trades].sort((a, b) => a.entryMs - b.entryMs);
+  const report = {
+    kind: "MODEL_PRICED_BACKTEST",
+    generatedAt: new Date(opts.nowMs ?? Date.now()).toISOString(),
+    disclaimer: "Underlying prices are real Angel One hourly bars, but option prices are Black-Scholes estimates with an assumed bid-ask spread. Real option quotes, skew, liquidity gaps and slippage are not captured. Treat this as a prior for the model, not as proof of profitability.",
+    dataFrom: allTimes.length ? new Date(Math.min(...allTimes)).toISOString() : null,
+    dataTo: allTimes.length ? new Date(Math.max(...allTimes)).toISOString() : null,
+    bars,
+    assumptions: [
+      "Signals on completed hourly bars, entry at the bar close between 09:30 and 15:00 IST.",
+      "Vertical debit spreads: long ATM, short 1-4 strikes out of the money, expiry 7-35 days out.",
+      `Option prices: Black-Scholes, r = ${RISK_FREE * 100}%; volatility = India VIX for NIFTY, \xD71.2 BANKNIFTY, \xD71.1 FINNIFTY, max(realised\xD71.15, VIX\xD71.2) for stocks.`,
+      `Assumed bid-ask: ${MODEL_SPREAD_PCT.NIFTY * 100}% NIFTY, ${MODEL_SPREAD_PCT.BANKNIFTY * 100}% BANKNIFTY, ${MODEL_SPREAD_PCT.FINNIFTY * 100}% FINNIFTY, ${STOCK_SPREAD_PCT * 100}% stocks; entries buy at ask / sell at bid, exits the reverse.`,
+      "Charges: \u20B920/order brokerage, STT 0.15% on sell premium, exchange 0.035%, SEBI fee, stamp 0.003% on buys, 18% GST.",
+      `Exits checked at each hourly close: take profit at ${cfg.takeProfitFracOfMaxGain * 100}% of max gain, stop at ${cfg.stopLossFracOfDebit * 100}% of debit, ${cfg.maxHoldSessions}-session time stop, exit at ${cfg.exitAtDte} days to expiry.`,
+      "Expiries: NIFTY weekly on Tuesdays, others on the last Tuesday of the month (holiday shifts ignored).",
+      `Lot sizes are today's (e.g. NIFTY ${lotSizes.NIFTY}); per-lot results use them for the whole year.`,
+      "Trades still open at the end of the data are dropped."
+    ],
+    counts,
+    rejectionReasons: [...rejections.entries()].map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n).slice(0, 8),
+    summary: summarize(trades),
+    oppositeDirectionBaseline: summarize(flipped.trades),
+    byStrategy: groupStats(trades, (t) => t.strategy, pnlOf, rOf),
+    byUnderlying: groupStats(trades, (t) => t.underlying, pnlOf, rOf),
+    byRegime: groupStats(trades, (t) => t.regime, pnlOf, rOf),
+    byDirection: groupStats(trades, (t) => t.direction === "CE" ? "Bull call spread" : "Bear put spread", pnlOf, rOf),
+    byExitReason: groupStats(trades, (t) => t.exitReason, pnlOf, rOf),
+    byMonth: groupStats(trades, (t) => istMonthKey(t.entryMs), pnlOf, rOf).sort((a, b) => a.key.localeCompare(b.key)),
+    walkForward: { folds: wf.folds, oos: summarizeOos(wf.oos), calibration: calibrationBuckets(wf.oos) },
+    portfolio: simulatePortfolio(trades, cfg),
+    buyAndHold,
+    recentTrades: sortedByEntry.slice(-60).reverse().map(publicTrade)
+  };
+  return { report, samples, offlineOos: wf.oos, vix };
+}
+var researchMemo;
+function getOfflineResearch() {
+  if (researchMemo !== void 0) return researchMemo;
+  const cache = loadHistoricalCache();
+  researchMemo = cache ? runOfflineResearch(cache) : null;
+  return researchMemo;
+}
+
+// src/quant/store.ts
+import pg from "pg";
+var MemoryKvStore = class {
+  constructor() {
+    this.rows = /* @__PURE__ */ new Map();
+  }
+  async get(key) {
+    const row = this.rows.get(key);
+    return row ? { rev: row.rev, data: row.data } : null;
+  }
+  async put(key, data, expectedRev) {
+    const current = this.rows.get(key);
+    if (expectedRev === null) {
+      if (current) return { ok: false };
+      this.rows.set(key, { rev: 1, data });
+      return { ok: true, rev: 1 };
+    }
+    if (!current || current.rev !== expectedRev) return { ok: false };
+    const rev = expectedRev + 1;
+    this.rows.set(key, { rev, data });
+    return { ok: true, rev };
+  }
+};
+var PgKvStore = class {
+  constructor(pool2) {
+    this.pool = pool2;
+  }
+  async get(key) {
+    const res = await this.pool.query(
+      `SELECT config_payload_json FROM config_history WHERE config_version_id = $1`,
+      [key]
+    );
+    const payload = res.rows[0]?.config_payload_json;
+    if (!payload || typeof payload.rev !== "number" || !("data" in payload)) return null;
+    return { rev: payload.rev, data: payload.data };
+  }
+  async put(key, data, expectedRev) {
+    const rev = (expectedRev ?? 0) + 1;
+    const payload = JSON.stringify({ rev, data });
+    if (expectedRev === null) {
+      const res2 = await this.pool.query(
+        `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
+         VALUES ($1, NOW(), FALSE, NULL, $2::jsonb, $3)
+         ON CONFLICT (config_version_id) DO NOTHING`,
+        [key, payload, "paper-v2"]
+      );
+      return res2.rowCount === 1 ? { ok: true, rev } : { ok: false };
+    }
+    const res = await this.pool.query(
+      `UPDATE config_history
+       SET config_payload_json = $2::jsonb, applied_at = NOW(), change_summary = $4
+       WHERE config_version_id = $1 AND (config_payload_json->>'rev')::int = $3`,
+      [key, payload, expectedRev, "paper-v2"]
+    );
+    return res.rowCount === 1 ? { ok: true, rev } : { ok: false };
+  }
+};
+var pool = null;
+function databaseConfigured() {
+  return Boolean(process.env.DATABASE_URL_RW || process.env.DATABASE_URL_RO || process.env.DATABASE_URL);
+}
+function createStore() {
+  const url = process.env.DATABASE_URL_RW || process.env.DATABASE_URL_RO || process.env.DATABASE_URL || "";
+  if (!url) return new MemoryKvStore();
+  if (!pool) {
+    pool = new pg.Pool({
+      connectionString: url,
+      max: 1,
+      idleTimeoutMillis: 1e4,
+      connectionTimeoutMillis: 1e4
+    });
+  }
+  return new PgKvStore(pool);
+}
+var KEY_ACTIVE = "PAPER_V2:ACTIVE";
+var KEY_LEASE = "PAPER_V2:LEASE";
+var KEY_INSTRUMENTS = "PAPER_V2:INSTRUMENTS";
+var stateKey = (ledgerId) => `PAPER_V2:${ledgerId}:STATE`;
+var tradesKey = (ledgerId, month) => `PAPER_V2:${ledgerId}:TRADES:${month}`;
+var candidatesKey = (ledgerId, month) => `PAPER_V2:${ledgerId}:CANDIDATES:${month}`;
+var equityKey = (ledgerId, month) => `PAPER_V2:${ledgerId}:EQUITY:${month}`;
+
+// src/quant/paperEngine.ts
+var LEASE_MS = 9e4;
+var OWNER = `paper-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+var round23 = (n) => Math.round(n * 100) / 100;
+var STALE_FORCE_AFTER = 12;
+var TRAIN_EVERY_LABELS = 10;
+function createInitialLedger(nowMs, capital = 5e4) {
+  const starting = Number.isFinite(capital) && capital > 0 ? capital : 5e4;
+  const now = new Date(nowMs).toISOString();
+  return {
+    schema: 2,
+    ledgerId: `L${nowMs.toString(36)}`,
+    createdAt: now,
+    startingCapitalInr: starting,
+    config: { ...DEFAULT_ENGINE_CONFIG, startingCapitalInr: starting },
+    cash: starting,
+    peakEquity: starting,
+    maxDrawdownPct: 0,
+    lastEquity: starting,
+    lastEquityMid: starting,
+    dayDate: null,
+    dayStartEquity: starting,
+    dailyHalt: false,
+    killSwitch: { active: false, reason: null, at: null },
+    control: { entriesEnabled: true, updatedAt: now, updatedBy: "system" },
+    benchmarkStartNifty: null,
+    openPositions: [],
+    activeCandidates: [],
+    lastSignalBar: {},
+    counters: {
+      cycles: 0,
+      tradingCycles: 0,
+      candidatesCreated: 0,
+      candidatesClosed: 0,
+      tradesOpened: 0,
+      tradesClosed: 0,
+      plansRejected: 0,
+      staleMarks: 0,
+      dataErrors: 0
+    },
+    lastCycle: null,
+    lastEquityPointAt: null,
+    market: null,
+    angel: null,
+    instrumentsAsOf: null,
+    model: null,
+    liveLabelsAtLastTrain: 0,
+    liveSamples: [],
+    closedSummaries: [],
+    recentEquity: [],
+    decisionLog: [],
+    learningLog: [],
+    pending: { trades: [], candidates: [], equity: [] }
+  };
+}
+function log(state, kind, message, underlying) {
+  const entry = { t: (/* @__PURE__ */ new Date()).toISOString(), kind, message, ...underlying ? { underlying } : {} };
+  const bucket = kind === "MODEL" ? state.learningLog : state.decisionLog;
+  bucket.unshift(entry);
+  if (state.decisionLog.length > 80) state.decisionLog.length = 80;
+  if (state.learningLog.length > 40) state.learningLog.length = 40;
+}
+function startingCapitalFromEnv() {
+  const n = Number(process.env.PAPER_STARTING_CAPITAL_INR);
+  return Number.isFinite(n) && n > 0 ? n : 5e4;
+}
+async function withLease(store2, fn) {
+  const now = Date.now();
+  const current = await store2.get(KEY_LEASE);
+  if (current && current.data.until > now && current.data.owner !== OWNER) return { busy: true };
+  const claimed = await store2.put(KEY_LEASE, { owner: OWNER, until: now + LEASE_MS }, current ? current.rev : null);
+  if (!claimed.ok) return { busy: true };
+  try {
+    return { busy: false, value: await fn() };
+  } finally {
+    const held = await store2.get(KEY_LEASE);
+    if (held && held.data.owner === OWNER) {
+      await store2.put(KEY_LEASE, { owner: OWNER, until: 0 }, held.rev);
+    }
+  }
+}
+async function loadOrCreate(store2, nowMs) {
+  let active = await store2.get(KEY_ACTIVE);
+  if (!active) {
+    const fresh = createInitialLedger(nowMs, startingCapitalFromEnv());
+    const created = await store2.put(KEY_ACTIVE, { ledgerId: fresh.ledgerId }, null);
+    if (!created.ok) {
+      active = await store2.get(KEY_ACTIVE);
+    } else {
+      const saved = await store2.put(stateKey(fresh.ledgerId), fresh, null);
+      return { state: fresh, rev: saved.ok ? saved.rev : 1 };
+    }
+  }
+  if (!active) throw new Error("Could not create the paper ledger");
+  const row = await store2.get(stateKey(active.data.ledgerId));
+  if (!row) {
+    const fresh = createInitialLedger(nowMs, startingCapitalFromEnv());
+    fresh.ledgerId = active.data.ledgerId;
+    const saved = await store2.put(stateKey(fresh.ledgerId), fresh, null);
+    return { state: fresh, rev: saved.ok ? saved.rev : 1 };
+  }
+  return { state: row.data, rev: row.rev };
+}
+async function archivePending(store2, state) {
+  const groups = [
+    { items: state.pending.trades, keyFor: (m) => tradesKey(state.ledgerId, m) },
+    { items: state.pending.candidates, keyFor: (m) => candidatesKey(state.ledgerId, m) },
+    { items: state.pending.equity, keyFor: (m) => equityKey(state.ledgerId, m) }
+  ];
+  for (const group of groups) {
+    const byMonth = /* @__PURE__ */ new Map();
+    for (const item of group.items) {
+      const when = Date.parse(item.closedAt || item.t || "");
+      const month = Number.isFinite(when) ? istMonthKey(when) : istMonthKey(Date.now());
+      const list = byMonth.get(month);
+      if (list) list.push(item);
+      else byMonth.set(month, [item]);
+    }
+    for (const [month, items] of byMonth) {
+      const key = group.keyFor(month);
+      const existing = await store2.get(key);
+      const merged = /* @__PURE__ */ new Map();
+      for (const old of existing?.data ?? []) {
+        const id = old.id || old.t;
+        if (id) merged.set(id, old);
+      }
+      for (const item of items) {
+        const id = item.id || item.t;
+        if (id) merged.set(id, item);
+      }
+      const saved = await store2.put(key, [...merged.values()], existing ? existing.rev : null);
+      if (!saved.ok) return false;
+    }
+  }
+  return true;
+}
+async function persist(store2, state, rev) {
+  const saved = await store2.put(stateKey(state.ledgerId), state, rev);
+  if (!saved.ok) return false;
+  const pendingCount = state.pending.trades.length + state.pending.candidates.length + state.pending.equity.length;
+  if (pendingCount === 0) return true;
+  const archived = await archivePending(store2, state);
+  if (!archived) return true;
+  state.pending = { trades: [], candidates: [], equity: [] };
+  const cleared = await store2.put(stateKey(state.ledgerId), state, saved.rev);
+  return cleared.ok;
+}
+function mergeCandles(base, extra) {
+  const map = /* @__PURE__ */ new Map();
+  for (const c of base) map.set(c.time, c);
+  for (const c of extra) if (c.close > 0 && c.high >= c.low) map.set(c.time, c);
+  return [...map.values()].sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+}
+function lastCompleteIndex(candles, nowMs) {
+  for (let i = candles.length - 1; i >= 0; i--) {
+    if (hourlyBarEndMs(Date.parse(candles[i].time)) <= nowMs) return i;
+  }
+  return -1;
+}
+function entryMark(plan, nowMs) {
+  const mid = (bid, ask) => bid > 0 && ask > 0 ? (bid + ask) / 2 : bid || ask;
+  return {
+    at: new Date(nowMs).toISOString(),
+    longBid: plan.long.bid,
+    longAsk: plan.long.ask,
+    shortBid: plan.short.bid,
+    shortAsk: plan.short.ask,
+    liquidationValue: round23(plan.long.bid - plan.short.ask),
+    midValue: round23(mid(plan.long.bid, plan.long.ask) - mid(plan.short.bid, plan.short.ask))
+  };
+}
+function markValue(mark, plan, lots) {
+  const units = lots * plan.lotSize;
+  const exitCharges = exitChargesFor(mark.longBid, mark.shortAsk, units);
+  const midCharges = exitChargesFor(Math.max(mark.longBid, 0), Math.max(mark.shortAsk, 0), units);
+  return {
+    liquidationInr: round23(mark.liquidationValue * units - exitCharges),
+    midInr: round23(mark.midValue * units - midCharges),
+    exitCharges
+  };
+}
+function perLotOutcome(plan, exitValue, longBid, shortAsk) {
+  const units = plan.lotSize;
+  const entryCash = plan.entryDebit * units + plan.entryChargesPerLot;
+  const exitCharges = exitChargesFor(longBid, shortAsk, units);
+  const exitCash = exitValue * units - exitCharges;
+  const pnl = round23(exitCash - entryCash);
+  return { pnl, r: plan.maxLossPerLot > 0 ? pnl / plan.maxLossPerLot : 0, exitCharges };
+}
+function bumpSession(item, today) {
+  if (item.lastSessionDate !== today) {
+    item.sessionsHeld += 1;
+    item.lastSessionDate = today;
+  }
+}
+function applyMark(item, quotes, nowMs, cfg, state) {
+  const marked = markSpread(item.plan, quotes, nowMs, cfg.quoteMaxAgeSec);
+  if (!marked.ok) {
+    item.staleMarks += 1;
+    state.counters.staleMarks += 1;
+    return;
+  }
+  item.staleMarks = 0;
+  item.lastMark = marked.mark;
+  item.peakValue = Math.max(item.peakValue, marked.mark.liquidationValue);
+  item.troughValue = Math.min(item.troughValue, marked.mark.liquidationValue);
+}
+function exitReasonFor(item, cfg, today) {
+  if (!item.lastMark) return null;
+  const fromRules = evaluateSpreadExit({
+    plan: item.plan,
+    liquidationValue: item.lastMark.liquidationValue,
+    sessionsHeld: item.sessionsHeld,
+    dte: calendarDaysBetween(today, item.plan.expiry),
+    cfg
+  });
+  if (fromRules) return fromRules;
+  if (item.staleMarks >= STALE_FORCE_AFTER) return "STALE_DATA_FORCED";
+  return null;
+}
+function closeCandidate(state, candidate, reason, nowMs) {
+  const mark = candidate.lastMark;
+  if (!mark) return;
+  const outcome = perLotOutcome(candidate.plan, mark.liquidationValue, mark.longBid, mark.shortAsk);
+  candidate.closedAt = new Date(nowMs).toISOString();
+  candidate.exitReason = reason;
+  candidate.exitValue = mark.liquidationValue;
+  candidate.pnlPerLotInr = outcome.pnl;
+  candidate.pnlPerLotMidInr = round23(
+    (mark.midValue - candidate.plan.midDebit) * candidate.plan.lotSize - candidate.plan.entryChargesPerLot - outcome.exitCharges
+  );
+  candidate.rMultiple = outcome.r;
+  candidate.win = outcome.pnl > 0;
+  state.counters.candidatesClosed += 1;
+  const sample = {
+    id: candidate.id,
+    x: candidate.features,
+    y: outcome.pnl > 0 ? 1 : 0,
+    r: outcome.r,
+    pnlPerLotInr: outcome.pnl,
+    entryMs: Date.parse(candidate.createdAt),
+    exitMs: nowMs,
+    strategy: candidate.strategy,
+    underlying: candidate.underlying,
+    direction: candidate.direction,
+    regime: candidate.regime,
+    exitReason: reason
+  };
+  state.liveSamples.push(sample);
+  state.pending.candidates.push(candidate);
+  log(state, "CANDIDATE", `${candidate.underlying} ${candidate.direction} ${candidate.strategy} closed ${reason}: ${outcome.pnl.toFixed(0)} \u20B9/lot (${outcome.r.toFixed(2)}R)`, candidate.underlying);
+}
+function closePosition(state, position, reason, nowMs) {
+  const mark = position.lastMark;
+  if (!mark) return null;
+  const units = position.lots * position.plan.lotSize;
+  const exitCharges = exitChargesFor(mark.longBid, mark.shortAsk, units);
+  const exitCashIn = round23(mark.liquidationValue * units - exitCharges);
+  state.cash = round23(state.cash + exitCashIn);
+  const net = round23(exitCashIn - position.entryCashOutInr);
+  const trade = {
+    id: `T-${position.id}`,
+    candidateId: position.candidateId,
+    underlying: position.underlying,
+    strategy: position.strategy,
+    direction: position.direction,
+    regimeAtEntry: position.regime,
+    lots: position.lots,
+    lotSize: position.plan.lotSize,
+    expiry: position.plan.expiry,
+    dteAtEntry: position.plan.dte,
+    longSymbol: position.plan.long.symbol,
+    shortSymbol: position.plan.short.symbol,
+    longStrike: position.plan.long.strike,
+    shortStrike: position.plan.short.strike,
+    width: position.plan.width,
+    openedAt: position.openedAt,
+    closedAt: new Date(nowMs).toISOString(),
+    holdMinutes: Math.max(0, Math.round((nowMs - Date.parse(position.openedAt)) / 6e4)),
+    sessionsHeld: position.sessionsHeld,
+    entryDebit: position.plan.entryDebit,
+    exitValue: mark.liquidationValue,
+    entryCashOutInr: position.entryCashOutInr,
+    exitCashInInr: exitCashIn,
+    chargesInr: round23(position.entryCashOutInr - position.plan.entryDebit * units + exitCharges),
+    netPnlInr: net,
+    pnlAtMidInr: round23(mark.midValue * units - exitCharges - (position.plan.midDebit * units + (position.entryCashOutInr - position.plan.entryDebit * units))),
+    maxLossInr: position.maxLossInr,
+    rMultiple: position.maxLossInr > 0 ? net / position.maxLossInr : 0,
+    mfePct: position.plan.entryDebit > 0 ? (position.peakValue - position.plan.entryDebit) / position.plan.entryDebit : 0,
+    maePct: position.plan.entryDebit > 0 ? (position.troughValue - position.plan.entryDebit) / position.plan.entryDebit : 0,
+    exitReason: reason,
+    modelProb: position.modelProb,
+    entryReason: position.entryReason
+  };
+  state.counters.tradesClosed += 1;
+  state.pending.trades.push(trade);
+  const summary = {
+    id: trade.id,
+    closedAt: trade.closedAt,
+    underlying: trade.underlying,
+    strategy: trade.strategy,
+    direction: trade.direction,
+    regime: trade.regimeAtEntry,
+    exitReason: trade.exitReason,
+    netPnlInr: trade.netPnlInr,
+    rMultiple: trade.rMultiple
+  };
+  state.closedSummaries.push(summary);
+  log(state, "EXIT", `${position.underlying} ${position.direction} ${position.lots} lot closed ${reason}: ${net >= 0 ? "+" : ""}\u20B9${net.toFixed(0)}`, position.underlying);
+  return trade;
+}
+function revalue(state, niftyLtp) {
+  let equity = state.cash;
+  let equityMid = state.cash;
+  let unrealized = 0;
+  for (const pos of state.openPositions) {
+    if (!pos.lastMark) continue;
+    const value = markValue(pos.lastMark, pos.plan, pos.lots);
+    equity += value.liquidationInr;
+    equityMid += value.midInr;
+    pos.unrealizedInr = round23(value.liquidationInr - pos.entryCashOutInr);
+    unrealized += pos.unrealizedInr;
+  }
+  equity = round23(equity);
+  equityMid = round23(equityMid);
+  state.lastEquity = equity;
+  state.lastEquityMid = equityMid;
+  if (equity > state.peakEquity) state.peakEquity = equity;
+  const dd = state.peakEquity > 0 ? (state.peakEquity - equity) / state.peakEquity * 100 : 0;
+  if (dd > state.maxDrawdownPct) state.maxDrawdownPct = round23(dd);
+  if (niftyLtp && niftyLtp > 0 && state.benchmarkStartNifty === null) state.benchmarkStartNifty = niftyLtp;
+  const benchmark = state.benchmarkStartNifty && niftyLtp ? round23(state.startingCapitalInr * niftyLtp / state.benchmarkStartNifty) : null;
+  const cfg = state.config;
+  if (state.dayStartEquity > 0 && (equity - state.dayStartEquity) / state.dayStartEquity <= -cfg.dailyLossHaltPct) {
+    if (!state.dailyHalt) log(state, "RISK", `Daily loss limit hit at \u20B9${equity.toFixed(0)}`);
+    state.dailyHalt = true;
+  }
+  if (!state.killSwitch.active && state.peakEquity > 0 && dd >= cfg.drawdownKillPct * 100) {
+    state.killSwitch = {
+      active: true,
+      reason: `Equity \u20B9${equity.toFixed(0)} is ${dd.toFixed(1)}% below the peak of \u20B9${state.peakEquity.toFixed(0)}`,
+      at: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    state.control = { ...state.control, entriesEnabled: false, updatedAt: (/* @__PURE__ */ new Date()).toISOString(), updatedBy: "kill-switch" };
+    log(state, "RISK", state.killSwitch.reason || "Drawdown kill switch tripped");
+  }
+  return { equity, equityMid, unrealized, drawdownPct: round23(dd), benchmark };
+}
+function pushEquityPoint(state, nowMs, point) {
+  const full = { t: new Date(nowMs).toISOString(), ...point };
+  state.recentEquity.push(full);
+  if (state.recentEquity.length > 500) state.recentEquity.splice(0, state.recentEquity.length - 500);
+  state.pending.equity.push(full);
+  state.lastEquityPointAt = full.t;
+}
+function maybeTrain(state, nowMs, force) {
+  const labels = state.counters.candidatesClosed;
+  if (!force && state.model && labels - state.liveLabelsAtLastTrain < TRAIN_EVERY_LABELS) return;
+  const research = getOfflineResearch();
+  const offline = research?.samples ?? [];
+  const live = state.liveSamples.map((s) => ({
+    id: s.id,
+    x: s.x,
+    y: s.y,
+    r: s.r,
+    entryMs: s.entryMs,
+    exitMs: s.exitMs,
+    weight: 1,
+    source: "LIVE"
+  }));
+  if (offline.length + live.length < 30) {
+    log(state, "MODEL", "Not enough closed samples to fit a model yet. Signals are taken whenever risk limits allow.");
+    return;
+  }
+  const snap = trainModelSnapshot(offline, live, nowMs, research ? { oos: research.offlineOos } : void 0);
+  if (!snap) {
+    log(state, "MODEL", "Model fit did not converge. The previous model, if any, is unchanged.");
+    return;
+  }
+  state.model = snap;
+  state.liveLabelsAtLastTrain = labels;
+  log(state, "MODEL", `${snap.version}: ${snap.gate.reason}`);
+}
+function marketLive(spots, nowMs) {
+  const within = isWithinSessionHours(nowMs);
+  if (!within) {
+    const p = istParts(nowMs);
+    const weekend = p.weekday === 0 || p.weekday === 6;
+    return { live: false, reason: weekend ? "Weekend" : p.minuteOfDay < 9 * 60 + 15 ? "Before 09:15 IST" : "After 15:30 IST" };
+  }
+  const nifty = spots.NIFTY;
+  if (!nifty) return { live: false, reason: "NIFTY quote missing" };
+  if (nifty.feedTimeMs === null) return { live: false, reason: "NIFTY quote has no exchange timestamp" };
+  const ageSec = (nowMs - nifty.feedTimeMs) / 1e3;
+  if (ageSec > 180) return { live: false, reason: `NIFTY quote is ${Math.round(ageSec)}s old` };
+  return { live: true, reason: `NIFTY feed ${Math.round(ageSec)}s old` };
+}
+var cacheMemo2;
+function history() {
+  if (cacheMemo2 === void 0) cacheMemo2 = loadHistoricalCache();
+  return cacheMemo2;
+}
+async function loadInstruments(store2, market2, nowMs, spots) {
+  const today = istDate(nowMs);
+  const cached = await store2.get(KEY_INSTRUMENTS);
+  if (cached && cached.data.asOf === today && cached.data.items.length > 0) return cached.data.items;
+  const spotByUnderlying = {};
+  for (const [sym, q] of Object.entries(spots)) if (q.ltp > 0) spotByUnderlying[sym] = q.ltp;
+  const items = await market2.fetchInstruments(nowMs, spotByUnderlying);
+  if (!items || items.length === 0) return cached?.data.items ?? [];
+  await store2.put(KEY_INSTRUMENTS, { asOf: today, items }, cached ? cached.rev : null);
+  return items;
+}
+async function runPaperCycle(store2, market2, opts = {}) {
+  const leased = await withLease(store2, () => runPaperCycleUnlocked(store2, market2, opts));
+  if (leased.busy) {
+    return { ran: false, summary: "Another cycle is still running", ledgerId: null, equity: null, persisted: false };
+  }
+  return leased.value;
+}
+async function runPaperCycleUnlocked(store2, market2, opts) {
+  const nowMs = opts.nowMs ?? Date.now();
+  const train = opts.train !== false;
+  let loaded;
+  try {
+    loaded = await loadOrCreate(store2, nowMs);
+  } catch (err) {
+    return {
+      ran: false,
+      summary: err instanceof Error ? err.message : "Ledger load failed",
+      ledgerId: null,
+      equity: null,
+      persisted: false
+    };
+  }
+  const { state } = loaded;
+  let rev = loaded.rev;
+  const cfg = state.config;
+  const elapsed = state.lastCycle ? nowMs - Date.parse(state.lastCycle.at) : Infinity;
+  if (!opts.force && elapsed < cfg.cycleMinIntervalSec * 1e3) {
+    return {
+      ran: false,
+      summary: `Next cycle in ${Math.ceil((cfg.cycleMinIntervalSec * 1e3 - elapsed) / 1e3)}s`,
+      ledgerId: state.ledgerId,
+      equity: state.lastEquity,
+      persisted: false
+    };
+  }
+  const started = Date.now();
+  state.counters.cycles += 1;
+  state.angel = market2.status();
+  const today = istDate(nowMs);
+  if (state.dayDate !== today) {
+    state.dayStartEquity = state.lastEquity;
+    state.dayDate = today;
+    state.dailyHalt = false;
+  }
+  const finish = async (status, summary) => {
+    state.lastCycle = { at: new Date(nowMs).toISOString(), durationMs: Date.now() - started, status, summary };
+    log(state, "CYCLE", summary);
+    const persisted = await persist(store2, state, rev);
+    return { ran: true, summary, ledgerId: state.ledgerId, equity: state.lastEquity, persisted };
+  };
+  let spots = null;
+  try {
+    spots = await market2.fetchSpots();
+  } catch (err) {
+    state.counters.dataErrors += 1;
+    state.angel = { ...state.angel, lastError: err instanceof Error ? err.message : "Spot fetch failed" };
+    return finish("DATA_ERROR", "Spot quotes failed");
+  }
+  if (!spots || !spots.NIFTY) {
+    state.counters.dataErrors += 1;
+    return finish("DATA_ERROR", "NIFTY spot quote was not returned");
+  }
+  const live = marketLive(spots, nowMs);
+  const vix = spots.INDIA_VIX?.ltp ?? null;
+  const session = istParts(nowMs);
+  if (!live.live) {
+    const status = isWithinSessionHours(nowMs) ? "MARKET_NOT_LIVE" : session.minuteOfDay >= 15 * 60 + 30 && session.weekday >= 1 && session.weekday <= 5 ? "MARKET_CLOSED" : "OFF_HOURS";
+    state.market = {
+      at: new Date(nowMs).toISOString(),
+      live: false,
+      liveReason: live.reason,
+      spots,
+      vix,
+      vixPctile: null,
+      regimes: state.market?.regimes ?? {}
+    };
+    return finish(status, live.reason);
+  }
+  state.counters.tradingCycles += 1;
+  const cache = opts.history ?? history();
+  const vixSeries = buildVixSeries(cache?.INDIA_VIX ?? []);
+  const vixPctile = vix === null ? null : vixSeries.percentile(today, vix);
+  const fromIst = formatIstForAngel(nowMs - 25 * 864e5);
+  const toIst = formatIstForAngel(nowMs);
+  const regimes = {};
+  const signalPlans = [];
+  for (const underlying of UNDERLYINGS) {
+    let fresh = null;
+    try {
+      fresh = await market2.fetchCandles(underlying, fromIst, toIst);
+    } catch {
+      fresh = null;
+    }
+    const candles = mergeCandles(cache?.[underlying] ?? [], fresh ?? []);
+    if (candles.length < 80) {
+      if (!fresh) state.counters.dataErrors += 1;
+      continue;
+    }
+    const rows = computeIndicators(candles);
+    const idx = lastCompleteIndex(candles, nowMs);
+    if (idx < 0 || !isRowComplete(rows[idx])) continue;
+    const barStart = candles[idx].time;
+    const barEnd = hourlyBarEndMs(Date.parse(barStart));
+    regimes[underlying] = {
+      regime: classifyRegime(rows[idx], vixPctile),
+      rsi14: rows[idx].rsi14,
+      adx14: rows[idx].adx14,
+      barStart
+    };
+    if (nowMs - barEnd > 60 * 60 * 1e3) continue;
+    signalPlans.push({ underlying, candles, index: idx });
+  }
+  let instruments = [];
+  try {
+    instruments = await loadInstruments(store2, market2, nowMs, spots);
+    if (instruments.length > 0) state.instrumentsAsOf = today;
+  } catch (err) {
+    state.counters.dataErrors += 1;
+    log(state, "DATA", err instanceof Error ? err.message : "Instrument master failed");
+  }
+  const quoteTokens = /* @__PURE__ */ new Set();
+  for (const pos of state.openPositions) {
+    quoteTokens.add(pos.plan.long.token);
+    quoteTokens.add(pos.plan.short.token);
+  }
+  for (const cand of state.activeCandidates) {
+    quoteTokens.add(cand.plan.long.token);
+    quoteTokens.add(cand.plan.short.token);
+  }
+  const pendingSignals = [];
+  const minute = istParts(nowMs).minuteOfDay;
+  const entriesOpen = minute >= cfg.entryStartMinuteIst && minute <= cfg.entryEndMinuteIst;
+  for (const plan of signalPlans) {
+    const rows = computeIndicators(plan.candles);
+    const sig = detectSignal(plan.candles, rows, plan.index, vixPctile);
+    if (!sig) continue;
+    const key = `${plan.underlying}:${sig.direction}`;
+    const barTime = plan.candles[plan.index].time;
+    if (state.lastSignalBar[key] === barTime) continue;
+    if (state.activeCandidates.some((c) => c.underlying === plan.underlying && c.direction === sig.direction)) {
+      state.lastSignalBar[key] = barTime;
+      continue;
+    }
+    if (!entriesOpen) {
+      state.lastSignalBar[key] = barTime;
+      log(state, "SKIP", `${plan.underlying} signal outside the 09:30\u201315:00 entry window`, plan.underlying);
+      continue;
+    }
+    if (instruments.length === 0) {
+      log(state, "DATA", `${plan.underlying} signal is waiting for the instrument master`, plan.underlying);
+      continue;
+    }
+    const expiry = pickExpiry(instruments, plan.underlying, today, cfg);
+    if (!expiry) {
+      state.lastSignalBar[key] = barTime;
+      state.counters.plansRejected += 1;
+      log(state, "SKIP", `${plan.underlying} has no expiry between ${cfg.minDte} and ${cfg.maxDte} days`, plan.underlying);
+      continue;
+    }
+    const chain = instruments.filter((i) => i.underlying === plan.underlying && i.expiry === expiry && i.right === sig.direction);
+    const legs = selectChainLegs(
+      chain.map((c) => ({ token: c.token, symbol: c.symbol, strike: c.strike, lotSize: c.lotSize })),
+      spots[plan.underlying]?.ltp ?? plan.candles[plan.index].close,
+      sig.direction,
+      cfg.maxShortSteps
+    );
+    for (const leg of legs) quoteTokens.add(leg.token);
+    pendingSignals.push({
+      underlying: plan.underlying,
+      index: plan.index,
+      candles: plan.candles,
+      expiry,
+      dte: calendarDaysBetween(today, expiry),
+      tokens: legs.map((l) => l.token)
+    });
+  }
+  let quotes = {};
+  if (quoteTokens.size > 0) {
+    try {
+      const fetched = await market2.fetchOptionQuotes([...quoteTokens]);
+      if (!fetched) {
+        state.counters.dataErrors += 1;
+        log(state, "DATA", "Option quote batch failed; open positions were not marked this cycle");
+      } else quotes = fetched;
+    } catch (err) {
+      state.counters.dataErrors += 1;
+      log(state, "DATA", err instanceof Error ? err.message : "Option quote batch failed");
+    }
+  }
+  for (const pos of state.openPositions) {
+    bumpSession(pos, today);
+    applyMark(pos, quotes, nowMs, cfg, state);
+  }
+  for (const cand of state.activeCandidates) {
+    bumpSession(cand, today);
+    applyMark(cand, quotes, nowMs, cfg, state);
+  }
+  const stillOpen = [];
+  for (const pos of state.openPositions) {
+    const reason = exitReasonFor(pos, cfg, today);
+    if (!reason) {
+      stillOpen.push(pos);
+      continue;
+    }
+    closePosition(state, pos, reason, nowMs);
+    const cand = state.activeCandidates.find((c) => c.id === pos.candidateId);
+    if (cand && !cand.closedAt) {
+      cand.lastMark = pos.lastMark;
+      cand.peakValue = pos.peakValue;
+      cand.troughValue = pos.troughValue;
+      cand.sessionsHeld = pos.sessionsHeld;
+      closeCandidate(state, cand, reason, nowMs);
+    }
+  }
+  state.openPositions = stillOpen;
+  const stillActive = [];
+  for (const cand of state.activeCandidates) {
+    if (cand.closedAt) continue;
+    const reason = exitReasonFor(cand, cfg, today);
+    if (!reason) {
+      stillActive.push(cand);
+      continue;
+    }
+    closeCandidate(state, cand, reason, nowMs);
+  }
+  state.activeCandidates = stillActive;
+  revalue(state, spots.NIFTY?.ltp ?? null);
+  const suspended = new Set(suspendedStrategies(state.liveSamples));
+  for (const pending of pendingSignals) {
+    const rows = computeIndicators(pending.candles);
+    const sig = detectSignal(pending.candles, rows, pending.index, vixPctile);
+    const spot = spots[pending.underlying]?.ltp;
+    if (!sig || !(spot && spot > 0)) continue;
+    const chain = instruments.filter((i) => i.underlying === pending.underlying && i.expiry === pending.expiry && i.right === sig.direction).map((c) => ({ token: c.token, symbol: c.symbol, strike: c.strike, lotSize: c.lotSize }));
+    const built = buildSpreadPlan({
+      underlying: pending.underlying,
+      right: sig.direction,
+      expiry: pending.expiry,
+      dte: pending.dte,
+      spot,
+      chain,
+      quotes,
+      budgetPerTradeInr: state.lastEquity * cfg.riskPerTradePct,
+      nowMs,
+      cfg
+    });
+    if (!built.ok) {
+      state.counters.plansRejected += 1;
+      log(state, "SKIP", `${pending.underlying} ${sig.direction}: ${built.reason}`, pending.underlying);
+      continue;
+    }
+    const features = buildFeatures(sig, {
+      vixPctile,
+      isIndex: INDEX_UNDERLYINGS.has(pending.underlying),
+      dte: pending.dte,
+      debitRatio: built.plan.debitRatio,
+      legSpreadPct: built.plan.legSpreadPct
+    });
+    const model = state.model;
+    const modelProb = model && features.length === model.weights.length ? predictProb(model, features) : null;
+    let skip = null;
+    if (!built.affordable) skip = `1 lot risks \u20B9${built.plan.maxLossPerLot.toFixed(0)}, above the per-trade budget`;
+    else if (suspended.has(sig.strategy)) skip = `${sig.strategy} is suspended: its live results are negative with 90% confidence`;
+    else if (model?.gate.active && model.gate.threshold !== null && (modelProb === null || modelProb < model.gate.threshold)) {
+      skip = `Model probability ${modelProb === null ? "n/a" : modelProb.toFixed(2)} is below the gate ${model.gate.threshold.toFixed(2)}`;
+    }
+    const candidate = {
+      id: `C-${pending.underlying}-${sig.direction}-${Date.parse(pending.candles[pending.index].time)}`,
+      createdAt: new Date(nowMs).toISOString(),
+      underlying: pending.underlying,
+      strategy: sig.strategy,
+      direction: sig.direction,
+      regime: sig.regime,
+      signalBarStart: pending.candles[pending.index].time,
+      reason: sig.reason,
+      indicators: snapshotOf(rows[pending.index]),
+      vix: vix ?? 0,
+      vixPctile: vixPctile ?? 0,
+      features,
+      modelProb,
+      modelVersion: model?.version ?? null,
+      gateActive: Boolean(model?.gate.active),
+      gateThreshold: model?.gate.threshold ?? null,
+      plan: built.plan,
+      affordable: built.affordable,
+      takenByLedger: false,
+      positionId: null,
+      skipReason: skip,
+      lastMark: entryMark(built.plan, nowMs),
+      peakValue: built.plan.entryDebit,
+      troughValue: built.plan.entryDebit,
+      sessionsHeld: 1,
+      lastSessionDate: today,
+      staleMarks: 0
+    };
+    if (!skip) {
+      const decision = evaluateEntryRisk({
+        cfg,
+        equity: state.lastEquity,
+        cash: state.cash,
+        entriesEnabled: state.control.entriesEnabled,
+        killSwitchActive: state.killSwitch.active,
+        dailyHalt: state.dailyHalt,
+        openPositions: state.openPositions,
+        isIndex: INDEX_UNDERLYINGS.has(pending.underlying),
+        plan: built.plan
+      });
+      if (!decision.allowed) {
+        candidate.skipReason = decision.reason;
+        log(state, "SKIP", `${pending.underlying} ${sig.direction}: ${decision.reason}`, pending.underlying);
+      } else {
+        const position = {
+          id: `P-${candidate.id}`,
+          candidateId: candidate.id,
+          openedAt: candidate.createdAt,
+          underlying: candidate.underlying,
+          strategy: candidate.strategy,
+          direction: candidate.direction,
+          regime: candidate.regime,
+          lots: decision.lots,
+          plan: built.plan,
+          entryCashOutInr: decision.cashOutInr,
+          maxLossInr: decision.maxLossInr,
+          marginBlockedInr: decision.marginInr,
+          lastMark: candidate.lastMark,
+          peakValue: candidate.peakValue,
+          troughValue: candidate.troughValue,
+          sessionsHeld: 1,
+          lastSessionDate: today,
+          staleMarks: 0,
+          unrealizedInr: 0,
+          modelProb,
+          entryReason: sig.reason
+        };
+        state.cash = round23(state.cash - decision.cashOutInr);
+        state.openPositions.push(position);
+        state.counters.tradesOpened += 1;
+        candidate.takenByLedger = true;
+        candidate.positionId = position.id;
+        candidate.skipReason = null;
+        log(state, "ENTRY", `${pending.underlying} ${sig.direction} ${decision.lots} lot, debit \u20B9${built.plan.entryDebit.toFixed(2)}, cash out \u20B9${decision.cashOutInr.toFixed(0)}`, pending.underlying);
+      }
+    } else {
+      log(state, "SKIP", `${pending.underlying} ${sig.direction}: ${skip}`, pending.underlying);
+    }
+    state.lastSignalBar[`${pending.underlying}:${sig.direction}`] = pending.candles[pending.index].time;
+    state.activeCandidates.push(candidate);
+    state.counters.candidatesCreated += 1;
+    log(state, "SIGNAL", sig.reason, pending.underlying);
+  }
+  const valued = revalue(state, spots.NIFTY?.ltp ?? null);
+  pushEquityPoint(state, nowMs, {
+    equity: valued.equity,
+    equityMid: valued.equityMid,
+    cash: state.cash,
+    benchmark: valued.benchmark,
+    drawdownPct: valued.drawdownPct,
+    openPositions: state.openPositions.length
+  });
+  state.market = {
+    at: new Date(nowMs).toISOString(),
+    live: true,
+    liveReason: live.reason,
+    spots,
+    vix,
+    vixPctile,
+    regimes
+  };
+  if (train) {
+    try {
+      maybeTrain(state, nowMs, false);
+    } catch (err) {
+      log(state, "ERROR", err instanceof Error ? err.message : "Training failed");
+    }
+  }
+  return finish(
+    "TRADED",
+    `Live cycle. Equity \u20B9${valued.equity.toFixed(0)}, ${state.openPositions.length} open, ${state.activeCandidates.length} candidates tracked.`
+  );
+}
+function pickExpiry(instruments, underlying, today, cfg) {
+  const expiries = [...new Set(instruments.filter((i) => i.underlying === underlying).map((i) => i.expiry))].sort();
+  return expiries.find((e) => {
+    const dte = calendarDaysBetween(today, e);
+    return dte >= cfg.minDte && dte <= cfg.maxDte;
+  }) ?? null;
+}
+async function resetPaperLedger(store2, nowMs, capital) {
+  const leased = await withLease(store2, async () => {
+    const fresh = createInitialLedger(nowMs, capital ?? startingCapitalFromEnv());
+    const active = await store2.get(KEY_ACTIVE);
+    const saved = await store2.put(stateKey(fresh.ledgerId), fresh, null);
+    if (!saved.ok) return { ok: false, error: "Could not create the new ledger" };
+    const pointed = await store2.put(KEY_ACTIVE, { ledgerId: fresh.ledgerId }, active ? active.rev : null);
+    if (!pointed.ok) return { ok: false, error: "Could not switch the active ledger" };
+    return { ok: true, state: fresh };
+  });
+  if (leased.busy) return { ok: false, error: "A cycle is running. Try again in a moment." };
+  return leased.value;
+}
+async function mutateLedger(store2, nowMs, mutator) {
+  const leased = await withLease(store2, async () => {
+    const loaded = await loadOrCreate(store2, nowMs);
+    mutator(loaded.state);
+    const persisted = await persist(store2, loaded.state, loaded.rev);
+    if (!persisted) return { ok: false, error: "The ledger changed while saving. Try again." };
+    return { ok: true, state: loaded.state };
+  });
+  if (leased.busy) return { ok: false, error: "A cycle is running. Try again in a moment." };
+  return leased.value;
+}
+async function readJournal(store2, ledgerId, kind, month) {
+  const state = await store2.get(stateKey(ledgerId));
+  const pending = kind === "trades" ? state?.data.pending.trades ?? [] : state?.data.pending.candidates ?? [];
+  const months = month ? [month] : [istMonthKey(Date.now()), istMonthKey(Date.now() - 32 * 864e5)];
+  const rows = [];
+  for (const m of months) {
+    const key = kind === "trades" ? tradesKey(ledgerId, m) : candidatesKey(ledgerId, m);
+    const archived = await store2.get(key);
+    if (archived) rows.push(...archived.data);
+  }
+  const seen = new Set(rows.map((r) => r.id));
+  for (const item of pending) {
+    const when = Date.parse(item.closedAt || "");
+    if (month && Number.isFinite(when) && istMonthKey(when) !== month) continue;
+    if (!seen.has(item.id)) rows.push(item);
+  }
+  rows.sort((a, b) => Date.parse(b.closedAt || "") - Date.parse(a.closedAt || ""));
+  return rows;
+}
+async function readActiveLedger(store2) {
+  const active = await store2.get(KEY_ACTIVE);
+  if (!active) return null;
+  const row = await store2.get(stateKey(active.data.ledgerId));
+  return row?.data ?? null;
+}
+
+// src/quant/readiness.ts
+function weeksBetween(fromIso, nowMs) {
+  const from = Date.parse(fromIso);
+  if (!Number.isFinite(from)) return 0;
+  return (nowMs - from) / (7 * 864e5);
+}
+function computeReadiness(input) {
+  const { trades } = input;
+  const weeks = weeksBetween(input.ledgerCreatedAt, input.nowMs);
+  const pnls = trades.map((t) => t.netPnlInr);
+  const ci = meanCi90(pnls);
+  const pf = profitFactor(pnls);
+  const byRegime = groupStats(trades, (t) => t.regime, (t) => t.netPnlInr, (t) => t.rMultiple);
+  const positiveRegimes = byRegime.filter((g) => g.n >= 20 && (g.expectancyInr ?? 0) > 0);
+  const checks = [
+    {
+      id: "sample",
+      label: "At least 200 closed paper trades",
+      pass: trades.length >= 200,
+      detail: `${trades.length} closed`
+    },
+    {
+      id: "weeks",
+      label: "At least 8 weeks of paper trading",
+      pass: weeks >= 8,
+      detail: `${weeks.toFixed(1)} weeks since this ledger started`
+    },
+    {
+      id: "expectancy",
+      label: "Expectancy 90% confidence interval is above zero",
+      pass: ci !== null && ci[0] > 0,
+      detail: ci ? `\u20B9${ci[0].toFixed(0)} to \u20B9${ci[1].toFixed(0)} per trade` : "Needs at least 10 closed trades"
+    },
+    {
+      id: "profit-factor",
+      label: "Profit factor above 1.30",
+      pass: pf !== null && pf > 1.3,
+      detail: pf === null ? "No losing trades yet" : pf.toFixed(2)
+    },
+    {
+      id: "drawdown",
+      label: "Maximum drawdown under 10%",
+      pass: input.maxDrawdownPct < 10,
+      detail: `${input.maxDrawdownPct.toFixed(2)}%`
+    },
+    {
+      id: "regimes",
+      label: "Positive in at least 2 regimes with 20 trades each",
+      pass: positiveRegimes.length >= 2,
+      detail: byRegime.length === 0 ? "No closed trades yet" : byRegime.map((g) => `${g.key} ${g.n} trades, avg \u20B9${(g.expectancyInr ?? 0).toFixed(0)}`).join("; ")
+    }
+  ];
+  return {
+    readyForRealMoney: checks.every((c) => c.pass),
+    checks,
+    note: input.liveOosAuc === null ? "Live out-of-sample AUC is not available yet. It is shown for information and is not a pass/fail check." : `Live out-of-sample AUC is ${input.liveOosAuc.toFixed(3)}. It is information, not a pass/fail check.`
+  };
+}
+
+// src/quant/report.ts
+function cards(items) {
+  return {
+    byStrategy: groupStats(items, (t) => t.strategy, (t) => t.net, (t) => t.r),
+    byUnderlying: groupStats(items, (t) => t.underlying, (t) => t.net, (t) => t.r),
+    byRegime: groupStats(items, (t) => t.regime, (t) => t.net, (t) => t.r),
+    byDirection: groupStats(items, (t) => t.direction, (t) => t.net, (t) => t.r),
+    byExit: groupStats(items, (t) => t.exitReason, (t) => t.net, (t) => t.r)
+  };
+}
+function buildDashboard(state, nowMs = Date.now()) {
+  const unrealized = state.openPositions.reduce((sum, p) => sum + p.unrealizedInr, 0);
+  const realized = state.closedSummaries.reduce((sum, t) => sum + t.netPnlInr, 0);
+  const tradeRows = state.closedSummaries.map((t) => ({
+    strategy: t.strategy,
+    underlying: t.underlying,
+    regime: t.regime,
+    direction: t.direction,
+    exitReason: t.exitReason,
+    net: t.netPnlInr,
+    r: t.rMultiple
+  }));
+  const candidateRows = state.liveSamples.map((s) => ({
+    strategy: s.strategy,
+    underlying: s.underlying,
+    regime: s.regime,
+    direction: s.direction,
+    exitReason: s.exitReason,
+    net: s.pnlPerLotInr,
+    r: s.r
+  }));
+  const candidateCards = cards(candidateRows);
+  return {
+    generatedAt: new Date(nowMs).toISOString(),
+    ledgerId: state.ledgerId,
+    createdAt: state.createdAt,
+    startingCapitalInr: state.startingCapitalInr,
+    cash: state.cash,
+    equity: state.lastEquity,
+    equityMid: state.lastEquityMid,
+    dayPnlInr: state.lastEquity - state.dayStartEquity,
+    realizedPnlInr: realized,
+    unrealizedPnlInr: unrealized,
+    peakEquity: state.peakEquity,
+    maxDrawdownPct: state.maxDrawdownPct,
+    weeksElapsed: weeksBetween(state.createdAt, nowMs),
+    dailyHalt: state.dailyHalt,
+    killSwitch: state.killSwitch,
+    control: state.control,
+    openPositions: state.openPositions,
+    activeCandidates: state.activeCandidates,
+    counters: state.counters,
+    lastCycle: state.lastCycle,
+    market: state.market,
+    angel: state.angel,
+    instrumentsAsOf: state.instrumentsAsOf,
+    model: state.model,
+    recentEquity: state.recentEquity,
+    decisionLog: state.decisionLog,
+    learningLog: state.learningLog,
+    suspendedStrategies: suspendedStrategies(state.liveSamples),
+    tradeScorecards: cards(tradeRows),
+    candidateScorecards: {
+      byStrategy: candidateCards.byStrategy,
+      byUnderlying: candidateCards.byUnderlying,
+      byRegime: candidateCards.byRegime
+    },
+    readiness: computeReadiness({
+      trades: state.closedSummaries,
+      ledgerCreatedAt: state.createdAt,
+      nowMs,
+      maxDrawdownPct: state.maxDrawdownPct,
+      liveOosAuc: state.model?.liveOos.auc ?? null
+    }),
+    config: state.config
   };
 }
 
 // server.ts
-var __filename = fileURLToPath2(import.meta.url);
-var __dirname = path2.dirname(__filename);
-var state = buildInitialQuantState();
-await runRealOneYearHistoricalReplay(
-  state,
-  "2025-11-01 09:15",
-  "2026-10-30 15:30",
-  INITIAL_REAL_CAPITAL_INR,
-  false
-);
-state.control.strictLiveMarketHoursOnly = true;
-var autoRunEnabled = false;
-var latestActionSummary = "1-Year Real Angel One Historical Training Complete (03 Nov 2025\u201330 Oct 2026 \xB7 17,140 Real 1H Candles \xB7 \u20B910,000 Capital \xB7 Dynamic 1L\u20135L Sizing): 206 Real Trades, 69.9% Win Rate, \u20B910,000 \u2192 \u20B941,927.70 (+319.28%), PF 2.52 \xB7 Waiting for Monday 09:15 IST Live Market.";
-var totalAutonomousCyclesRun = 206;
-var rawDbUrl = process.env.DATABASE_URL_RW || process.env.DATABASE_URL || process.env.DATABASE_URL_RO || "";
-var dbPool = rawDbUrl ? new pg.Pool({
-  connectionString: rawDbUrl,
-  max: 2,
-  idleTimeoutMillis: 1e4,
-  connectionTimeoutMillis: 1e4
-}) : null;
-var stateLoadedFromDb = false;
-var dbLoadPromise = null;
-async function loadFromNeonInternal(forceReload = false) {
-  if (!dbPool) return;
-  try {
-    const res = await dbPool.query(
-      "SELECT config_payload_json FROM config_history WHERE config_version_id = 'LIVE_STATE_CHECKPOINT' LIMIT 1"
-    );
-    if (res.rows.length > 0 && res.rows[0].config_payload_json) {
-      const saved = res.rows[0].config_payload_json;
-      if (saved.state && saved.state.closedTrades && saved.state.equitySeries) {
-        const isExplicitReset10k = saved.state.control?.updatedBy === "operator_ledger_reset_10k" && saved.state.equitySeries?.[0]?.conservativeEquityInr === INITIAL_REAL_CAPITAL_INR;
-        const isOneYearRealState = saved.state.equitySeries?.[0]?.conservativeEquityInr === INITIAL_REAL_CAPITAL_INR && saved.state.closedTrades.some(
-          (t) => t.tradeId?.startsWith("HIST-1Y-")
-        );
-        if (isExplicitReset10k || isOneYearRealState && (saved.state.closedTrades.length >= state.closedTrades.length || forceReload)) {
-          const seenSnap = /* @__PURE__ */ new Set();
-          saved.state.equitySeries.forEach(
-            (pt, idx) => {
-              if (seenSnap.has(pt.snapshotId)) {
-                pt.snapshotId = `${pt.snapshotId}-${idx}`;
-              }
-              seenSnap.add(pt.snapshotId);
-            }
-          );
-          state = saved.state;
-          state.learning.closedTradesCount = state.closedTrades.length;
-          state.learning.tradesNeededForGbdt = Math.max(0, 200 - state.closedTrades.length);
-          if (state.closedTrades.length >= 200 && !state.learning.championVersion.includes("gbdt")) {
-            state.learning.previousChampionVersion = state.learning.championVersion;
-            state.learning.championVersion = "v2.1.0-nse-gbdt-real1y";
-            state.control.previousChampionVersion = state.control.activeChampionVersion;
-            state.control.activeChampionVersion = "v2.1.0-nse-gbdt-real1y";
-            state.learning.challengerVersion = "v2.2.0-nse-gbdt-shadow";
-            state.learning.modelType = "Gradient-Boosted Decision Trees (80-Tree Depth-3 GBDT + Real 1Y Isotonic Calibration)";
-            state.learning.walkForwardAuc = Math.max(0.812, state.learning.walkForwardAuc);
-          }
-          totalAutonomousCyclesRun = Number(saved.totalAutonomousCyclesRun) || totalAutonomousCyclesRun;
-          latestActionSummary = saved.latestActionSummary || latestActionSummary;
-          autoRunEnabled = saved.autoRunEnabled ?? false;
-        } else {
-          await persistStateToNeon(true);
-        }
-      }
-    } else {
-      await persistStateToNeon(true);
-    }
-    stateLoadedFromDb = true;
-  } catch {
-    stateLoadedFromDb = true;
-  }
-}
-async function ensureStateLoadedFromNeon(forceReload = false) {
-  if (!dbPool) return;
-  if (stateLoadedFromDb && !forceReload && !process.env.VERCEL) return;
-  if (!dbLoadPromise || forceReload || process.env.VERCEL) {
-    dbLoadPromise = loadFromNeonInternal(forceReload).finally(() => {
-      dbLoadPromise = null;
-    });
-  }
-  await dbLoadPromise;
-}
-async function persistStateToNeon(forceOverwrite = false) {
-  if (!dbPool) return;
-  try {
-    const payload = JSON.stringify({
-      state,
-      totalAutonomousCyclesRun,
-      latestActionSummary,
-      autoRunEnabled
-    });
-    const upRes = await dbPool.query(
-      `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
-       VALUES ('LIVE_STATE_CHECKPOINT', NOW(), TRUE, $1, $2::jsonb, $3)
-       ON CONFLICT (config_version_id) DO UPDATE SET
-         applied_at = NOW(),
-         previous_champion_id = EXCLUDED.previous_champion_id,
-         config_payload_json = EXCLUDED.config_payload_json,
-         change_summary = EXCLUDED.change_summary
-       WHERE $4::boolean = TRUE OR
-         jsonb_array_length(EXCLUDED.config_payload_json->'state'->'closedTrades') >=
-         COALESCE(jsonb_array_length(config_history.config_payload_json->'state'->'closedTrades'), 0)`,
-      [
-        state.control.activeChampionVersion,
-        payload,
-        latestActionSummary.slice(0, 240),
-        forceOverwrite
-      ]
-    );
-    if (upRes.rowCount === 0 && !forceOverwrite) {
-      await loadFromNeonInternal(true);
-    }
-    await dbPool.query(
-      `INSERT INTO bot_health (bot_id, heartbeat_at, last_cycle_at, last_cycle_status, market_open, current_regime, last_db_write_at)
-       VALUES ($1, NOW(), NOW(), $2, $3, $4, NOW())
-       ON CONFLICT (bot_id) DO UPDATE SET
-         heartbeat_at = NOW(),
-         last_cycle_at = NOW(),
-         last_cycle_status = EXCLUDED.last_cycle_status,
-         market_open = EXCLUDED.market_open,
-         current_regime = EXCLUDED.current_regime,
-         last_db_write_at = NOW()`,
-      [
-        state.health.botId || "aegis-nse-mumbai-bom1",
-        state.health.lastCycleStatus || "OK",
-        Boolean(state.health.marketOpen),
-        state.health.currentRegime || "trending_up"
-      ]
-    );
-  } catch {
-  }
-}
-var REPO_FILES_LIST = [
-  "README.md",
-  "bot/config.yaml",
-  "bot/.env.example",
-  "bot/requirements.txt",
-  "bot/src/config.py",
-  "bot/src/calendar_utils.py",
-  "bot/src/interfaces.py",
-  "bot/src/alpaca_client.py",
-  "bot/src/regime.py",
-  "bot/src/strategies.py",
-  "bot/src/fills.py",
-  "bot/src/exits.py",
-  "bot/src/risk.py",
-  "bot/src/backtester.py",
-  "bot/src/journal.py",
-  "bot/src/db.py",
-  "bot/src/learning.py",
-  "bot/src/alerts.py",
-  "bot/src/main.py",
-  "bot/tests/test_bot_core.py",
-  "deploy/install.sh",
-  "deploy/aegis-options-bot.service",
-  "deploy/migrations/001_initial_schema.sql",
-  "deploy/migrations/002_roles_and_permissions.sql",
-  "web/.env.example",
-  "web/package.json",
-  "web/middleware.ts",
-  "web/lib/db.ts",
-  "web/app/api/overview/route.ts",
-  "web/app/api/positions/route.ts",
-  "web/app/api/trades/route.ts",
-  "web/app/api/performance/route.ts",
-  "web/app/api/learning/route.ts",
-  "web/app/api/health/route.ts",
-  "web/app/api/control/route.ts"
-];
-function computePerformanceMetrics(s) {
-  const trades = s.closedTrades.filter((t) => !t.isShadowChallenger);
-  const wins = trades.filter((t) => t.conservativePnlInr > 0);
-  const losses = trades.filter((t) => t.conservativePnlInr <= 0);
-  const tradeCount = trades.length;
-  const winRate = tradeCount > 0 ? Number((wins.length / tradeCount).toFixed(4)) : 0;
-  const avgWinInr = wins.length > 0 ? Number((wins.reduce((acc, x) => acc + x.conservativePnlInr, 0) / wins.length).toFixed(2)) : 0;
-  const avgLossInr = losses.length > 0 ? Number((losses.reduce((acc, x) => acc + x.conservativePnlInr, 0) / losses.length).toFixed(2)) : 0;
-  const totalConsPnl = Number(
-    trades.reduce((acc, x) => acc + x.conservativePnlInr, 0).toFixed(2)
-  );
-  const totalPaperPnl = Number(
-    trades.reduce((acc, x) => acc + x.brokerPaperPnlInr, 0).toFixed(2)
-  );
-  const expectancyInr = tradeCount > 0 ? Number((totalConsPnl / tradeCount).toFixed(2)) : 0;
-  const grossWin = wins.reduce((acc, x) => acc + x.conservativePnlInr, 0);
-  const grossLoss = Math.abs(losses.reduce((acc, x) => acc + x.conservativePnlInr, 0));
-  const profitFactor = grossLoss > 0 ? Number((grossWin / grossLoss).toFixed(2)) : 2;
-  const maxDrawdownPct = Number(
-    Math.max(...s.equitySeries.map((pt) => pt.drawdownPct), 0.01).toFixed(4)
-  );
-  const mean = expectancyInr;
-  const variance = tradeCount > 1 ? trades.reduce((acc, t) => acc + Math.pow(t.conservativePnlInr - mean, 2), 0) / (tradeCount - 1) : 1;
-  const std = Math.sqrt(Math.max(variance, 1));
-  const sharpeRatio = Number((mean / std * Math.sqrt(52)).toFixed(2));
-  const groupStats = (keyFn) => {
-    const map = /* @__PURE__ */ new Map();
-    for (const t of trades) {
-      const k = keyFn(t);
-      const arr = map.get(k) ?? [];
-      arr.push(t);
-      map.set(k, arr);
-    }
-    return Array.from(map.entries()).map(([key, list]) => {
-      const w = list.filter((x) => x.conservativePnlInr > 0);
-      const netCons = Number(list.reduce((a, b) => a + b.conservativePnlInr, 0).toFixed(2));
-      const netPaper = Number(list.reduce((a, b) => a + b.brokerPaperPnlInr, 0).toFixed(2));
-      return {
-        key,
-        tradeCount: list.length,
-        winRate: Number((w.length / list.length).toFixed(4)),
-        expectancyInr: Number((netCons / list.length).toFixed(2)),
-        conservativeNetPnlInr: netCons,
-        brokerPaperNetPnlInr: netPaper
-      };
-    });
-  };
-  return {
-    summary: {
-      tradeCount,
-      sampleSizeTarget: 200,
-      winRate,
-      avgWinInr,
-      avgLossInr,
-      profitFactor,
-      expectancyInr,
-      maxDrawdownPct,
-      sharpeRatio,
-      totalConservativeRealizedPnlInr: totalConsPnl,
-      totalBrokerPaperRealizedPnlInr: totalPaperPnl
-    },
-    byStrategy: groupStats((t) => t.strategyName),
-    byUnderlying: groupStats((t) => t.underlying).sort(
-      (a, b) => b.conservativeNetPnlInr - a.conservativeNetPnlInr
-    ),
-    byRegime: groupStats((t) => t.regimeAtEntry),
-    byDteBucket: groupStats(
-      (t) => t.dteAtEntry < 14 ? "7-13 DTE (Weekly)" : t.dteAtEntry <= 21 ? "14-21 DTE" : "22-35 DTE (Monthly)"
-    ),
-    byTimeOfDay: groupStats((t) => t.timeOfDayBucket)
-  };
-}
+var __dirname = path2.dirname(fileURLToPath2(import.meta.url));
 var app = express();
-app.use(express.json());
-ensureStateLoadedFromNeon().then(async () => {
-  await refreshLiveNseQuotes();
-  if (!state.closedTrades.some((t) => t.tradeId.startsWith("HIST-1Y-"))) {
-    autoRunEnabled = false;
-    state.control.strictLiveMarketHoursOnly = true;
-    const rep = await runRealOneYearHistoricalReplay(
-      state,
-      "2025-11-01 09:15",
-      "2026-10-30 15:30",
-      INITIAL_REAL_CAPITAL_INR,
-      false
-    );
-    latestActionSummary = `1-Year Real Angel One Historical Training Complete (${rep.fromDateIst.slice(
-      0,
-      10
-    )} to ${rep.toDateIst.slice(0, 10)}, ${rep.totalFiveMinCandlesProcessed.toLocaleString(
-      "en-IN"
-    )} real 1H candles \xB7 \u20B910,000 Capital \xB7 Dynamic 1L\u2013${rep.maxLotsTraded}L Sizing): ${rep.winRatePct}% Win Rate (${rep.winsCount}W/${rep.lossesCount}L), \u20B910,000 \u2192 \u20B9${rep.endingConservativeEquityInr.toLocaleString(
-      "en-IN"
-    )} (+${rep.netConservativeReturnPct.toFixed(2)}%), PF ${rep.profitFactor.toFixed(2)}.`;
-    await persistStateToNeon(true);
-  }
-}).catch(() => {
-});
-if (!process.env.VERCEL) {
-  setInterval(async () => {
-    await ensureStateLoadedFromNeon();
-    if (!autoRunEnabled || state.health.simulatedOfflineMode) return;
-    const openTokens = state.openPositions.flatMap((p) => [p.angelToken, p.shortAngelToken]).filter(Boolean);
-    await refreshLiveNseQuotes(openTokens);
-    const rep = executeAutonomousPaperCycles(state, 1);
-    totalAutonomousCyclesRun += rep.cyclesRun;
-    latestActionSummary = rep.latestActionSummary;
-    if (rep.positionsClosed > 0 || rep.entriesOpened > 0 || rep.retrainsTriggered > 0) {
-      await persistStateToNeon();
-    }
-  }, 8e3);
+app.use(express.json({ limit: "32kb" }));
+var store = createStore();
+var market = angelMarketData();
+function adminSecret() {
+  return (process.env.ADMIN_SECRET || process.env.DASHBOARD_PASSCODE || "").trim();
 }
-app.get("/api/overview", async (_req, res) => {
-  await ensureStateLoadedFromNeon();
-  const openTokens = state.openPositions.flatMap((p) => [p.angelToken, p.shortAngelToken]).filter(Boolean);
-  const liveQuotes = await refreshLiveNseQuotes(openTokens);
-  if (process.env.VERCEL && autoRunEnabled && !state.health.simulatedOfflineMode) {
-    const rep = executeAutonomousPaperCycles(state, 1);
-    totalAutonomousCyclesRun += rep.cyclesRun;
-    latestActionSummary = rep.latestActionSummary;
-    await persistStateToNeon();
+function authorized(req) {
+  const secret = adminSecret();
+  return Boolean(secret) && req.header("x-admin-secret") === secret;
+}
+app.get("/api/state", async (_req, res) => {
+  try {
+    const state = await readActiveLedger(store);
+    if (!state) {
+      res.json({ ledger: null, persistent: databaseConfigured(), generatedAt: (/* @__PURE__ */ new Date()).toISOString() });
+      return;
+    }
+    res.json({ ...buildDashboard(state), persistent: databaseConfigured(), ledger: state.ledgerId });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Could not read the ledger" });
   }
-  const perf = computePerformanceMetrics(state);
-  const unrealizedInr = Number(
-    state.openPositions.reduce((acc, p) => acc + p.unrealizedPnlInr, 0).toFixed(2)
-  );
-  const latestEq = state.equitySeries[state.equitySeries.length - 1];
-  const todayIstDate = new Date(Date.now() + 5.5 * 3600 * 1e3).toISOString().slice(0, 10);
-  const todayClosedPnlInr = state.closedTrades.filter((t) => !t.isShadowChallenger && t.closedAt.slice(0, 10) === todayIstDate).reduce((acc, t) => acc + t.conservativePnlInr, 0);
-  const todayPnlInr = Number((todayClosedPnlInr + unrealizedInr).toFixed(2));
-  const offlineCheck = isBotOfflineDuringMarketHours(
-    state.health.heartbeatAt,
-    state.health.marketOpen
-  );
-  res.json({
-    control: state.control,
-    health: {
-      ...state.health,
-      heartbeatAgeMinutes: offlineCheck.ageMinutes,
-      isOffline: offlineCheck.isOffline
-    },
-    liveRunner: {
-      autoRunEnabled,
-      totalAutonomousCyclesRun,
-      latestActionSummary,
-      liveQuotes,
-      angelOneStatus: getAngelOneConnectionStatus(),
-      istMarketStatus: isNseMarketHoursIst(),
-      learningComparison: computeLearningEffectiveness(state)
-    },
-    headline: {
-      conservativeEquityInr: Number((latestEq.conservativeEquityInr + unrealizedInr).toFixed(2)),
-      brokerPaperEquityInr: Number(
-        (latestEq.brokerPaperEquityInr + unrealizedInr * 1.12).toFixed(2)
-      ),
-      niftyBenchmarkEquityInr: latestEq.niftyBenchmarkEquityInr,
-      todayPnlInr,
-      realizedPnlInr: perf.summary.totalConservativeRealizedPnlInr,
-      brokerPaperRealizedPnlInr: perf.summary.totalBrokerPaperRealizedPnlInr,
-      unrealizedPnlInr: unrealizedInr,
-      currentDrawdownPct: latestEq.drawdownPct,
-      maxDrawdownPct: perf.summary.maxDrawdownPct,
-      openPositionsCount: state.openPositions.length,
-      closedTradesCount: perf.summary.tradeCount,
-      sampleSizeTarget: 200
-    },
-    equitySeries: state.equitySeries,
-    summaryMetrics: perf.summary,
-    historicalReplayReport: getLastHistoricalReplayReport()
-  });
 });
-app.get("/api/positions", async (_req, res) => {
-  await ensureStateLoadedFromNeon();
-  res.json({ positions: state.openPositions });
+app.get("/api/journal", async (req, res) => {
+  try {
+    const state = await readActiveLedger(store);
+    if (!state) {
+      res.json({ rows: [] });
+      return;
+    }
+    const kind = req.query.kind === "candidates" ? "candidates" : "trades";
+    const month = typeof req.query.month === "string" ? req.query.month : void 0;
+    const rows = await readJournal(store, state.ledgerId, kind, month);
+    res.json({ ledgerId: state.ledgerId, kind, rows });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Could not read the journal" });
+  }
 });
-app.get("/api/trades", async (_req, res) => {
-  await ensureStateLoadedFromNeon();
-  res.json({
-    trades: state.closedTrades,
-    skippedSignals: state.skippedSignals
-  });
+app.get("/api/research", (_req, res) => {
+  try {
+    const research = getOfflineResearch();
+    if (!research) {
+      res.status(404).json({ error: "The one-year hourly cache is not available on this server." });
+      return;
+    }
+    res.json(research.report);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Research failed" });
+  }
 });
-app.get("/api/performance", async (_req, res) => {
-  await ensureStateLoadedFromNeon();
-  res.json({
-    ...computePerformanceMetrics(state),
-    backtestResults: state.backtestResults,
-    learningComparison: computeLearningEffectiveness(state),
-    historicalReplayReport: getLastHistoricalReplayReport()
-  });
-});
-app.get("/api/historical-replay", async (_req, res) => {
-  await ensureStateLoadedFromNeon();
-  res.json({
-    autoRunEnabled,
-    report: getLastHistoricalReplayReport()
-  });
-});
-app.post("/api/historical-replay", async (req, res) => {
-  await ensureStateLoadedFromNeon();
-  autoRunEnabled = false;
-  state.control.strictLiveMarketHoursOnly = true;
-  const fromDateIst = typeof req.body?.fromDateIst === "string" ? req.body.fromDateIst : "2025-11-01 09:15";
-  const toDateIst = typeof req.body?.toDateIst === "string" ? req.body.toDateIst : "2026-10-30 15:30";
-  const forceLiveFetch = Boolean(req.body?.forceLiveFetch);
-  const report = await runRealOneYearHistoricalReplay(
-    state,
-    fromDateIst,
-    toDateIst,
-    INITIAL_REAL_CAPITAL_INR,
-    forceLiveFetch
-  );
-  latestActionSummary = `1-Year Real Angel One Historical Training Complete (${report.fromDateIst.slice(
-    0,
-    10
-  )} to ${report.toDateIst.slice(0, 10)}, ${report.totalFiveMinCandlesProcessed.toLocaleString(
-    "en-IN"
-  )} real 1H candles \xB7 \u20B910,000 Capital \xB7 Dynamic 1L\u2013${report.maxLotsTraded}L Sizing): ${report.winRatePct}% Win Rate (${report.winsCount}W/${report.lossesCount}L), \u20B910,000 \u2192 \u20B9${report.endingConservativeEquityInr.toLocaleString(
-    "en-IN"
-  )} (+${report.netConservativeReturnPct.toFixed(2)}%), PF ${report.profitFactor.toFixed(2)}.`;
-  await persistStateToNeon(true);
-  res.json({
-    autoRunEnabled,
-    report
-  });
-});
-app.get("/api/learning", async (_req, res) => {
-  await ensureStateLoadedFromNeon();
-  res.json({
-    ...state.learning,
-    learningComparison: computeLearningEffectiveness(state)
-  });
+app.get("/api/tick", async (req, res) => {
+  try {
+    const force = req.query.eod === "1";
+    const cycle = await runPaperCycle(store, market, { force });
+    res.json({ ok: true, persistent: databaseConfigured(), cycle });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Cycle failed" });
+  }
 });
 app.get("/api/health", async (_req, res) => {
-  await ensureStateLoadedFromNeon();
-  if (process.env.VERCEL && autoRunEnabled && !state.health.simulatedOfflineMode) {
-    await refreshLiveNseQuotes();
-    const rep = executeAutonomousPaperCycles(state, 1);
-    totalAutonomousCyclesRun += rep.cyclesRun;
-    latestActionSummary = rep.latestActionSummary;
-    await persistStateToNeon();
-  }
-  const offlineCheck = isBotOfflineDuringMarketHours(
-    state.health.heartbeatAt,
-    state.health.marketOpen
-  );
-  res.json({
-    status: "ok",
-    health: state.health,
-    control: state.control,
-    angelOneStatus: getAngelOneConnectionStatus(),
-    heartbeatAgeMinutes: offlineCheck.ageMinutes,
-    isOffline: offlineCheck.isOffline,
-    totalAutonomousCyclesRun,
-    latestActionSummary
-  });
-});
-app.post("/api/control", async (req, res) => {
-  await ensureStateLoadedFromNeon();
-  const {
-    action,
-    newEntriesEnabled,
-    simulateOffline,
-    autoRun,
-    minWinProb,
-    strictLiveMarketHoursOnly
-  } = req.body ?? {};
-  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-  if (action === "toggle_pause") {
-    state.control.newEntriesEnabled = Boolean(newEntriesEnabled);
-    state.control.updatedAt = nowIso;
-    state.control.updatedBy = "vercel_web_switch (web_ro)";
-    state.health.lastCycleStatus = state.control.newEntriesEnabled ? "OK" : "PAUSED";
-  } else if (action === "toggle_strict_market_hours") {
-    const nextStrict = Boolean(strictLiveMarketHoursOnly);
-    state.control.strictLiveMarketHoursOnly = nextStrict;
-    state.control.updatedAt = nowIso;
-    state.control.updatedBy = "operator_market_hours_guard";
-    const istNow = isNseMarketHoursIst();
-    latestActionSummary = nextStrict ? `Strict Live NSE Market-Hours Mode (09:15\u201315:30 IST) ENABLED \xB7 Current: ${istNow.reason}` : `Strict Live NSE Market-Hours Mode DISABLED \xB7 24/7 Autonomous Walk-Forward Paper Engine active.`;
-    state.learning.learningLog.unshift({
-      logId: `LL-MKT-${Date.now().toString().slice(-4)}`,
-      loggedAt: nowIso,
-      changeCategory: "MARKET_HOURS_EXECUTION_GUARD",
-      modelVersion: state.learning.championVersion,
-      parameterOrBucket: "control.strict_live_market_hours_only",
-      oldValue: String(!nextStrict),
-      newValue: String(nextStrict),
-      sampleSize: state.closedTrades.length,
-      bootstrapCi90: "09:15\u201315:30 IST Mon\u2013Fri Guard",
-      reasonAndEvidence: nextStrict ? "Restricted autonomous paper execution strictly to active NSE F&O market hours (09:15\u201315:30 IST) when live Angel One NFO ticks move." : "Enabled 24/7 continuous walk-forward paper execution using Angel One NFO orderbook baselines."
-    });
-  } else if (action === "reset_paper_ledger") {
-    const preservedChampion = state.learning.championVersion;
-    const preservedPrevChamp = state.learning.previousChampionVersion;
-    const preservedChallenger = state.learning.challengerVersion;
-    const preservedModelType = state.learning.modelType;
-    const preservedAuc = state.learning.walkForwardAuc;
-    const preservedGate = state.learning.qualityGateThreshold;
-    const preservedStrict = Boolean(state.control.strictLiveMarketHoursOnly);
-    const preservedFeatureWeights = state.learning.featureImportances;
-    const preservedBandits = state.learning.banditAllocations;
-    const preservedChampVsChallenger = state.learning.championVsChallenger;
-    const freshState = buildInitialQuantState();
-    freshState.openPositions = [];
-    freshState.closedTrades = [];
-    freshState.skippedSignals = [];
-    freshState.equitySeries = [
-      {
-        snapshotId: `SNAP-RESET-${Date.now().toString().slice(-5)}`,
-        recordedAt: nowIso,
-        conservativeEquityInr: INITIAL_REAL_CAPITAL_INR,
-        brokerPaperEquityInr: INITIAL_REAL_CAPITAL_INR,
-        niftyBenchmarkEquityInr: INITIAL_REAL_CAPITAL_INR,
-        realizedPnlInr: 0,
-        unrealizedPnlInr: 0,
-        drawdownPct: 0,
-        openPositionsCount: 0
-      }
-    ];
-    freshState.control.activeChampionVersion = preservedChampion;
-    freshState.control.previousChampionVersion = preservedPrevChamp;
-    freshState.control.strictLiveMarketHoursOnly = preservedStrict;
-    freshState.control.updatedAt = nowIso;
-    freshState.control.updatedBy = "operator_ledger_reset_10k";
-    freshState.learning.championVersion = preservedChampion;
-    freshState.learning.previousChampionVersion = preservedPrevChamp;
-    freshState.learning.challengerVersion = preservedChallenger;
-    freshState.learning.modelType = preservedModelType;
-    freshState.learning.walkForwardAuc = preservedAuc;
-    freshState.learning.qualityGateThreshold = preservedGate;
-    freshState.learning.featureImportances = preservedFeatureWeights;
-    freshState.learning.banditAllocations = preservedBandits;
-    freshState.learning.championVsChallenger = {
-      ...preservedChampVsChallenger,
-      statusSummary: `Clean \u20B910,000 Ledger Active \xB7 Trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(
-        3
-      )}) & Smart Multi-Lot Bandit Weights Preserved.`
-    };
-    freshState.learning.closedTradesCount = 0;
-    freshState.learning.tradesNeededForGbdt = preservedChampion.includes("gbdt") ? 0 : 200;
-    freshState.learning.learningLog.unshift({
-      logId: `LL-RESET-${Date.now().toString().slice(-4)}`,
-      loggedAt: nowIso,
-      changeCategory: "PAPER_LEDGER_RESET_10K",
-      modelVersion: preservedChampion,
-      parameterOrBucket: "portfolio.starting_equity_inr",
-      oldValue: "1-Year Historical Trained Ledger",
-      newValue: "\u20B910,000.00 Clean Forward Ledger (1Y Real Brain Preserved)",
-      sampleSize: 0,
-      bootstrapCi90: "Preserved 1Y Real GBDT + Bandit Weights",
-      reasonAndEvidence: `Reset paper ledger to clean \u20B910,000.00 starting capital while preserving 1-Year Real Angel One trained ${preservedChampion} (${preservedModelType}, AUC ${preservedAuc.toFixed(3)}), feature weights, and Thompson Sampling Bandit allocations.`
-    });
-    state = freshState;
-    totalAutonomousCyclesRun = 1;
-    latestActionSummary = `Paper Ledger reset to \u20B910,000.00 clean baseline (0 open positions, 0 closed trades) with 1-Year Real Angel One trained ${preservedChampion} & Bandit memory preserved.`;
-  } else if (action === "set_min_win_prob") {
-    const parsed = Number(minWinProb);
-    if (Number.isFinite(parsed)) {
-      const oldVal = state.learning.qualityGateThreshold;
-      const clamped = Number(Math.max(0.67, Math.min(0.85, parsed)).toFixed(2));
-      state.learning.qualityGateThreshold = clamped;
-      latestActionSummary = `Updated Capital-Preservation Gate to P(gain) >= ${(clamped * 100).toFixed(0)}% (Hard Floor: 67%).`;
-      state.learning.learningLog.unshift({
-        logId: `LL-GATE-${Date.now().toString().slice(-4)}`,
-        loggedAt: nowIso,
-        changeCategory: "CAPITAL_PRESERVATION_GATE",
-        modelVersion: state.learning.championVersion,
-        parameterOrBucket: "quality_gate.min_win_probability",
-        oldValue: `${(oldVal * 100).toFixed(0)}%`,
-        newValue: `${(clamped * 100).toFixed(0)}% (Hard Floor >= 67%)`,
-        sampleSize: state.closedTrades.length,
-        bootstrapCi90: "Operator Capital-Preservation Floor",
-        reasonAndEvidence: `Set minimum calibrated probability of net gain (after spread & \u20B935/lot fee) to ${(clamped * 100).toFixed(0)}% with a hard 67% floor.`
-      });
-    }
-  } else if (action === "toggle_autorun") {
-    autoRunEnabled = Boolean(autoRun);
-    latestActionSummary = autoRunEnabled ? "Autonomous NSE Paper Loop resumed (1 cycle every 8s)." : "Autonomous NSE Paper Loop paused by operator.";
-  } else if (action === "simulate_offline") {
-    const makeOffline = Boolean(simulateOffline);
-    state.health.simulatedOfflineMode = makeOffline;
-    if (makeOffline) {
-      state.health.heartbeatAt = new Date(Date.now() - 16 * 60 * 1e3).toISOString();
-    } else {
-      state.health.heartbeatAt = nowIso;
-      state.health.lastDbWriteAt = nowIso;
-    }
-  } else if (action === "rollback_champion") {
-    const prev = state.learning.previousChampionVersion;
-    const oldChamp = state.learning.championVersion;
-    state.learning.championVersion = prev;
-    state.control.activeChampionVersion = prev;
-    state.control.updatedAt = nowIso;
-    state.learning.learningLog.unshift({
-      logId: `LL-RB-${Date.now().toString().slice(-4)}`,
-      loggedAt: nowIso,
-      changeCategory: "CHAMPION_ROLLBACK",
-      modelVersion: prev,
-      parameterOrBucket: "active_champion_version",
-      oldValue: oldChamp,
-      newValue: prev,
-      sampleSize: state.closedTrades.length,
-      bootstrapCi90: "Manual 1-Command Rollback",
-      reasonAndEvidence: `Rolled back active Champion from ${oldChamp} to previous validated Champion ${prev}.`
-    });
-  } else if (action === "promote_challenger") {
-    const prev = state.learning.championVersion;
-    const rawNext = state.learning.challengerVersion;
-    const nextChamp = rawNext.replace("-shadow", "-ensemble");
-    const nextShadow = nextChamp.includes("v2.0") ? "v2.1.0-nse-gbdt-shadow" : nextChamp.includes("v2.1") ? "v2.2.0-nse-gbdt-shadow" : "v2.3.0-nse-gbdt-shadow";
-    state.learning.previousChampionVersion = prev;
-    state.learning.championVersion = nextChamp;
-    state.control.previousChampionVersion = prev;
-    state.control.activeChampionVersion = nextChamp;
-    state.learning.challengerVersion = nextShadow;
-    state.learning.modelType = nextChamp.includes("v2.1") ? "Gradient-Boosted Decision Trees (80-Tree Depth-3 GBDT + Isotonic Calibration)" : "Gradient-Boosted Decision Trees (60-Tree Depth-2 GBDT + L2 Calibration)";
-    state.learning.walkForwardAuc = Number(
-      Math.max(0.786, state.learning.walkForwardAuc + 0.012).toFixed(3)
-    );
-    state.learning.championVsChallenger.readyToPromote = false;
-    state.learning.championVsChallenger.shadowTradesCompleted = 14;
-    state.learning.championVsChallenger.statusSummary = `Active Champion ${nextChamp} (${state.learning.modelType}, AUC ${state.learning.walkForwardAuc.toFixed(
-      3
-    )}) promoted. Next-gen Shadow Challenger ${nextShadow} is evaluating online (14/50 shadow trades).`;
-    latestActionSummary = `Promoted ${nextChamp} (${state.learning.modelType}, Walk-Forward AUC ${state.learning.walkForwardAuc.toFixed(
-      3
-    )}) as Active Champion!`;
-    state.learning.learningLog.unshift({
-      logId: `LL-PR-${Date.now().toString().slice(-4)}`,
-      loggedAt: nowIso,
-      changeCategory: "CHAMPION_PROMOTION",
-      modelVersion: nextChamp,
-      parameterOrBucket: "active_champion_version",
-      oldValue: prev,
-      newValue: `${nextChamp} (AUC ${state.learning.walkForwardAuc.toFixed(3)})`,
-      sampleSize: state.closedTrades.length,
-      bootstrapCi90: "[+\u20B91180, +\u20B92890] / trade",
-      reasonAndEvidence: `Promoted shadow Challenger ${nextChamp} after ${state.closedTrades.length} NSE trades with higher conservative expectancy and lower max drawdown.`
-    });
-  }
-  await persistStateToNeon(action === "reset_paper_ledger");
-  const offlineCheck = isBotOfflineDuringMarketHours(
-    state.health.heartbeatAt,
-    state.health.marketOpen
-  );
-  res.json({
-    control: state.control,
-    health: {
-      ...state.health,
-      heartbeatAgeMinutes: offlineCheck.ageMinutes,
-      isOffline: offlineCheck.isOffline
-    },
-    learning: state.learning,
-    autoRunEnabled
-  });
-});
-app.post("/api/fast-forward", async (req, res) => {
-  await ensureStateLoadedFromNeon();
-  const cycles = Number(req.body?.cycles) || 10;
-  await refreshLiveNseQuotes();
-  const report = executeAutonomousPaperCycles(state, cycles);
-  totalAutonomousCyclesRun += report.cyclesRun;
-  latestActionSummary = report.latestActionSummary;
-  await persistStateToNeon();
-  res.json(report);
-});
-app.post("/api/cycle", (req, res) => {
-  const {
-    symbol = "NIFTY",
-    strategy = "trend_following",
-    right = "CE"
-  } = req.body ?? {};
-  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-  const spotMap = {
-    NIFTY: state.health.niftySpot || 24480,
-    BANKNIFTY: state.health.bankNiftySpot || 51850,
-    FINNIFTY: 23920,
-    RELIANCE: 1365,
-    TCS: 4120,
-    HDFCBANK: 1745,
-    INFY: 1860,
-    ICICIBANK: 1295,
-    SBIN: 842
-  };
-  const spot = spotMap[symbol] ?? 24480;
-  const lotSize = NSE_LOT_SIZES[symbol] ?? 75;
-  const optRight = right === "PE" ? "PE" : "CE";
-  const strikeStep = symbol === "BANKNIFTY" ? 100 : symbol === "NIFTY" || symbol === "FINNIFTY" ? 50 : 20;
-  const strike = Math.round(spot * (optRight === "CE" ? 1.004 : 0.996) / strikeStep) * strikeStep;
-  const quote = blackScholesOptionPrice({
-    spot,
-    strike,
-    dteDays: 18,
-    ivAnnual: 0.165,
-    riskFreeRate: 0.068,
-    right: optRight
-  });
-  const entryFill = simulatePessimisticFill("BUY", 1, quote.bid, quote.ask, lotSize);
-  const exitQuote = blackScholesOptionPrice({
-    spot: spot * (optRight === "CE" ? 1.011 : 0.989),
-    strike,
-    dteDays: 16,
-    ivAnnual: 0.17,
-    riskFreeRate: 0.068,
-    right: optRight
-  });
-  const exitFill = simulatePessimisticFill("SELL", 1, exitQuote.bid, exitQuote.ask, lotSize);
-  const rt = calculateRoundtripPnl(1, entryFill, exitFill);
-  const nextIdx = state.closedTrades.length + 1001;
-  const tradeId = `NSE-TRD-${String(nextIdx)}`;
-  const nseSym = `${symbol}26NOV${strike}${optRight}`;
-  const newTrade = {
-    tradeId,
-    contractSymbol: nseSym,
-    underlying: symbol,
-    right: optRight,
-    lotSize,
-    strategyName: strategy,
-    regimeAtEntry: state.health.currentRegime,
-    regimeAtExit: state.health.currentRegime,
-    isShadowChallenger: false,
-    modelVersion: state.control.activeChampionVersion,
-    lotsQty: 1,
-    dteAtEntry: 18,
-    deltaAtEntry: quote.delta,
-    ivRankAtEntry: 34.5,
-    spreadPctAtEntry: entryFill.spreadPctOfMid,
-    confidenceAtEntry: 0.78,
-    rsiAtEntry: 58.2,
-    adxAtEntry: 27.4,
-    atrPctAtEntry: 0.0124,
-    indiaVixAtEntry: state.health.indiaVixLevel,
-    timeOfDayBucket: "OPEN_0915_1015",
-    conservativeEntryPrice: entryFill.conservativeFillPrice,
-    conservativeExitPrice: exitFill.conservativeFillPrice,
-    brokerPaperEntryPrice: entryFill.brokerPaperFillPrice,
-    brokerPaperExitPrice: exitFill.brokerPaperFillPrice,
-    feesTotalInr: Number((entryFill.feeInr + exitFill.feeInr).toFixed(2)),
-    conservativePnlInr: rt.conservativePnlInr,
-    conservativePnlPct: rt.conservativePnlPct,
-    brokerPaperPnlInr: rt.brokerPaperPnlInr,
-    brokerPaperPnlPct: rt.brokerPaperPnlPct,
-    maePct: -0.038,
-    mfePct: Number((rt.conservativePnlPct + 0.04).toFixed(4)),
-    holdMinutes: 195,
-    entryReason: `Simulated 5m IST cycle: ${strategy} signal on ${symbol} (Confidence 0.78 >= 0.62, Quality Gate P(win)=0.64 >= 0.56)`,
-    exitReason: rt.conservativePnlInr > 0 ? "TRAILING_STOP" : "STOP_LOSS",
-    postMortemLabel: rt.conservativePnlInr > 0 ? "optimal_exit" : "wrong_direction",
-    diagnosisNotes: `Dry-run NSE cycle execution (${lotSize} units/lot): Conservative fill \u20B9${entryFill.conservativeFillPrice.toFixed(2)} -> \u20B9${exitFill.conservativeFillPrice.toFixed(2)} (Spread + \u20B935/lot drag: \u20B9${rt.executionDragInr.toFixed(2)}).`,
-    openedAt: new Date(Date.now() - 195 * 6e4).toISOString(),
-    closedAt: nowIso
-  };
-  state.closedTrades.unshift(newTrade);
-  state.learning.closedTradesCount = state.closedTrades.length;
-  const prevSnap = state.equitySeries[state.equitySeries.length - 1];
-  const newConsEq = Number(
-    (prevSnap.conservativeEquityInr + rt.conservativePnlInr).toFixed(2)
-  );
-  const newPaperEq = Number(
-    (prevSnap.brokerPaperEquityInr + rt.brokerPaperPnlInr).toFixed(2)
-  );
-  state.equitySeries.push({
-    snapshotId: `SNAP-${String(state.equitySeries.length + 1).padStart(4, "0")}`,
-    recordedAt: nowIso,
-    conservativeEquityInr: newConsEq,
-    brokerPaperEquityInr: newPaperEq,
-    niftyBenchmarkEquityInr: Number(
-      (prevSnap.niftyBenchmarkEquityInr * 1.0012).toFixed(2)
-    ),
-    realizedPnlInr: Number((newConsEq - INITIAL_REAL_CAPITAL_INR).toFixed(2)),
-    unrealizedPnlInr: prevSnap.unrealizedPnlInr,
-    drawdownPct: prevSnap.drawdownPct,
-    openPositionsCount: state.openPositions.length
-  });
-  state.health.heartbeatAt = nowIso;
-  state.health.lastCycleAt = nowIso;
-  state.health.lastDbWriteAt = nowIso;
-  state.health.simulatedOfflineMode = false;
-  totalAutonomousCyclesRun += 1;
-  latestActionSummary = `Manual Dry-Run Cycle executed ${nseSym} (${rt.conservativePnlInr >= 0 ? "+" : ""}\u20B9${rt.conservativePnlInr.toFixed(2)})`;
-  res.json({
-    executedTrade: newTrade,
-    totalClosedTrades: state.closedTrades.length
-  });
-});
-app.get("/api/files", (req, res) => {
-  const requestedPath = typeof req.query.path === "string" ? req.query.path : "README.md";
-  if (!REPO_FILES_LIST.includes(requestedPath)) {
-    res.status(404).json({
-      error: "File not in allowed repository manifest",
-      files: REPO_FILES_LIST
-    });
-    return;
-  }
-  const fullPath = path2.join(__dirname, requestedPath);
   try {
-    const content = fs2.readFileSync(fullPath, "utf-8");
+    const cycle = await runPaperCycle(store, market, {});
+    const state = await readActiveLedger(store);
     res.json({
-      path: requestedPath,
-      content,
-      files: REPO_FILES_LIST
+      ok: true,
+      persistent: databaseConfigured(),
+      ledgerId: state?.ledgerId ?? null,
+      equity: state?.lastEquity ?? null,
+      lastCycle: state?.lastCycle ?? null,
+      cycle
     });
   } catch (err) {
-    res.status(500).json({ error: String(err), files: REPO_FILES_LIST });
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "Health check failed" });
+  }
+});
+app.post("/api/admin", async (req, res) => {
+  if (!adminSecret()) {
+    res.status(503).json({ error: "Set ADMIN_SECRET (or DASHBOARD_PASSCODE) before changing the ledger." });
+    return;
+  }
+  if (!authorized(req)) {
+    res.status(401).json({ error: "Admin secret was missing or wrong." });
+    return;
+  }
+  const action = String(req.body?.action ?? "");
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  try {
+    if (action === "reset_ledger") {
+      const result2 = await resetPaperLedger(store, Date.now());
+      if (!result2.ok) {
+        res.status(409).json({ error: result2.error });
+        return;
+      }
+      res.json({ ok: true, ledgerId: result2.state.ledgerId, equity: result2.state.lastEquity });
+      return;
+    }
+    const result = await mutateLedger(store, Date.now(), (state) => {
+      if (action === "pause") {
+        state.control = { entriesEnabled: false, updatedAt: now, updatedBy: "admin" };
+        state.decisionLog.unshift({ t: now, kind: "ADMIN", message: "New entries paused. Open positions are still managed." });
+      } else if (action === "resume") {
+        state.control = { entriesEnabled: true, updatedAt: now, updatedBy: "admin" };
+        state.decisionLog.unshift({ t: now, kind: "ADMIN", message: "New entries resumed." });
+      } else if (action === "ack_kill_switch") {
+        state.killSwitch = { active: false, reason: null, at: null };
+        state.peakEquity = state.lastEquity;
+        state.control = { entriesEnabled: true, updatedAt: now, updatedBy: "admin" };
+        state.decisionLog.unshift({
+          t: now,
+          kind: "ADMIN",
+          message: "Drawdown kill switch acknowledged. The peak was reset to current equity."
+        });
+      } else if (action === "retrain") {
+        state.liveLabelsAtLastTrain = -1e6;
+        state.learningLog.unshift({ t: now, kind: "MODEL", message: "Retrain requested. It runs on the next cycle." });
+      } else {
+        throw new Error("Unknown action");
+      }
+    });
+    if (!result.ok) {
+      res.status(409).json({ error: result.error });
+      return;
+    }
+    res.json({ ok: true, ledgerId: result.state.ledgerId });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : "Admin action failed" });
   }
 });
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa"
-    });
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
     const distPath = path2.join(__dirname, "dist");
@@ -4236,16 +3062,13 @@ async function startServer() {
       res.sendFile(path2.join(distPath, "index.html"));
     });
   }
-  const PORT = Number(process.env.PORT) || 3e3;
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`AegisQuant Indian NSE F&O Paper-Trading Server running on http://0.0.0.0:${PORT}`);
+  const port = Number(process.env.PORT) || 3e3;
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`Paper-training server on http://0.0.0.0:${port}`);
   });
 }
-if (!process.env.VERCEL) {
-  startServer();
-}
+if (!process.env.VERCEL) startServer();
 var server_default = app;
 export {
-  app,
   server_default as default
 };
