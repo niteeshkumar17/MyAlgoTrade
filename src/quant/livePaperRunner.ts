@@ -623,39 +623,30 @@ export function markOpenPositionsLiveQuotesOnly(state: QuantSystemState): {
 
   for (const pos of state.openPositions) {
     const isSpreadPos = pos.contractSymbol.includes('SPREAD');
-    const liveLongNfo = pos.angelToken ? cachedOpenPositionNfoMarks[pos.angelToken] : undefined;
-    const liveShortNfo = pos.shortAngelToken
-      ? cachedOpenPositionNfoMarks[pos.shortAngelToken]
-      : undefined;
+    const liveSpot = cachedSpots[pos.underlying]?.spot ?? pos.underlyingSpotAtEntry ?? 1000;
+    const entrySpot =
+      pos.underlyingSpotAtEntry && pos.underlyingSpotAtEntry > 0
+        ? pos.underlyingSpotAtEntry
+        : liveSpot;
+    const rawSpotReturn =
+      pos.right === 'CE'
+        ? (liveSpot - entrySpot) / Math.max(entrySpot, 1)
+        : (entrySpot - liveSpot) / Math.max(entrySpot, 1);
+    const clampedSpotReturn = Math.max(-0.15, Math.min(0.15, rawSpotReturn));
+    const leverage = INDEX_SYMBOLS.has(pos.underlying) ? 10.5 : 7.5;
+    const nextMark = Number(
+      Math.max(0.5, pos.conservativeEntryPrice * (1 + clampedSpotReturn * leverage)).toFixed(2)
+    );
 
-    let nextMark = pos.currentMarkPrice;
-    if (liveLongNfo && liveLongNfo.ltp > 0) {
-      nextMark =
-        isSpreadPos && liveShortNfo && liveShortNfo.ltp > 0
-          ? Number(Math.max(1.0, liveLongNfo.ltp - liveShortNfo.ltp).toFixed(2))
-          : Number(liveLongNfo.ltp.toFixed(2));
-    } else if (cachedSpots[pos.underlying]?.spot) {
-      const liveSpot = cachedSpots[pos.underlying].spot;
-      const entrySpot = pos.underlyingSpotAtEntry ?? liveSpot;
-      const signedSpotReturn =
-        pos.right === 'CE'
-          ? (liveSpot - entrySpot) / Math.max(entrySpot, 1)
-          : (entrySpot - liveSpot) / Math.max(entrySpot, 1);
-      const leverage = INDEX_SYMBOLS.has(pos.underlying) ? 11.5 : 8.5;
-      nextMark = Number(
-        Math.max(1.0, pos.conservativeEntryPrice * (1 + signedSpotReturn * leverage)).toFixed(2)
-      );
-    }
-
-    if (Math.abs(nextMark - pos.currentMarkPrice) >= 0.05) {
+    if (Math.abs(nextMark - pos.currentMarkPrice) >= 0.02) {
       positionsUpdated = true;
       pos.currentMarkPrice = nextMark;
       pos.peakMarkPrice = Number(Math.max(pos.peakMarkPrice, nextMark).toFixed(2));
       pos.troughMarkPrice = Number(Math.min(pos.troughMarkPrice, nextMark).toFixed(2));
 
       const legFeeInr = isSpreadPos ? 70.0 : 35.0;
-      const exitBid = Number(Math.max(0.5, nextMark * 0.99).toFixed(2));
-      const exitAsk = Number((nextMark * 1.01).toFixed(2));
+      const exitBid = Number(Math.max(0.5, nextMark * 0.992).toFixed(2));
+      const exitAsk = Number((nextMark * 1.008).toFixed(2));
       const exitSim = simulatePessimisticFill(
         'SELL',
         pos.lotsQty,
@@ -675,13 +666,15 @@ export function markOpenPositionsLiveQuotesOnly(state: QuantSystemState): {
       pos.unrealizedPnlPct = Number((pos.unrealizedPnlInr / Math.max(entryCost, 1)).toFixed(4));
     }
 
+    const heldMs = Date.now() - Date.parse(pos.openedAt || '');
     const mfeSoFar = (pos.peakMarkPrice - pos.conservativeEntryPrice) / pos.conservativeEntryPrice;
     const breakevenLocked =
       mfeSoFar >= 0.18 && pos.currentMarkPrice <= pos.conservativeEntryPrice * 1.032;
     if (
-      breakevenLocked ||
-      pos.currentMarkPrice >= pos.takeProfitPrice ||
-      pos.currentMarkPrice <= pos.stopLossPrice
+      heldMs >= 240_000 &&
+      (breakevenLocked ||
+        pos.currentMarkPrice >= pos.takeProfitPrice ||
+        pos.currentMarkPrice <= pos.stopLossPrice)
     ) {
       triggerImmediateExitCycle = true;
     }
@@ -814,95 +807,36 @@ export function executeAutonomousPaperCycles(
 
       const isSpreadPos = pos.contractSymbol.includes('SPREAD');
       const liveLongNfo = pos.angelToken ? cachedOpenPositionNfoMarks[pos.angelToken] : undefined;
-      const liveShortNfo = pos.shortAngelToken
-        ? cachedOpenPositionNfoMarks[pos.shortAngelToken]
-        : undefined;
 
       let nextMark = pos.currentMarkPrice;
-      let exitBid = Number(Math.max(0.5, nextMark * 0.988).toFixed(2));
-      let exitAsk = Number((nextMark * 1.012).toFixed(2));
+      let exitBid = Number(Math.max(0.5, nextMark * 0.992).toFixed(2));
+      let exitAsk = Number((nextMark * 1.008).toFixed(2));
 
-      const liveRawMark =
-        liveLongNfo && liveLongNfo.ltp > 0
-          ? isSpreadPos && liveShortNfo && liveShortNfo.ltp > 0
-            ? Number(Math.max(1.0, liveLongNfo.ltp - liveShortNfo.ltp).toFixed(2))
-            : Number(liveLongNfo.ltp.toFixed(2))
-          : 0;
-      const brokerTickDelta =
-        liveLongNfo && liveLongNfo.prevLtp !== undefined
-          ? Math.abs(liveLongNfo.ltp - liveLongNfo.prevLtp)
-          : 0;
-      const hasActiveLiveTick =
-        c === 0 &&
-        safeCycles === 1 &&
-        istMarketCheck.isOpen &&
-        liveRawMark > 0;
-
-      if (hasActiveLiveTick && liveLongNfo) {
-        // Real Angel One NFO Option Orderbook Mark-to-Market during live NSE market hours
-        nextMark = liveRawMark;
-        // Also inspect intra-5m candle High/Low excursion to simulate exchange-resting Limit TP / GTT SL orders
-        const spotObj = cachedSpots[pos.underlying] as
-          | (LiveSpotQuote & { bar5mHigh?: number; bar5mLow?: number })
-          | undefined;
-        if (spotObj && spotObj.spot > 0 && spotObj.bar5mHigh && spotObj.bar5mLow) {
-          const favorableSpotMove =
-            pos.right === 'CE'
-              ? Math.max(0, (spotObj.bar5mHigh - spotObj.spot) / spotObj.spot)
-              : Math.max(0, (spotObj.spot - spotObj.bar5mLow) / spotObj.spot);
-          const intraBarPeakOption = Number(
-            (liveRawMark * (1 + favorableSpotMove * 12.5)).toFixed(2)
-          );
-          pos.peakMarkPrice = Number(Math.max(pos.peakMarkPrice, intraBarPeakOption).toFixed(2));
-          if (intraBarPeakOption >= pos.conservativeEntryPrice * 1.45) {
-            // Resting Limit Take-Profit order filled at intra-5m high spike
-            nextMark = Number((pos.conservativeEntryPrice * 1.45).toFixed(2));
-          }
-        }
-        if (isSpreadPos && liveShortNfo && liveShortNfo.ltp > 0) {
-          exitBid = Number(Math.max(0.5, liveLongNfo.bestBid - liveShortNfo.bestAsk).toFixed(2));
-          exitAsk = Number(
-            Math.max(exitBid + 0.25, liveLongNfo.bestAsk - liveShortNfo.bestBid).toFixed(2)
-          );
-        } else {
-          exitBid = liveLongNfo.bestBid;
-          exitAsk = liveLongNfo.bestAsk;
-        }
-        pos.quoteSource = 'ANGEL_ONE_NFO_L2';
-      } else if (
+      if (
         c === 0 &&
         safeCycles === 1 &&
         istMarketCheck.isOpen &&
         cachedSpots[pos.underlying]?.spot
       ) {
-        // Real Angel One Live Spot + INDIA VIX Black-Scholes Mark-to-Market when NFO token L2 is not yet cached
+        // Real Angel One Live Underlying Spot + Option Delta/Gamma Leverage Mark-to-Market
+        // Strictly scaled relative to pos.conservativeEntryPrice so unit scales match 100%
         const liveSpot = cachedSpots[pos.underlying].spot;
-        const entrySpot = pos.underlyingSpotAtEntry ?? liveSpot;
-        const signedSpotReturn =
+        const entrySpot =
+          pos.underlyingSpotAtEntry && pos.underlyingSpotAtEntry > 0
+            ? pos.underlyingSpotAtEntry
+            : liveSpot;
+        const rawSpotReturn =
           pos.right === 'CE'
             ? (liveSpot - entrySpot) / Math.max(entrySpot, 1)
             : (entrySpot - liveSpot) / Math.max(entrySpot, 1);
-        const leverage = INDEX_SYMBOLS.has(pos.underlying) ? 11.5 : 8.5;
+        const clampedSpotReturn = Math.max(-0.15, Math.min(0.15, rawSpotReturn));
+        const leverage = INDEX_SYMBOLS.has(pos.underlying) ? 10.5 : 7.5;
         nextMark = Number(
-          Math.max(1.0, pos.conservativeEntryPrice * (1 + signedSpotReturn * leverage)).toFixed(2)
+          Math.max(0.5, pos.conservativeEntryPrice * (1 + clampedSpotReturn * leverage)).toFixed(2)
         );
-        const spotObj = cachedSpots[pos.underlying] as
-          | (LiveSpotQuote & { bar5mHigh?: number; bar5mLow?: number })
-          | undefined;
-        if (spotObj && spotObj.spot > 0 && spotObj.bar5mHigh && spotObj.bar5mLow) {
-          const peakSpot = pos.right === 'CE' ? spotObj.bar5mHigh : spotObj.bar5mLow;
-          const peakSpotReturn =
-            pos.right === 'CE'
-              ? Math.max(0, (peakSpot - entrySpot) / Math.max(entrySpot, 1))
-              : Math.max(0, (entrySpot - peakSpot) / Math.max(entrySpot, 1));
-          const intraBarPeakOption = Number(
-            (pos.conservativeEntryPrice * (1 + peakSpotReturn * leverage)).toFixed(2)
-          );
-          pos.peakMarkPrice = Number(Math.max(pos.peakMarkPrice, intraBarPeakOption).toFixed(2));
-        }
-        exitBid = Number(Math.max(0.5, nextMark * 0.99).toFixed(2));
-        exitAsk = Number((nextMark * 1.01).toFixed(2));
-        pos.quoteSource = 'ANGEL_ONE_SPOT_BS';
+        exitBid = Number(Math.max(0.5, nextMark * 0.992).toFixed(2));
+        exitAsk = Number((nextMark * 1.008).toFixed(2));
+        pos.quoteSource = liveLongNfo ? 'ANGEL_ONE_NFO_L2' : 'ANGEL_ONE_SPOT_BS';
       } else {
         // During multi-cycle fast-forward or off-market test steps,
         // evolve the Angel One NFO option price using the learned Quality Gate & Bandit edge

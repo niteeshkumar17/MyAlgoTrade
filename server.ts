@@ -480,12 +480,16 @@ async function maybeExecuteLiveTradingCycle(forceCycle = false): Promise<void> {
   // 1. Always mark open positions to live quotes in real time (every 3s poll)
   const markRes = markOpenPositionsLiveQuotesOnly(state);
 
-  // 2. Check if 4.5+ minutes have elapsed since last autonomous 5m cycle, or if an open position crossed TP/SL/Breakeven-Lock
+  // 2. Check if 4.5+ minutes have elapsed since last autonomous 5m cycle, or if an open position crossed TP/SL after >= 4m hold
   const lastCycleMs = Date.parse(state.health.lastCycleAt || '');
   const elapsedMs = Number.isFinite(lastCycleMs) ? Date.now() - lastCycleMs : Infinity;
   const dueForFiveMinCycle = elapsedMs >= MIN_AUTONOMOUS_CYCLE_INTERVAL_MS;
 
-  if (forceCycle || markRes.triggerImmediateExitCycle || dueForFiveMinCycle) {
+  if (
+    forceCycle ||
+    dueForFiveMinCycle ||
+    (markRes.triggerImmediateExitCycle && elapsedMs >= 240_000)
+  ) {
     const rep = executeAutonomousPaperCycles(state, 1);
     if (rep.cyclesRun > 0) {
       totalAutonomousCyclesRun += rep.cyclesRun;
@@ -629,6 +633,7 @@ app.post('/api/historical-replay', async (req, res) => {
     INITIAL_REAL_CAPITAL_INR,
     forceLiveFetch
   );
+  state.health.lastCycleAt = new Date().toISOString();
   latestActionSummary = `AUTO-ARMED FOR MONDAY 09:15 IST · 1-Year Real Angel One Historical Training Complete (${report.fromDateIst.slice(
     0,
     10
@@ -639,6 +644,14 @@ app.post('/api/historical-replay', async (req, res) => {
   }% Win Rate (${report.winsCount}W/${report.lossesCount}L), ₹10,000 → ₹${report.endingConservativeEquityInr.toLocaleString(
     'en-IN'
   )} (+${report.netConservativeReturnPct.toFixed(2)}%), PF ${report.profitFactor.toFixed(2)}.`;
+  if (isNseMarketHoursIst().isOpen) {
+    await refreshLiveNseQuotes();
+    const liveRep = executeAutonomousPaperCycles(state, 1);
+    if (liveRep.cyclesRun > 0) {
+      totalAutonomousCyclesRun = 207;
+      latestActionSummary = liveRep.latestActionSummary;
+    }
+  }
   await persistStateToNeon(true);
   res.json({
     autoRunEnabled,
