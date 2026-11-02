@@ -106,7 +106,7 @@ describe('spreads, risk and the model', () => {
     assert.equal(reason, 'TAKE_PROFIT');
   });
 
-  it('rejects a fourth position and a lot that risks more than 4%', () => {
+  it('rejects a fourth position and a lot that risks more than the per-trade limit', () => {
     const plan = { underlying: 'NIFTY', maxLossPerLot: 1500, entryDebit: 20, lotSize: 65, long: { ask: 30 }, short: { bid: 10 }, spotAtEntry: 24000 } as SpreadPlan;
     const open = [1, 2, 3].map((n) => ({ underlying: `X${n}`, maxLossInr: 100, marginBlockedInr: 100 }));
     const full = evaluateEntryRisk({
@@ -117,7 +117,7 @@ describe('spreads, risk and the model', () => {
     const pricey = evaluateEntryRisk({
       cfg: DEFAULT_ENGINE_CONFIG, equity: 50_000, cash: 50_000, entriesEnabled: true,
       killSwitchActive: false, dailyHalt: false, openPositions: [], isIndex: true,
-      plan: { ...plan, maxLossPerLot: 5000 },
+      plan: { ...plan, maxLossPerLot: 6500 },
     });
     assert.equal(pricey.allowed, false);
     if (pricey.allowed) return;
@@ -258,13 +258,26 @@ describe('research and readiness', () => {
     assert.ok(report.checks.some((c) => c.id === 'sample' && !c.pass));
   });
 
-  it('loads the real hourly cache and labels the research as model-priced', () => {
+  it('loads the real hourly cache and labels the research as model-priced with positive prior and ML gate lift', () => {
     const cache = loadHistoricalCache();
     assert.ok(cache && cache.NIFTY.length > 1000);
     const report = runOfflineResearch(cache!).report;
     assert.equal(report.kind, 'MODEL_PRICED_BACKTEST');
     assert.ok(report.summary.n > 100);
     assert.equal(typeof report.oppositeDirectionBaseline.avgR, 'number');
+    assert.ok((report.summary.avgR ?? 0) > 0, '1-year research prior should have positive average R');
+    assert.ok(
+      (report.summary.avgR ?? 0) > (report.oppositeDirectionBaseline.avgR ?? 0),
+      '1-year research signals should beat opposite-direction baseline'
+    );
+    assert.ok(
+      (report.walkForward.oos.acceptedAvgR ?? 0) > (report.walkForward.oos.avgR ?? 0),
+      'walk-forward ML gate should lift out-of-sample average R'
+    );
+    assert.ok(
+      report.portfolio.endingEquityInr > report.portfolio.startingCapitalInr,
+      '1-year ML-gated portfolio replay should end above starting capital'
+    );
     assert.ok(report.disclaimer.includes('Black-Scholes'));
   });
 });

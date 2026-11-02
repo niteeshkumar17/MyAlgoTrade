@@ -280,12 +280,14 @@ export function buildSpreadPlan(input: BuildSpreadInput): BuildSpreadResult {
   if (plans.length === 0) {
     return { ok: false, reason: rejections[0] ?? 'no valid short strike' };
   }
-  const affordable = plans.filter((p) => p.maxLossPerLot <= input.budgetPerTradeInr);
+  const maxWidth = Math.max(...plans.map((p) => p.width));
+  const widePlans = plans.filter((p) => p.width >= maxWidth * 0.75);
+  const affordable = widePlans.filter((p) => p.maxLossPerLot <= input.budgetPerTradeInr);
   if (affordable.length > 0) {
     affordable.sort((a, b) => b.width - a.width);
     return { ok: true, plan: affordable[0], affordable: true };
   }
-  plans.sort((a, b) => a.maxLossPerLot - b.maxLossPerLot);
+  plans.sort((a, b) => b.width - a.width);
   return { ok: true, plan: plans[0], affordable: false };
 }
 

@@ -52,7 +52,7 @@ const LEASE_MS = 90_000;
 const OWNER = `paper-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const STALE_FORCE_AFTER = 12;
-const TRAIN_EVERY_LABELS = 10;
+const TRAIN_EVERY_LABELS = 1;
 
 export interface CycleResult {
   ran: boolean;
@@ -452,9 +452,15 @@ function pushEquityPoint(state: LedgerState, nowMs: number, point: Omit<EquityPo
 
 function maybeTrain(state: LedgerState, nowMs: number, force: boolean) {
   const labels = state.counters.candidatesClosed;
-  if (!force && state.model && labels - state.liveLabelsAtLastTrain < TRAIN_EVERY_LABELS) return;
   const research = getOfflineResearch();
   const offline = research?.samples ?? [];
+  const priorChanged = Boolean(
+    state.model &&
+      offline.length > 0 &&
+      (state.model.nOffline !== offline.length ||
+        Math.abs((state.model.offlineOos.acceptedAvgR ?? 0) - (research?.report.walkForward.oos.acceptedAvgR ?? 0)) > 1e-6)
+  );
+  if (!force && !priorChanged && state.model && labels - state.liveLabelsAtLastTrain < TRAIN_EVERY_LABELS) return;
   const live: Sample[] = state.liveSamples.map((s) => ({
     id: s.id,
     x: s.x,
@@ -572,7 +578,7 @@ async function runPaperCycleUnlocked(
     state.dailyHalt = false;
   }
 
-  if (train && (!state.model || state.liveLabelsAtLastTrain < 0)) {
+  if (train) {
     try {
       maybeTrain(state, nowMs, false);
     } catch (err) {
@@ -1065,6 +1071,12 @@ export async function refreshLiveState(
   if (!row) return null;
 
   const state = row.data;
+  state.config = { ...DEFAULT_ENGINE_CONFIG };
+  try {
+    maybeTrain(state, nowMs, false);
+  } catch {
+    // ignore background train errors during fast quote refresh
+  }
   const cfg = state.config;
 
   const quoteTokens = new Set<string>();

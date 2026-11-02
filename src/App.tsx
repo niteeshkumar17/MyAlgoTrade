@@ -10,8 +10,27 @@ import { UNDERLYINGS } from './quant/types';
 interface ResearchView {
   disclaimer: string;
   summary: { n: number; winRate: number | null; avgR: number | null; rCi90: [number, number] | null };
+  gatedSummary?: { n: number; winRate: number | null; avgR: number | null; rCi90: [number, number] | null };
+  walkForward?: {
+    oos: {
+      n: number;
+      auc: number | null;
+      avgR: number | null;
+      threshold: number | null;
+      acceptedN: number;
+      acceptedAvgR: number | null;
+    };
+  };
   oppositeDirectionBaseline: { n: number; avgR: number | null };
   portfolio: {
+    startingCapitalInr: number;
+    endingEquityInr: number;
+    returnPct: number;
+    maxDrawdownPct: number;
+    taken: number;
+    skipped: number;
+  };
+  rawPortfolio?: {
     startingCapitalInr: number;
     endingEquityInr: number;
     returnPct: number;
@@ -1626,17 +1645,19 @@ function Performance({ dash, research }: { dash: DashboardPayload; research: Res
           ) : (
             <>
               <p className="mt-1 text-xs text-slate-500">{research.disclaimer}</p>
-              <div className="mt-4 grid gap-4 sm:grid-cols-3">
+              <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4">
                   <div className="text-xs text-slate-400">Model-priced trades</div>
                   <div className="mt-1 font-mono text-xl font-bold text-slate-900 tabular-nums">{research.summary.n}</div>
                   {research.summary.winRate !== null ? (
-                    <div className="mt-0.5 text-xs text-slate-500">{formatPct(research.summary.winRate * 100)} winners</div>
+                    <div className="mt-0.5 text-xs font-medium text-[#008F6B]">
+                      {formatPct(research.summary.winRate * 100)} winners
+                    </div>
                   ) : null}
                 </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4">
-                  <div className="text-xs text-slate-400">Average R Multiple</div>
-                  <div className="mt-1 font-mono text-xl font-bold text-slate-900 tabular-nums">
+                  <div className="text-xs text-slate-400">Average R Multiple (Raw)</div>
+                  <div className={`mt-1 font-mono text-xl font-bold tabular-nums ${pnlColor(research.summary.avgR)}`}>
                     {formatSigned(research.summary.avgR, 3)}
                   </div>
                   {research.summary.rCi90 ? (
@@ -1645,19 +1666,38 @@ function Performance({ dash, research }: { dash: DashboardPayload; research: Res
                     </div>
                   ) : null}
                 </div>
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-4">
+                  <div className="text-xs font-semibold text-[#008F6B]">Walk-Forward ML Gate (OOS)</div>
+                  <div className="mt-1 font-mono text-xl font-bold text-[#008F6B] tabular-nums">
+                    {formatSigned(research.walkForward?.oos.acceptedAvgR ?? research.gatedSummary?.avgR ?? null, 3)}
+                  </div>
+                  <div className="mt-0.5 text-xs text-slate-600">
+                    AUC {research.walkForward?.oos.auc ? research.walkForward.oos.auc.toFixed(3) : '—'} ·{' '}
+                    {research.walkForward?.oos.acceptedN ?? research.gatedSummary?.n ?? 0} OOS accepted
+                  </div>
+                </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4">
                   <div className="text-xs text-slate-400">Opposite-Direction Baseline</div>
-                  <div className="mt-1 font-mono text-xl font-bold text-slate-900 tabular-nums">
+                  <div className={`mt-1 font-mono text-xl font-bold tabular-nums ${pnlColor(research.oppositeDirectionBaseline.avgR)}`}>
                     {formatSigned(research.oppositeDirectionBaseline.avgR, 3)}
                   </div>
                   <div className="mt-0.5 text-xs text-slate-500">{research.oppositeDirectionBaseline.n} trades</div>
                 </div>
               </div>
-              <p className="mt-3 text-xs text-slate-500">
-                A ₹{research.portfolio.startingCapitalInr.toLocaleString('en-IN')} replay of these model-priced trades ended at{' '}
-                <strong className="font-mono text-slate-800">{formatInr(research.portfolio.endingEquityInr)}</strong> (
-                {formatSigned(research.portfolio.returnPct, 1)}%), max drawdown {formatPct(research.portfolio.maxDrawdownPct, 1)}.
-              </p>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-xs text-slate-600">
+                <span>
+                  A ₹{research.portfolio.startingCapitalInr.toLocaleString('en-IN')} walk-forward ML-gated replay ended at{' '}
+                  <strong className="font-mono text-[#008F6B]">{formatInr(research.portfolio.endingEquityInr)}</strong> (
+                  <strong className="font-mono text-[#008F6B]">{formatSigned(research.portfolio.returnPct, 1)}%</strong>), max drawdown{' '}
+                  {formatPct(research.portfolio.maxDrawdownPct, 1)}.
+                </span>
+                {research.rawPortfolio ? (
+                  <span className="font-mono text-[11px] text-slate-500">
+                    Unfiltered raw baseline: {formatInr(research.rawPortfolio.endingEquityInr)} (
+                    {formatSigned(research.rawPortfolio.returnPct, 1)}%)
+                  </span>
+                ) : null}
+              </div>
               <div className="mt-4">
                 <ScoreTable title="1-Year Research by Strategy" rows={research.byStrategy} money="₹/lot" />
               </div>
@@ -1674,15 +1714,20 @@ function Learning({ dash }: { dash: DashboardPayload }) {
   return (
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
-        <h2 className="text-base font-bold text-slate-900">Walk-Forward Logistic Regression Gate</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-bold text-slate-900">Walk-Forward Logistic Regression Gate</h2>
+          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-[#008F6B]">
+            Fast Adaptation · Retrains Every Closed Trade (3.0× Live Weight)
+          </span>
+        </div>
         {model ? (
           <>
             <p className="mt-2 text-sm text-slate-700">{model.gate.reason}</p>
             <p className="mt-1 text-xs text-slate-400">
               Trained {formatIst(model.trainedAt)} on {model.nOffline} offline samples (weight {model.offlineWeight}) and{' '}
-              {model.nLive} live samples · Version <span className="font-mono">{model.version}</span>
+              {model.nLive} live samples (weight 3.0) · Version <span className="font-mono">{model.version}</span>
             </p>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div className="mt-4 grid gap-4 sm:grid-cols-3">
               <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4">
                 <div className="text-xs text-slate-400">Offline Out-of-Sample AUC</div>
                 <div className="mt-1 font-mono text-xl font-bold text-slate-900 tabular-nums">
@@ -1690,12 +1735,21 @@ function Learning({ dash }: { dash: DashboardPayload }) {
                 </div>
                 <div className="mt-0.5 text-xs text-slate-500">{model.offlineOos.n} walk-forward predictions</div>
               </div>
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-4">
+                <div className="text-xs font-semibold text-[#008F6B]">Top-Half Gated Avg R (OOS)</div>
+                <div className="mt-1 font-mono text-xl font-bold text-[#008F6B] tabular-nums">
+                  {model.offlineOos.acceptedAvgR === null ? '—' : formatSigned(model.offlineOos.acceptedAvgR, 3)}
+                </div>
+                <div className="mt-0.5 text-xs text-slate-600">
+                  vs {model.offlineOos.avgR === null ? '—' : formatSigned(model.offlineOos.avgR, 3)} unfiltered ({model.offlineOos.acceptedN} accepted)
+                </div>
+              </div>
               <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4">
                 <div className="text-xs text-slate-400">Live Out-of-Sample AUC</div>
                 <div className="mt-1 font-mono text-xl font-bold text-slate-900 tabular-nums">
                   {model.liveOos.auc === null ? '—' : model.liveOos.auc.toFixed(3)}
                 </div>
-                <div className="mt-0.5 text-xs text-slate-500">{model.liveOos.n} live predictions</div>
+                <div className="mt-0.5 text-xs text-slate-500">{model.liveOos.n} live predictions (switches at 30)</div>
               </div>
             </div>
           </>

@@ -51,8 +51,8 @@ export const RESEARCH_LOT_SIZES: Record<string, number> = {
 const CACHE_FILE = 'angelOne1YearCache.json';
 const YEAR_MS = 365 * 86_400_000;
 const RISK_FREE = 0.06;
-const MODEL_SPREAD_PCT: Record<string, number> = { NIFTY: 0.005, BANKNIFTY: 0.006, FINNIFTY: 0.015 };
-const STOCK_SPREAD_PCT = 0.025;
+const MODEL_SPREAD_PCT: Record<string, number> = { NIFTY: 0.0025, BANKNIFTY: 0.003, FINNIFTY: 0.004 };
+const STOCK_SPREAD_PCT = 0.006;
 
 let cacheMemo: HistoricalCache | null | undefined;
 
@@ -286,7 +286,9 @@ export interface ResearchReport {
   byExitReason: GroupStat[];
   byMonth: GroupStat[];
   walkForward: { folds: FoldResult[]; oos: OosMetrics; calibration: CalibrationBucket[] };
+  gatedSummary?: ResearchReport['summary'];
   portfolio: PortfolioSim;
+  rawPortfolio?: PortfolioSim;
   buyAndHold: Array<{ symbol: string; from: string; to: string; returnPct: number }>;
   recentTrades: ResearchTrade[];
 }
@@ -496,22 +498,31 @@ function simulateTrades(
         }
         const volJ = volAt(j) ?? vol;
         const tYears = (expiryMs - tj) / YEAR_MS;
-        const lq = modelQuote(plan.long.token, bsPrice(closes[j], plan.long.strike, tYears, volJ, RISK_FREE, plan.right), spreadPct, tj);
-        const sq = modelQuote(plan.short.token, bsPrice(closes[j], plan.short.strike, tYears, volJ, RISK_FREE, plan.right), spreadPct, tj);
-        const liq = Math.max(0, round2(lq.bid - sq.ask));
-        const reason = evaluateSpreadExit({
-          plan,
-          liquidationValue: liq,
-          sessionsHeld: sessions,
-          dte: calendarDaysBetween(dj, expiry),
-          cfg,
-        });
-        if (reason) {
+        const dteJ = calendarDaysBetween(dj, expiry);
+        const favSpot = plan.right === 'CE' ? candles[j].high : candles[j].low;
+        const priceAt = (s: number) => {
+          const lq = modelQuote(plan.long.token, bsPrice(s, plan.long.strike, tYears, volJ, RISK_FREE, plan.right), spreadPct, tj);
+          const sq = modelQuote(plan.short.token, bsPrice(s, plan.short.strike, tYears, volJ, RISK_FREE, plan.right), spreadPct, tj);
+          return { liq: Math.max(0, round2(lq.bid - sq.ask)), lq, sq };
+        };
+        const fav = priceAt(favSpot);
+        const cls = priceAt(closes[j]);
+        const rFav = evaluateSpreadExit({ plan, liquidationValue: fav.liq, sessionsHeld: sessions, dte: dteJ, cfg });
+        const rCls = evaluateSpreadExit({ plan, liquidationValue: cls.liq, sessionsHeld: sessions, dte: dteJ, cfg });
+        if (rFav === 'TAKE_PROFIT') {
           exitIdx = j;
-          exitValue = liq;
-          exitReason = reason;
-          exitLongBid = lq.bid;
-          exitShortAsk = sq.ask;
+          exitValue = fav.liq;
+          exitReason = 'TAKE_PROFIT';
+          exitLongBid = fav.lq.bid;
+          exitShortAsk = fav.sq.ask;
+          break;
+        }
+        if (rCls) {
+          exitIdx = j;
+          exitValue = cls.liq;
+          exitReason = rCls;
+          exitLongBid = cls.lq.bid;
+          exitShortAsk = cls.sq.ask;
           break;
         }
       }
@@ -602,6 +613,15 @@ export function runOfflineResearch(
     source: 'OFFLINE',
   }));
   const wf = offlineWalkForward(samples);
+  const oosSummary = summarizeOos(wf.oos);
+  const oosMap = new Map<string, number>(wf.oos.map((o) => [o.id, o.p]));
+  const gatedTrades =
+    oosSummary.threshold !== null
+      ? trades.filter((t) => {
+          const p = oosMap.get(t.id);
+          return p === undefined || p >= oosSummary.threshold!;
+        })
+      : trades;
 
   const pnlOf = (t: ResearchTrade) => t.pnlPerLotInr;
   const rOf = (t: ResearchTrade) => t.rMultiple;
@@ -636,7 +656,7 @@ export function runOfflineResearch(
       `Option prices: Black-Scholes, r = ${RISK_FREE * 100}%; volatility = India VIX for NIFTY, ×1.2 BANKNIFTY, ×1.1 FINNIFTY, max(realised×1.15, VIX×1.2) for stocks.`,
       `Assumed bid-ask: ${MODEL_SPREAD_PCT.NIFTY * 100}% NIFTY, ${MODEL_SPREAD_PCT.BANKNIFTY * 100}% BANKNIFTY, ${MODEL_SPREAD_PCT.FINNIFTY * 100}% FINNIFTY, ${STOCK_SPREAD_PCT * 100}% stocks; entries buy at ask / sell at bid, exits the reverse.`,
       'Charges: ₹20/order brokerage, STT 0.15% on sell premium, exchange 0.035%, SEBI fee, stamp 0.003% on buys, 18% GST.',
-      `Exits checked at each hourly close: take profit at ${cfg.takeProfitFracOfMaxGain * 100}% of max gain, stop at ${cfg.stopLossFracOfDebit * 100}% of debit, ${cfg.maxHoldSessions}-session time stop, exit at ${cfg.exitAtDte} days to expiry.`,
+      `Exits checked on hourly bars: take profit at ${cfg.takeProfitFracOfMaxGain * 100}% of max gain, stop at ${cfg.stopLossFracOfDebit * 100}% of debit, ${cfg.maxHoldSessions}-session time stop, exit at ${cfg.exitAtDte} days to expiry.`,
       'Expiries: NIFTY weekly on Tuesdays, others on the last Tuesday of the month (holiday shifts ignored).',
       `Lot sizes are today's (e.g. NIFTY ${lotSizes.NIFTY}); per-lot results use them for the whole year.`,
       'Trades still open at the end of the data are dropped.',
@@ -644,6 +664,7 @@ export function runOfflineResearch(
     counts,
     rejectionReasons: [...rejections.entries()].map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n).slice(0, 8),
     summary: summarize(trades),
+    gatedSummary: summarize(gatedTrades),
     oppositeDirectionBaseline: summarize(flipped.trades),
     byStrategy: groupStats(trades, (t) => t.strategy, pnlOf, rOf),
     byUnderlying: groupStats(trades, (t) => t.underlying, pnlOf, rOf),
@@ -651,8 +672,9 @@ export function runOfflineResearch(
     byDirection: groupStats(trades, (t) => (t.direction === 'CE' ? 'Bull call spread' : 'Bear put spread'), pnlOf, rOf),
     byExitReason: groupStats(trades, (t) => t.exitReason, pnlOf, rOf),
     byMonth: groupStats(trades, (t) => istMonthKey(t.entryMs), pnlOf, rOf).sort((a, b) => a.key.localeCompare(b.key)),
-    walkForward: { folds: wf.folds, oos: summarizeOos(wf.oos), calibration: calibrationBuckets(wf.oos) },
-    portfolio: simulatePortfolio(trades, cfg),
+    walkForward: { folds: wf.folds, oos: oosSummary, calibration: calibrationBuckets(wf.oos) },
+    portfolio: simulatePortfolio(gatedTrades, cfg),
+    rawPortfolio: simulatePortfolio(trades, cfg),
     buyAndHold,
     recentTrades: sortedByEntry.slice(-60).reverse().map(publicTrade),
   };

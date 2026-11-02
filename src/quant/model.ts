@@ -221,7 +221,7 @@ export function calibrationBuckets(oos: OosPrediction[], buckets = 5): Calibrati
 }
 
 export const GATE_MIN_AUC = 0.55;
-export const GATE_MIN_LIVE_OOS = 100;
+export const GATE_MIN_LIVE_OOS = 30;
 export const GATE_MIN_OFFLINE_OOS = 150;
 
 /**
@@ -288,7 +288,8 @@ export function suspendedStrategies(
 }
 
 export const OFFLINE_SAMPLE_WEIGHT = 0.3;
-export const MODEL_LAMBDA = 4;
+export const LIVE_SAMPLE_WEIGHT = 3.0;
+export const MODEL_LAMBDA = 2;
 
 function monthBoundaries(samples: Sample[], skipMonths: number): number[] {
   if (samples.length === 0) return [];
@@ -303,21 +304,16 @@ function monthBoundaries(samples: Sample[], skipMonths: number): number[] {
   return out;
 }
 
-function weekBoundaries(samples: Sample[], skipWeeks: number): number[] {
+function liveEntryBoundaries(samples: Sample[]): number[] {
   if (samples.length === 0) return [];
-  const first = Math.min(...samples.map((s) => s.entryMs));
-  const last = Math.max(...samples.map((s) => s.entryMs));
-  const out: number[] = [];
-  let cursor = istWeekStartMs(first);
-  for (let i = 0; cursor <= last; i++) {
-    if (i >= skipWeeks) out.push(cursor);
-    cursor += 7 * 86_400_000;
-  }
-  return out;
+  const uniq = new Set<number>();
+  for (const s of samples) uniq.add(istWeekStartMs(s.entryMs));
+  const sorted = [...uniq].sort((a, b) => a - b);
+  return sorted;
 }
 
 export function offlineWalkForward(offline: Sample[]) {
-  return walkForward(offline, monthBoundaries(offline, 2), { minTrain: 100, lambda: MODEL_LAMBDA });
+  return walkForward(offline, monthBoundaries(offline, 2), { minTrain: 60, lambda: MODEL_LAMBDA });
 }
 
 export function trainModelSnapshot(
@@ -326,16 +322,17 @@ export function trainModelSnapshot(
   nowMs: number,
   offlineOosCache?: { oos: OosPrediction[] }
 ): ModelSnapshot | null {
-  const weightedOffline = offline.map((s) => ({ ...s, weight: OFFLINE_SAMPLE_WEIGHT }));
-  const liveSamples = live.map((s) => ({ ...s, weight: 1 }));
+  const adaptiveOfflineW = Number(Math.max(0.1, OFFLINE_SAMPLE_WEIGHT / (1 + live.length / 40)).toFixed(3));
+  const weightedOffline = offline.map((s) => ({ ...s, weight: adaptiveOfflineW }));
+  const liveSamples = live.map((s) => ({ ...s, weight: LIVE_SAMPLE_WEIGHT }));
   const all = [...weightedOffline, ...liveSamples];
   const fit = fitLogistic(all, MODEL_LAMBDA);
   if (!fit) return null;
 
   const offlineOosPreds = offlineOosCache?.oos ?? offlineWalkForward(offline).oos;
   const offlineOos = summarizeOos(offlineOosPreds);
-  const liveWf = walkForward(all, weekBoundaries(liveSamples, 1), {
-    minTrain: 100,
+  const liveWf = walkForward(all, liveEntryBoundaries(liveSamples), {
+    minTrain: 60,
     lambda: MODEL_LAMBDA,
     isTest: (s) => s.source === 'LIVE',
   });
@@ -355,7 +352,7 @@ export function trainModelSnapshot(
     lambda: fit.lambda,
     nOffline: offline.length,
     nLive: live.length,
-    offlineWeight: OFFLINE_SAMPLE_WEIGHT,
+    offlineWeight: adaptiveOfflineW,
     offlineOos,
     liveOos,
     calibration,

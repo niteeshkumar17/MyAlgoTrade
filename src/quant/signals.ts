@@ -46,7 +46,7 @@ export function detectSignal(
   i: number,
   vixPctile: number | null
 ): SignalEvent | null {
-  if (i < 4) return null;
+  if (i < 5) return null;
   const row = rows[i];
   const prev = rows[i - 1];
   if (!isRowComplete(row) || !isRowComplete(prev) || !Number.isFinite(rows[i - 3].adx14)) return null;
@@ -64,60 +64,107 @@ export function detectSignal(
   };
 
   const adxRising = row.adx14 > rows[i - 3].adx14;
-  if (adxRising && row.adx14 >= 18) {
-    if (c.close > row.donchianHigh20) {
-      return {
-        ...base,
-        strategy: 'breakout_momentum',
-        direction: 'CE',
-        reason: `Close ${f1(c.close)} above 20-bar high ${f1(row.donchianHigh20)}, ADX ${f1(row.adx14)} rising`,
-      };
-    }
-    if (c.close < row.donchianLow20) {
-      return {
-        ...base,
-        strategy: 'breakout_momentum',
-        direction: 'PE',
-        reason: `Close ${f1(c.close)} below 20-bar low ${f1(row.donchianLow20)}, ADX ${f1(row.adx14)} rising`,
-      };
-    }
+
+  // 1. mean_reversion: Bollinger / RSI exhaustion snap-back aligned with higher-timeframe structure
+  if (
+    (pc.low <= prev.lowerBand || prev.pctB <= 0.15) &&
+    prev.rsi14 <= 40 &&
+    c.close > pc.close &&
+    c.close > c.open &&
+    row.ema20 > row.ema50 &&
+    row.ret35 > 0
+  ) {
+    return {
+      ...base,
+      strategy: 'mean_reversion',
+      direction: 'CE',
+      reason: `Bollinger oversold snap-back (RSI ${f1(prev.rsi14)} → ${f1(row.rsi14)}) in structural uptrend`,
+    };
+  }
+  if (
+    (pc.high >= prev.upperBand || prev.pctB >= 0.85) &&
+    prev.rsi14 >= 60 &&
+    c.close < pc.close &&
+    c.close < c.open &&
+    row.ema20 < row.ema50 &&
+    row.ret35 < 0
+  ) {
+    return {
+      ...base,
+      strategy: 'mean_reversion',
+      direction: 'PE',
+      reason: `Bollinger overbought rejection (RSI ${f1(prev.rsi14)} → ${f1(row.rsi14)}) in structural downtrend`,
+    };
   }
 
-  if (regime === 'trending_up' && c.low <= row.ema20 && c.close > row.ema20 && row.rsi14 >= 45 && row.rsi14 <= 70) {
+  // 2. trend_following: pullback into the lower/upper value zone of Bollinger/EMA20 that holds and turns
+  if (
+    row.ema20 > row.ema50 &&
+    row.pctB <= 0.35 &&
+    c.close > pc.close &&
+    c.close > c.open &&
+    row.rsi14 >= 38 &&
+    row.rsi14 <= 56
+  ) {
     return {
       ...base,
       strategy: 'trend_following',
       direction: 'CE',
-      reason: `Uptrend (ADX ${f1(row.adx14)}, EMA20>EMA50) pullback to EMA20 held, RSI ${f1(row.rsi14)}`,
+      reason: `Uptrend (EMA20>EMA50) pullback to value zone held, RSI ${f1(row.rsi14)}`,
     };
   }
-  if (regime === 'trending_down' && c.high >= row.ema20 && c.close < row.ema20 && row.rsi14 >= 30 && row.rsi14 <= 55) {
+  if (
+    row.ema20 < row.ema50 &&
+    row.pctB >= 0.65 &&
+    c.close < pc.close &&
+    c.close < c.open &&
+    row.rsi14 >= 44 &&
+    row.rsi14 <= 62
+  ) {
     return {
       ...base,
       strategy: 'trend_following',
       direction: 'PE',
-      reason: `Downtrend (ADX ${f1(row.adx14)}, EMA20<EMA50) rally to EMA20 rejected, RSI ${f1(row.rsi14)}`,
+      reason: `Downtrend (EMA20<EMA50) rally to value zone rejected, RSI ${f1(row.rsi14)}`,
     };
   }
 
-  if (regime === 'range' && row.adx14 < 20) {
-    if (pc.close < prev.lowerBand && c.close > row.lowerBand && prev.rsi14 <= 35) {
-      return {
-        ...base,
-        strategy: 'mean_reversion',
-        direction: 'CE',
-        reason: `Range (ADX ${f1(row.adx14)}): closed back above lower Bollinger band after RSI ${f1(prev.rsi14)}`,
-      };
-    }
-    if (pc.close > prev.upperBand && c.close < row.upperBand && prev.rsi14 >= 65) {
-      return {
-        ...base,
-        strategy: 'mean_reversion',
-        direction: 'PE',
-        reason: `Range (ADX ${f1(row.adx14)}): closed back below upper Bollinger band after RSI ${f1(prev.rsi14)}`,
-      };
-    }
+  // 3. breakout_momentum: pullback-breakout above prior bar high after tagging EMA20 (plus strong impulse breakouts)
+  const pbBreakUp =
+    row.ema20 > row.ema50 &&
+    (pc.low <= prev.ema20 * 1.003 || c.low <= row.ema20 * 1.003) &&
+    c.close > pc.high &&
+    c.close > row.ema20 &&
+    c.close > c.open &&
+    row.rsi14 >= 46 &&
+    row.rsi14 <= 62;
+  const pbBreakDown =
+    row.ema20 < row.ema50 &&
+    (pc.high >= prev.ema20 * 0.997 || c.high >= row.ema20 * 0.997) &&
+    c.close < pc.low &&
+    c.close < row.ema20 &&
+    c.close < c.open &&
+    row.rsi14 >= 38 &&
+    row.rsi14 <= 54;
+  const impulseBreakout = adxRising && row.adx14 >= 25 && c.close > row.donchianHigh20 && row.rsi14 > 80;
+
+  if (pbBreakUp || impulseBreakout) {
+    return {
+      ...base,
+      strategy: 'breakout_momentum',
+      direction: 'CE',
+      reason: `Momentum breakout above ${f1(pc.high)} off EMA20 support, RSI ${f1(row.rsi14)}`,
+    };
   }
+  if (pbBreakDown) {
+    return {
+      ...base,
+      strategy: 'breakout_momentum',
+      direction: 'PE',
+      reason: `Momentum breakdown below ${f1(pc.low)} off EMA20 resistance, RSI ${f1(row.rsi14)}`,
+    };
+  }
+
   return null;
 }
 
