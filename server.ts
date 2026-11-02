@@ -14,6 +14,8 @@ import {
 import { buildDashboard } from './src/quant/report.js';
 import { getOfflineResearch } from './src/quant/research.js';
 import { createStore, databaseConfigured } from './src/quant/store.js';
+import { loadTerminalCandles, type TerminalInterval } from './src/quant/terminalCandles.js';
+import type { OptionRight } from './src/quant/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -70,6 +72,44 @@ app.get('/api/research', (_req, res) => {
     res.json(research.report);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Research failed' });
+  }
+});
+
+app.get('/api/candles', async (req, res) => {
+  try {
+    const underlying = typeof req.query.underlying === 'string' ? req.query.underlying : 'NIFTY';
+    const rawInterval = typeof req.query.interval === 'string' ? req.query.interval : '5m';
+    const interval: TerminalInterval = rawInterval === '15m' || rawInterval === '1h' ? rawInterval : '5m';
+    const exchange = req.query.exchange === 'NFO' ? 'NFO' : 'NSE';
+    const token = typeof req.query.token === 'string' ? req.query.token : undefined;
+    const strike = req.query.strike ? Number(req.query.strike) : undefined;
+    const right: OptionRight | undefined = req.query.right === 'PE' ? 'PE' : req.query.right === 'CE' ? 'CE' : undefined;
+    const expiry = typeof req.query.expiry === 'string' ? req.query.expiry : undefined;
+    const shortToken = typeof req.query.shortToken === 'string' ? req.query.shortToken : undefined;
+    const shortStrike = req.query.shortStrike ? Number(req.query.shortStrike) : undefined;
+    const liveBid = req.query.liveBid ? Number(req.query.liveBid) : undefined;
+    const liveAsk = req.query.liveAsk ? Number(req.query.liveAsk) : undefined;
+    const shortBid = req.query.shortBid ? Number(req.query.shortBid) : undefined;
+    const shortAsk = req.query.shortAsk ? Number(req.query.shortAsk) : undefined;
+
+    const payload = await loadTerminalCandles({
+      underlying,
+      interval,
+      exchange,
+      token,
+      strike,
+      right,
+      expiry,
+      shortToken,
+      shortStrike,
+      liveBid,
+      liveAsk,
+      shortBid,
+      shortAsk,
+    });
+    res.json(payload);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Candle fetch failed' });
   }
 });
 

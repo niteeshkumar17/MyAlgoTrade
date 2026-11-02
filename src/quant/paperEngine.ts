@@ -566,6 +566,30 @@ async function runPaperCycleUnlocked(
     state.dailyHalt = false;
   }
 
+  if (train && (!state.model || state.liveLabelsAtLastTrain < 0)) {
+    try {
+      maybeTrain(state, nowMs, false);
+    } catch (err) {
+      log(state, 'ERROR', err instanceof Error ? err.message : 'Training failed');
+    }
+  }
+  if (state.model) {
+    for (const cand of state.activeCandidates) {
+      if (cand.modelProb === null && cand.features.length === state.model.weights.length) {
+        cand.modelProb = predictProb(state.model, cand.features);
+        cand.modelVersion = state.model.version;
+        cand.gateActive = Boolean(state.model.gate.active);
+        cand.gateThreshold = state.model.gate.threshold;
+      }
+    }
+    for (const pos of state.openPositions) {
+      if (pos.modelProb === null) {
+        const cand = state.activeCandidates.find((c) => c.id === pos.candidateId);
+        if (cand && cand.modelProb !== null) pos.modelProb = cand.modelProb;
+      }
+    }
+  }
+
   const finish = async (status: NonNullable<LedgerState['lastCycle']>['status'], summary: string) => {
     state.angel = market.status();
     state.lastCycle = { at: new Date(nowMs).toISOString(), durationMs: Date.now() - started, status, summary };

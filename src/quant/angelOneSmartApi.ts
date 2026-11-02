@@ -283,10 +283,17 @@ export async function fetchOptionQuotes(tokens: string[]): Promise<Record<string
   return out;
 }
 
-export async function fetchHourlyCandles(symbol: string, fromIst: string, toIst: string): Promise<Candle[] | null> {
+export type AngelCandleInterval = 'FIVE_MINUTE' | 'FIFTEEN_MINUTE' | 'ONE_HOUR' | 'ONE_DAY';
+
+export async function fetchCandlesByToken(
+  exchange: 'NSE' | 'NFO',
+  symbolToken: string,
+  interval: AngelCandleInterval,
+  fromIst: string,
+  toIst: string
+): Promise<Candle[] | null> {
   const { apiKey, configured } = credentials();
-  const meta = ANGEL_ONE_NSE_TOKENS[symbol];
-  if (!configured || !meta) return null;
+  if (!configured || !symbolToken) return null;
   const jwt = await ensureAngelOneSession(false);
   if (!jwt) return null;
   try {
@@ -294,9 +301,9 @@ export async function fetchHourlyCandles(symbol: string, fromIst: string, toIst:
       method: 'POST',
       headers: headers(apiKey, jwt),
       body: JSON.stringify({
-        exchange: meta.exchange,
-        symboltoken: meta.angelToken,
-        interval: 'ONE_HOUR',
+        exchange,
+        symboltoken: symbolToken,
+        interval,
         fromdate: fromIst,
         todate: toIst,
       }),
@@ -318,6 +325,12 @@ export async function fetchHourlyCandles(symbol: string, fromIst: string, toIst:
     lastAngelError = err instanceof Error ? err.message : 'Angel candle fetch failed';
     return null;
   }
+}
+
+export async function fetchHourlyCandles(symbol: string, fromIst: string, toIst: string): Promise<Candle[] | null> {
+  const meta = ANGEL_ONE_NSE_TOKENS[symbol];
+  if (!meta) return null;
+  return fetchCandlesByToken(meta.exchange, meta.angelToken, 'ONE_HOUR', fromIst, toIst);
 }
 
 /**
