@@ -195,7 +195,16 @@ export interface PaperPosition {
   sessionsHeld: number;
   lastSessionDate: string;
   staleMarks: number;
+  /** Market MTM P&L: (current liquidation mark - entry debit) * qty, matching professional broker terminals. */
   unrealizedInr: number;
+  /** Net P&L after deducting both entry and estimated exit brokerage + statutory charges. */
+  netUnrealizedInr?: number;
+  /** Total estimated round-trip (4-order) brokerage + statutory charges for this position. */
+  estChargesInr?: number;
+  /** Individual MTM P&L on the long option leg. */
+  longLegPnlInr?: number;
+  /** Individual MTM P&L on the short hedge option leg. */
+  shortLegPnlInr?: number;
   modelProb: number | null;
   entryReason: string;
 }

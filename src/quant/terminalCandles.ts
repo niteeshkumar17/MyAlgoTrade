@@ -1,6 +1,7 @@
 import {
   ANGEL_ONE_NSE_TOKENS,
   type AngelCandleInterval,
+  downloadInstrumentMaster,
   fetchCandlesByToken,
   fetchOptionQuotes,
   fetchSpotQuotes,
@@ -10,7 +11,19 @@ import { bsPrice } from './options.js';
 import { loadHistoricalCache } from './research.js';
 import type { Candle, OptionRight } from './types.js';
 
-export type TerminalInterval = '5m' | '15m' | '1h';
+export type TerminalInterval = '1m' | '5m' | '15m' | '1h';
+
+export interface SiblingExpiryOption {
+  expiry: string;
+  token: string;
+  symbol: string;
+  strike: number;
+  right: OptionRight;
+  bid: number;
+  ask: number;
+  ltp: number;
+  volume: number;
+}
 
 export interface TerminalCandleRequest {
   underlying: string;
@@ -40,17 +53,21 @@ export interface TerminalCandleResponse {
     ltp: number;
     spread: number;
     volume: number;
+    dayVolume?: number;
   };
+  availableExpiries?: SiblingExpiryOption[];
 }
 
 function toAngelInterval(interval: TerminalInterval): AngelCandleInterval {
+  if (interval === '1m') return 'ONE_MINUTE';
   if (interval === '5m') return 'FIVE_MINUTE';
   if (interval === '15m') return 'FIFTEEN_MINUTE';
   return 'ONE_HOUR';
 }
 
 function lookbackDays(interval: TerminalInterval): number {
-  if (interval === '5m') return 6;
+  if (interval === '1m') return 2;
+  if (interval === '5m') return 5;
   if (interval === '15m') return 14;
   return 45;
 }
@@ -123,12 +140,12 @@ export function buildCalibratedOptionCandles(
 }
 
 /**
- * Subdivides hourly candles into deterministic 5m or 15m intraday bars when only hourly cache is available,
+ * Subdivides hourly candles into deterministic 1m, 5m or 15m intraday bars when only hourly cache is available,
  * preserving each hourly bar's exact open, high, low, close, and total volume.
  */
 export function expandHourlyToSubBars(hourly: Candle[], interval: TerminalInterval): Candle[] {
   if (interval === '1h' || hourly.length === 0) return hourly;
-  const stepMin = interval === '5m' ? 5 : 15;
+  const stepMin = interval === '1m' ? 5 : interval === '5m' ? 5 : 15;
   const steps = Math.floor(60 / stepMin);
   const recent = hourly.slice(-24);
   const out: Candle[] = [];
@@ -164,34 +181,82 @@ export function expandHourlyToSubBars(hourly: Candle[], interval: TerminalInterv
   return out;
 }
 
+function buildRealSpreadCandles(longCandles: Candle[], shortCandles: Candle[]): Candle[] {
+  const shortByTime = new Map(shortCandles.map((c) => [c.time, c]));
+  const out: Candle[] = [];
+  for (const lc of longCandles) {
+    const sc = shortByTime.get(lc.time);
+    if (!sc) continue;
+    const o = Math.max(0.05, round2(lc.open - sc.open));
+    const c = Math.max(0.05, round2(lc.close - sc.close));
+    const hi = Math.max(o, c, round2(lc.high - sc.low));
+    const lo = Math.max(0.05, Math.min(o, c, round2(lc.low - sc.high)));
+    out.push({
+      time: lc.time,
+      open: o,
+      high: hi,
+      low: lo,
+      close: c,
+      volume: Math.min(lc.volume || 0, sc.volume || lc.volume || 0) || lc.volume || 0,
+    });
+  }
+  return out;
+}
+
 export async function loadTerminalCandles(req: TerminalCandleRequest): Promise<TerminalCandleResponse> {
   const nowMs = Date.now();
   const fromIst = formatIstForAngel(nowMs - lookbackDays(req.interval) * 86_400_000);
   const toIst = formatIstForAngel(nowMs + 60_000);
   const angelInterval = toAngelInterval(req.interval);
   const meta = ANGEL_ONE_NSE_TOKENS[req.underlying] ?? ANGEL_ONE_NSE_TOKENS.NIFTY;
+  const maxBars = req.interval === '1m' ? 375 : req.interval === '5m' ? 225 : 150;
 
-  // 1. Fetch underlying spot candles (try live Angel One first, then 1Y cache)
-  let spotCandles = await fetchCandlesByToken('NSE', meta.angelToken, angelInterval, fromIst, toIst);
-  let usedCacheForSpot = false;
-  if (!spotCandles || spotCandles.length < 10) {
-    const cache = loadHistoricalCache();
-    const cachedHourly = (cache?.[req.underlying] ?? cache?.NIFTY ?? []).slice(-120);
-    spotCandles = expandHourlyToSubBars(cachedHourly, req.interval);
-    usedCacheForSpot = true;
-  } else {
-    spotCandles = spotCandles.slice(-140);
-  }
-
-  // 2. If requesting an NFO option leg or spread
+  // 1. If requesting an NFO option leg or spread, fetch NFO candles FIRST (no wasted NSE candle request!)
   if (req.exchange === 'NFO' && req.token) {
-    const liveQuotes = await fetchOptionQuotes([req.token, ...(req.shortToken ? [req.shortToken] : [])]);
+    // Find sibling expiries for the same strike & right (e.g. 03 Nov vs 09 Nov 23350 CE)
+    let siblingInstruments: Array<{ expiry: string; token: string; symbol: string; strike: number; right: OptionRight }> = [];
+    if (req.strike && req.right) {
+      const master = await downloadInstrumentMaster(nowMs);
+      if (master) {
+        siblingInstruments = master
+          .filter((m) => m.underlying === req.underlying && m.strike === req.strike && m.right === req.right)
+          .sort((a, b) => a.expiry.localeCompare(b.expiry))
+          .slice(0, 5);
+      }
+    }
+
+    const quoteTokens = [
+      req.token,
+      ...(req.shortToken ? [req.shortToken] : []),
+      ...siblingInstruments.map((s) => s.token),
+    ];
+
+    const [liveQuotes, nfoCandles] = await Promise.all([
+      fetchOptionQuotes(quoteTokens),
+      fetchCandlesByToken('NFO', req.token, angelInterval, fromIst, toIst),
+    ]);
+
+    const availableExpiries: SiblingExpiryOption[] = siblingInstruments.map((s) => {
+      const q = liveQuotes?.[s.token];
+      return {
+        expiry: s.expiry,
+        token: s.token,
+        symbol: s.symbol,
+        strike: s.strike,
+        right: s.right,
+        bid: q?.bid ?? 0,
+        ask: q?.ask ?? 0,
+        ltp: q?.ltp ?? 0,
+        volume: q?.volume ?? 0,
+      };
+    });
+
     const lq = liveQuotes?.[req.token];
     const sq = req.shortToken ? liveQuotes?.[req.shortToken] : undefined;
 
     let bid = lq?.bid || req.liveBid || 0;
     let ask = lq?.ask || req.liveAsk || 0;
-    let volume = lq?.volume || 0;
+    const dayVolume = lq?.volume || 0;
 
     if (req.shortToken && (sq || req.shortBid || req.shortAsk)) {
       const sBid = sq?.bid || req.shortBid || 0;
@@ -202,32 +267,73 @@ export async function loadTerminalCandles(req: TerminalCandleRequest): Promise<T
       ask = entry;
     }
 
-    // Try direct NFO historical candles when viewing a single option leg
-    if (!req.shortToken) {
-      const nfoCandles = await fetchCandlesByToken('NFO', req.token, angelInterval, fromIst, toIst);
-      if (nfoCandles && nfoCandles.length >= 10) {
-        const sliced = nfoCandles.slice(-140);
-        const lastClose = sliced[sliced.length - 1].close;
-        const finalBid = bid > 0 ? bid : round2(lastClose - 0.15);
-        const finalAsk = ask > 0 ? ask : round2(lastClose + 0.15);
-        return {
-          underlying: req.underlying,
-          interval: req.interval,
-          source: 'ANGEL_LIVE_NFO',
-          candles: sliced,
-          spotCandles,
-          quote: {
-            bid: finalBid,
-            ask: finalAsk,
-            ltp: lq?.ltp || lastClose,
-            spread: round2(Math.max(0, finalAsk - finalBid)),
-            volume: volume || sliced[sliced.length - 1].volume || 0,
-          },
-        };
+    // Single Option Leg: return real Angel One NFO candles directly
+    const lotSize = req.underlying === 'BANKNIFTY' ? 30 : req.underlying === 'FINNIFTY' ? 65 : 65;
+    if (!req.shortToken && nfoCandles && nfoCandles.length >= 5) {
+      const sliced = nfoCandles.slice(-maxBars).map((c) => ({
+        ...c,
+        volume: Math.round((c.volume || 0) * lotSize),
+      }));
+      const lastClose = sliced[sliced.length - 1].close;
+      const finalBid = bid > 0 ? bid : round2(lastClose - 0.15);
+      const finalAsk = ask > 0 ? ask : round2(lastClose + 0.15);
+      return {
+        underlying: req.underlying,
+        interval: req.interval,
+        source: 'ANGEL_LIVE_NFO',
+        candles: sliced,
+        spotCandles: [],
+        quote: {
+          bid: finalBid,
+          ask: finalAsk,
+          ltp: lq?.ltp || lastClose,
+          spread: round2(Math.max(0, finalAsk - finalBid)),
+          volume: sliced[sliced.length - 1].volume || dayVolume || 0,
+          dayVolume,
+        },
+        availableExpiries,
+      };
+    }
+
+    // Net Spread View: fetch short leg NFO candles and build real NFO spread bars
+    if (req.shortToken && nfoCandles && nfoCandles.length >= 5) {
+      const shortCandles = await fetchCandlesByToken('NFO', req.shortToken, angelInterval, fromIst, toIst);
+      if (shortCandles && shortCandles.length >= 5) {
+        const spreadCandles = buildRealSpreadCandles(nfoCandles, shortCandles).slice(-maxBars);
+        if (spreadCandles.length >= 5) {
+          const lastClose = spreadCandles[spreadCandles.length - 1].close;
+          const finalBid = bid > 0 ? bid : round2(lastClose - 0.15);
+          const finalAsk = ask > 0 ? ask : round2(lastClose + 0.15);
+          return {
+            underlying: req.underlying,
+            interval: req.interval,
+            source: 'ANGEL_LIVE_NFO',
+            candles: spreadCandles,
+            spotCandles: [],
+            quote: {
+              bid: finalBid,
+              ask: finalAsk,
+              ltp: finalBid,
+              spread: round2(Math.max(0, finalAsk - finalBid)),
+              volume: spreadCandles[spreadCandles.length - 1].volume || dayVolume || 0,
+              dayVolume,
+            },
+            availableExpiries,
+          };
+        }
       }
     }
 
-    // Calibrated Black-Scholes option / spread candles from the real spot candles
+    // Fallback only if NFO historical API is unavailable
+    let spotCandles = await fetchCandlesByToken('NSE', meta.angelToken, angelInterval, fromIst, toIst);
+    if (!spotCandles || spotCandles.length < 5) {
+      const cache = loadHistoricalCache();
+      const cachedHourly = (cache?.[req.underlying] ?? cache?.NIFTY ?? []).slice(-120);
+      spotCandles = expandHourlyToSubBars(cachedHourly, req.interval);
+    } else {
+      spotCandles = spotCandles.slice(-maxBars);
+    }
+
     const targetMark = bid > 0 && ask > 0 ? round2((bid + ask) / 2) : bid > 0 ? bid : undefined;
     const calibrated = buildCalibratedOptionCandles(spotCandles, {
       strike: req.strike || spotCandles[spotCandles.length - 1]?.close || 23350,
@@ -250,13 +356,29 @@ export async function loadTerminalCandles(req: TerminalCandleRequest): Promise<T
         ask: finalAsk,
         ltp: lastClose,
         spread: round2(Math.max(0, finalAsk - finalBid)),
-        volume: volume || calibrated[calibrated.length - 1]?.volume || 0,
+        volume: dayVolume || calibrated[calibrated.length - 1]?.volume || 0,
+        dayVolume,
       },
+      availableExpiries,
     };
   }
 
-  // 3. Underlying NSE spot chart
-  const spots = await fetchSpotQuotes();
+  // 2. Underlying NSE spot chart
+  const [spotCandlesRaw, spots] = await Promise.all([
+    fetchCandlesByToken('NSE', meta.angelToken, angelInterval, fromIst, toIst),
+    fetchSpotQuotes(),
+  ]);
+  let spotCandles = spotCandlesRaw;
+  let usedCacheForSpot = false;
+  if (!spotCandles || spotCandles.length < 5) {
+    const cache = loadHistoricalCache();
+    const cachedHourly = (cache?.[req.underlying] ?? cache?.NIFTY ?? []).slice(-120);
+    spotCandles = expandHourlyToSubBars(cachedHourly, req.interval);
+    usedCacheForSpot = true;
+  } else {
+    spotCandles = spotCandles.slice(-maxBars);
+  }
+
   const sq = spots?.[req.underlying];
   const lastBar = spotCandles[spotCandles.length - 1];
   const ltp = sq?.ltp || lastBar?.close || 0;
@@ -279,3 +401,4 @@ export async function loadTerminalCandles(req: TerminalCandleRequest): Promise<T
     },
   };
 }
+

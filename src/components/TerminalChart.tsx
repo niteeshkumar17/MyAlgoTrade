@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { formatInr, formatIst } from '../quant/format';
-import type { TerminalCandleResponse, TerminalInterval } from '../quant/terminalCandles';
+import { formatInr } from '../quant/format';
+import type { SiblingExpiryOption, TerminalCandleResponse, TerminalInterval } from '../quant/terminalCandles';
 import type { Candidate, Candle, OptionRight, PaperPosition, SpotQuote } from '../quant/types';
 import { UNDERLYINGS } from '../quant/types';
 
@@ -41,7 +41,7 @@ function formatExpiryShort(expiry: string): string {
 function formatVolumeCompact(v: number): string {
   if (!Number.isFinite(v) || v <= 0) return '—';
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
-  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(2)}K`;
   return String(Math.round(v));
 }
 
@@ -51,7 +51,7 @@ function formatAxisTime(iso: string, interval: TerminalInterval): string {
   const ist = new Date(ms + 5.5 * 3600_000);
   const hh = String(ist.getUTCHours()).padStart(2, '0');
   const mm = String(ist.getUTCMinutes()).padStart(2, '0');
-  if (hh === '09' && mm === '15') {
+  if (hh === '09' && mm === '15' && interval !== '1m') {
     const day = ist.getUTCDate();
     const mon = ist.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
     return `${day} ${mon}`;
@@ -81,25 +81,31 @@ export const TerminalChart: React.FC<{
   onSelectTarget,
   onBackToOverview,
 }) => {
-  const [interval, setIntervalState] = useState<TerminalInterval>('5m');
+  const [interval, setIntervalState] = useState<TerminalInterval>('1m');
   const [legMode, setLegMode] = useState<LegViewMode>(() =>
     target.kind === 'underlying' ? 'spot' : 'long'
   );
+  const [overrideExpiry, setOverrideExpiry] = useState<SiblingExpiryOption | null>(null);
   const [showIndicators, setShowIndicators] = useState(false);
   const [showLevels, setShowLevels] = useState(true);
-  const [rangeZoom, setRangeZoom] = useState<'1d' | '5d' | '1m' | 'all'>('5d');
+  const [rangeZoom, setRangeZoom] = useState<'1d' | '5d' | '1m' | 'all'>('1d');
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [data, setData] = useState<TerminalCandleResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [istClock, setIstClock] = useState('');
 
   useEffect(() => {
+    setOverrideExpiry(null);
     if (target.kind === 'underlying') {
       setLegMode('spot');
     } else if (legMode === 'spot') {
       setLegMode('long');
     }
   }, [target.id, target.kind]);
+
+  useEffect(() => {
+    setOverrideExpiry(null);
+  }, [legMode]);
 
   useEffect(() => {
     const updateClock = () => {
@@ -119,8 +125,8 @@ export const TerminalChart: React.FC<{
 
   useEffect(() => {
     let cancelled = false;
-    const fetchCandles = async () => {
-      setLoading(true);
+    const fetchCandles = async (silent = false) => {
+      if (!silent) setLoading(true);
       try {
         const params = new URLSearchParams({
           underlying: target.underlying,
@@ -129,18 +135,22 @@ export const TerminalChart: React.FC<{
 
         if (activePlan && legMode !== 'spot') {
           params.set('exchange', 'NFO');
-          params.set('expiry', activePlan.expiry);
+          params.set('expiry', overrideExpiry?.expiry ?? activePlan.expiry);
           params.set('right', activePlan.right);
           if (legMode === 'long') {
-            params.set('token', activePlan.long.token);
+            params.set('token', overrideExpiry?.token ?? activePlan.long.token);
             params.set('strike', String(activePlan.long.strike));
-            params.set('liveBid', String(activeMark?.longBid ?? activePlan.long.bid));
-            params.set('liveAsk', String(activeMark?.longAsk ?? activePlan.long.ask));
+            if (!overrideExpiry) {
+              params.set('liveBid', String(activeMark?.longBid ?? activePlan.long.bid));
+              params.set('liveAsk', String(activeMark?.longAsk ?? activePlan.long.ask));
+            }
           } else if (legMode === 'short') {
-            params.set('token', activePlan.short.token);
+            params.set('token', overrideExpiry?.token ?? activePlan.short.token);
             params.set('strike', String(activePlan.short.strike));
-            params.set('liveBid', String(activeMark?.shortBid ?? activePlan.short.bid));
-            params.set('liveAsk', String(activeMark?.shortAsk ?? activePlan.short.ask));
+            if (!overrideExpiry) {
+              params.set('liveBid', String(activeMark?.shortBid ?? activePlan.short.bid));
+              params.set('liveAsk', String(activeMark?.shortAsk ?? activePlan.short.ask));
+            }
           } else if (legMode === 'spread') {
             params.set('token', activePlan.long.token);
             params.set('strike', String(activePlan.long.strike));
@@ -160,36 +170,117 @@ export const TerminalChart: React.FC<{
         const payload = (await res.json()) as TerminalCandleResponse;
         if (!cancelled) {
           setData(payload);
-          setHoverIdx(null);
+          if (!silent) setHoverIdx(null);
         }
       } catch {
         // retain previous chart if transient error
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && !silent) setLoading(false);
       }
     };
-    void fetchCandles();
+    void fetchCandles(false);
+    const timer = setInterval(() => void fetchCandles(true), 5_000);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
-  }, [target.id, target.underlying, interval, legMode, activePlan, activeMark?.at]);
+  }, [
+    target.id,
+    target.underlying,
+    interval,
+    legMode,
+    overrideExpiry?.token,
+    activePlan?.long.token,
+    activePlan?.short.token,
+  ]);
+
+  const liveStreamQuote = useMemo(() => {
+    if (overrideExpiry) {
+      const bid = data?.quote.bid ?? overrideExpiry.bid;
+      const ask = data?.quote.ask ?? overrideExpiry.ask;
+      const ltp = data?.quote.ltp ?? overrideExpiry.ltp ?? Number(((bid + ask) / 2).toFixed(2));
+      return { bid, ask, ltp };
+    }
+    if (activePlan && legMode !== 'spot') {
+      if (legMode === 'long') {
+        const bid = activeMark?.longBid ?? data?.quote.bid ?? activePlan.long.bid;
+        const ask = activeMark?.longAsk ?? data?.quote.ask ?? activePlan.long.ask;
+        const ltp = data?.quote.ltp ?? Number(((bid + ask) / 2).toFixed(2));
+        return { bid, ask, ltp };
+      }
+      if (legMode === 'short') {
+        const bid = activeMark?.shortBid ?? data?.quote.bid ?? activePlan.short.bid;
+        const ask = activeMark?.shortAsk ?? data?.quote.ask ?? activePlan.short.ask;
+        const ltp = data?.quote.ltp ?? Number(((bid + ask) / 2).toFixed(2));
+        return { bid, ask, ltp };
+      }
+      const liq = activeMark?.liquidationValue ?? data?.quote.bid ?? activePlan.entryDebit;
+      const askSpread = Math.max(
+        liq + 0.15,
+        (activeMark?.longAsk ?? activePlan.long.ask) - (activeMark?.shortBid ?? activePlan.short.bid)
+      );
+      return {
+        bid: Number(liq.toFixed(2)),
+        ask: Number(askSpread.toFixed(2)),
+        ltp: Number(liq.toFixed(2)),
+      };
+    }
+    const spot = spots[target.underlying];
+    if (spot) {
+      const half = Math.max(0.05, Number((spot.ltp * 0.0001).toFixed(2)));
+      return {
+        bid: Number((spot.ltp - half).toFixed(2)),
+        ask: Number((spot.ltp + half).toFixed(2)),
+        ltp: spot.ltp,
+      };
+    }
+    return null;
+  }, [overrideExpiry, activePlan, activeMark, legMode, data?.quote, spots, target.underlying]);
 
   const visibleCandles: Candle[] = useMemo(() => {
-    const all = data?.candles ?? [];
-    if (all.length === 0) return [];
-    const counts = { '1d': 45, '5d': 85, '1m': 115, all: all.length };
-    const take = counts[rangeZoom] ?? 85;
-    return all.slice(-take);
-  }, [data?.candles, rangeZoom]);
+    const raw = data?.candles ?? [];
+    if (raw.length === 0) return [];
+
+    let sliced: Candle[];
+    if (rangeZoom === '1d') {
+      const lastDatePrefix = raw[raw.length - 1].time.slice(0, 10);
+      const todayBars = raw.filter((c) => c.time.slice(0, 10) === lastDatePrefix);
+      sliced = todayBars.length >= 10 ? todayBars : raw.slice(-Math.min(raw.length, interval === '1m' ? 220 : 75));
+    } else {
+      const counts = {
+        '5d': interval === '1m' ? 280 : 120,
+        '1m': interval === '1m' ? 350 : 180,
+        all: raw.length,
+      };
+      const take = counts[rangeZoom] ?? raw.length;
+      sliced = raw.slice(-take);
+    }
+
+    if (liveStreamQuote && Number.isFinite(liveStreamQuote.ltp) && liveStreamQuote.ltp > 0 && sliced.length > 0) {
+      const last = sliced[sliced.length - 1];
+      const ltp = liveStreamQuote.ltp;
+      return [
+        ...sliced.slice(0, -1),
+        {
+          ...last,
+          close: ltp,
+          high: Math.max(last.high, ltp),
+          low: Math.min(last.low, ltp),
+        },
+      ];
+    }
+    return sliced;
+  }, [data?.candles, rangeZoom, interval, liveStreamQuote]);
 
   const ema20 = useMemo(() => computeEmaSeries(visibleCandles.map((c) => c.close), 20), [visibleCandles]);
   const ema50 = useMemo(() => computeEmaSeries(visibleCandles.map((c) => c.close), 50), [visibleCandles]);
 
   const contractMeta = useMemo(() => {
     const rightWord = (r: OptionRight) => (r === 'CE' ? 'Call' : 'Put');
-    const intervalTag = interval === '5m' ? '5' : interval === '15m' ? '15' : '1h';
+    const intervalTag = interval === '1m' ? '1' : interval === '5m' ? '5' : interval === '15m' ? '15' : '1h';
     if (activePlan && legMode !== 'spot') {
-      const exp = formatExpiryShort(activePlan.expiry);
+      const effectiveExpiry = overrideExpiry?.expiry ?? activePlan.expiry;
+      const exp = formatExpiryShort(effectiveExpiry);
       if (legMode === 'long') {
         return {
           searchLabel: `${activePlan.underlying} ${exp.toUpperCase()} ${activePlan.long.strike} ${activePlan.right}`,
@@ -215,33 +306,39 @@ export const TerminalChart: React.FC<{
       chartTitle: `${target.underlying} · ${intervalTag} · NSE`,
       pillLabel: target.underlying,
     };
-  }, [activePlan, legMode, interval, target.underlying]);
+  }, [activePlan, overrideExpiry, legMode, interval, target.underlying]);
 
   const latestBar = visibleCandles[visibleCandles.length - 1];
-  const firstBar = visibleCandles[0];
-  const activeBar = hoverIdx !== null && visibleCandles[hoverIdx] ? visibleCandles[hoverIdx] : latestBar;
-  const prevBar =
-    hoverIdx !== null && hoverIdx > 0
-      ? visibleCandles[hoverIdx - 1]
-      : visibleCandles.length > 1
-        ? firstBar
-        : latestBar;
+  const activeIdx = hoverIdx !== null && visibleCandles[hoverIdx] ? hoverIdx : visibleCandles.length - 1;
+  const activeBar = visibleCandles[activeIdx] ?? latestBar;
+  const prevAdjacentBar = activeIdx > 0 ? visibleCandles[activeIdx - 1] : activeBar;
 
-  const barChange = activeBar && prevBar ? activeBar.close - prevBar.open : 0;
-  const barChangePct = activeBar && prevBar && prevBar.open > 0 ? (barChange / prevBar.open) * 100 : 0;
+  const refPrice = prevAdjacentBar && activeIdx > 0 ? prevAdjacentBar.close : activeBar?.open ?? 0;
+  const barChange = activeBar ? activeBar.close - refPrice : 0;
+  const barChangePct = refPrice > 0 ? (barChange / refPrice) * 100 : 0;
   const isBarUp = activeBar ? activeBar.close >= activeBar.open : true;
 
-  const bidPrice = data?.quote.bid ?? activeBar?.close ?? 0;
-  const askPrice = data?.quote.ask ?? activeBar?.close ?? 0;
+  const bidPrice = liveStreamQuote?.bid ?? data?.quote.bid ?? activeBar?.close ?? 0;
+  const askPrice = liveStreamQuote?.ask ?? data?.quote.ask ?? activeBar?.close ?? 0;
   const spreadVal = Math.max(0, askPrice - bidPrice);
 
-  const spreadLevels = useMemo(() => {
-    if (!activePlan || legMode !== 'spread') return null;
+  const referenceLevels = useMemo(() => {
+    if (!activePlan || legMode === 'spot' || overrideExpiry) return [];
+    if (legMode === 'long') {
+      return [{ label: 'Entry Ask', price: activePlan.long.ask, color: '#2563EB' }];
+    }
+    if (legMode === 'short') {
+      return [{ label: 'Entry Bid (Sold)', price: activePlan.short.bid, color: '#7C3AED' }];
+    }
     const entry = activePlan.entryDebit;
     const targetVal = entry + (activePlan.width - entry) * takeProfitFrac;
     const stopVal = entry * (1 - stopLossFrac);
-    return { entry, targetVal, stopVal };
-  }, [activePlan, legMode, takeProfitFrac, stopLossFrac]);
+    return [
+      { label: 'Target', price: targetVal, color: '#00B386' },
+      { label: 'Entry Debit', price: entry, color: '#2563EB' },
+      { label: 'Stop Loss', price: stopVal, color: '#EB5B3C' },
+    ];
+  }, [activePlan, overrideExpiry, legMode, takeProfitFrac, stopLossFrac]);
 
   // SVG Geometry
   const svgW = 1140;
@@ -256,9 +353,11 @@ export const TerminalChart: React.FC<{
     if (visibleCandles.length === 0) return { minPrice: 0, maxPrice: 100, maxVol: 1000 };
     const lows = visibleCandles.map((c) => c.low);
     const highs = visibleCandles.map((c) => c.high);
-    if (spreadLevels && showLevels) {
-      lows.push(spreadLevels.stopVal);
-      highs.push(spreadLevels.targetVal);
+    if (referenceLevels.length > 0 && showLevels) {
+      for (const lvl of referenceLevels) {
+        lows.push(lvl.price);
+        highs.push(lvl.price);
+      }
     }
     const rawMin = Math.min(...lows);
     const rawMax = Math.max(...highs);
@@ -269,14 +368,14 @@ export const TerminalChart: React.FC<{
       maxPrice: rawMax + padSpan,
       maxVol: Math.max(...vols, 1),
     };
-  }, [visibleCandles, spreadLevels, showLevels]);
+  }, [visibleCandles, referenceLevels, showLevels]);
 
   const priceSpan = Math.max(maxPrice - minPrice, 0.01);
   const yPrice = (p: number) => pad.t + candlePlotH - ((p - minPrice) / priceSpan) * candlePlotH;
   const yVol = (v: number) => volTop + volPlotH - Math.min(1, v / maxVol) * volPlotH;
   const stepX = plotW / Math.max(visibleCandles.length, 1);
   const xCandle = (i: number) => pad.l + (i + 0.5) * stepX;
-  const bodyW = Math.max(2.5, Math.min(11, stepX * 0.68));
+  const bodyW = Math.max(2.2, Math.min(11, stepX * 0.68));
 
   const yTicks = useMemo(() => {
     const count = 8;
@@ -289,19 +388,33 @@ export const TerminalChart: React.FC<{
 
   const xTickIndices = useMemo(() => {
     if (visibleCandles.length === 0) return [];
-    const stride = Math.max(1, Math.floor(visibleCandles.length / 9));
+    if (interval === '1m' && visibleCandles.length >= 40) {
+      const hourly: number[] = [];
+      visibleCandles.forEach((c, idx) => {
+        const ms = Date.parse(c.time);
+        if (!Number.isFinite(ms)) return;
+        const ist = new Date(ms + 5.5 * 3600_000);
+        const mm = ist.getUTCMinutes();
+        if (mm === 0 || mm === 30) hourly.push(idx);
+      });
+      if (hourly.length >= 3) return hourly;
+    }
+    const stride = Math.max(1, Math.floor(visibleCandles.length / 8));
     const out: number[] = [];
     for (let i = 0; i < visibleCandles.length; i += stride) {
       out.push(i);
     }
     return out;
-  }, [visibleCandles.length]);
+  }, [visibleCandles, interval]);
 
   const buildLinePath = (series: Array<number | null>) =>
     series
       .map((v, i) => (v === null ? null : `${i === 0 || series[i - 1] === null ? 'M' : 'L'}${xCandle(i).toFixed(1)},${yPrice(v).toFixed(1)}`))
       .filter(Boolean)
       .join(' ');
+
+  const siblingExpiries = data?.availableExpiries ?? [];
+  const activeExpiryStr = overrideExpiry?.expiry ?? activePlan?.expiry ?? '';
 
   return (
     <div className="space-y-4">
@@ -369,9 +482,9 @@ export const TerminalChart: React.FC<{
 
             <span className="h-4 w-px bg-slate-200" />
 
-            {/* Interval Selector */}
+            {/* Interval Selector (1m, 5m, 15m, 1h — matching Groww's 1m default) */}
             <div className="flex items-center gap-1" role="group" aria-label="Candle timeframe">
-              {(['5m', '15m', '1h'] as TerminalInterval[]).map((iv) => (
+              {(['1m', '5m', '15m', '1h'] as TerminalInterval[]).map((iv) => (
                 <button
                   key={iv}
                   type="button"
@@ -473,10 +586,53 @@ export const TerminalChart: React.FC<{
               </span>
             ) : null}
             <span className="hidden sm:inline text-[11px] text-slate-400">
-              {loading ? 'Syncing bars…' : data?.source === 'ANGEL_LIVE_NFO' || data?.source === 'ANGEL_LIVE_NSE' ? 'Angel One Live' : 'Angel One Feed'}
+              {loading ? 'Syncing bars…' : data?.source === 'ANGEL_LIVE_NFO' ? 'Angel One NFO Live' : 'Angel One Live'}
             </span>
           </div>
         </div>
+
+        {/* Expiry Switcher Strip (e.g. 03 Nov Weekly ₹61 vs 09 Nov Position ₹182) */}
+        {activePlan && (legMode === 'long' || legMode === 'short') && siblingExpiries.length > 1 ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/70 px-3.5 py-1.5 text-xs">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-semibold text-slate-500">
+                {activePlan.underlying} {legMode === 'long' ? activePlan.long.strike : activePlan.short.strike} {activePlan.right} Expiries:
+              </span>
+              {siblingExpiries.map((s) => {
+                const isSelected = s.expiry === activeExpiryStr;
+                const isPositionExpiry = s.expiry === activePlan.expiry;
+                const priceLabel = s.ltp > 0 ? `₹${s.ltp.toFixed(2)}` : s.bid > 0 ? `₹${s.bid.toFixed(2)}` : '';
+                return (
+                  <button
+                    key={s.token}
+                    type="button"
+                    onClick={() => setOverrideExpiry(isPositionExpiry ? null : s)}
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-xs transition ${
+                      isSelected
+                        ? 'border-slate-900 bg-slate-900 font-semibold text-white'
+                        : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                    }`}
+                  >
+                    <span>{formatExpiryShort(s.expiry)}</span>
+                    {priceLabel ? <span className={isSelected ? 'text-emerald-300' : 'text-slate-500'}>{priceLabel}</span> : null}
+                    {isPositionExpiry ? (
+                      <span
+                        className={`rounded px-1 py-0.2 text-[9px] font-bold uppercase ${
+                          isSelected ? 'bg-[#00B386] text-white' : 'bg-emerald-50 text-[#008F6B]'
+                        }`}
+                      >
+                        In Position
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="text-[11px] text-slate-400">
+              Switch expiry to compare current weekly ({formatExpiryShort(siblingExpiries[0]?.expiry ?? '')}) vs position expiry ({formatExpiryShort(activePlan.expiry)})
+            </span>
+          </div>
+        ) : null}
 
         {/* Main Terminal Body: Left Drawing Rail + Center Chart Canvas */}
         <div className="flex min-h-[520px]">
@@ -676,14 +832,10 @@ export const TerminalChart: React.FC<{
                 strokeWidth={1}
               />
 
-              {/* Entry / Target / Stop Reference Lines when viewing Net Spread */}
-              {spreadLevels && showLevels ? (
+              {/* Entry / Target / Stop Reference Lines across Long, Short & Net Spread views */}
+              {referenceLevels.length > 0 && showLevels ? (
                 <g>
-                  {[
-                    { label: 'Target', price: spreadLevels.targetVal, color: '#00B386' },
-                    { label: 'Entry Debit', price: spreadLevels.entry, color: '#64748B' },
-                    { label: 'Stop Loss', price: spreadLevels.stopVal, color: '#EB5B3C' },
-                  ].map((lvl) => {
+                  {referenceLevels.map((lvl) => {
                     const y = yPrice(lvl.price);
                     if (y < pad.t || y > pad.t + candlePlotH) return null;
                     return (
@@ -698,13 +850,13 @@ export const TerminalChart: React.FC<{
                           strokeDasharray="4 4"
                         />
                         <text
-                          x={svgW - pad.r - 6}
-                          y={y - 4}
-                          textAnchor="end"
+                          x={pad.l + 8}
+                          y={y - 5}
+                          textAnchor="start"
                           fill={lvl.color}
                           className="font-mono text-[10px] font-semibold"
                         >
-                          {lvl.label} ₹{lvl.price.toFixed(2)}
+                          {lvl.label}: ₹{lvl.price.toFixed(2)}
                         </text>
                       </g>
                     );
@@ -912,15 +1064,34 @@ export const TerminalChart: React.FC<{
             </div>
 
             {target.position ? (
-              <div className="text-right">
-                <div className="text-[11px] uppercase tracking-wider text-slate-400">Net Unrealized P&L (at Bid/Ask)</div>
-                <div
-                  className={`font-mono text-lg font-bold tabular-nums ${
-                    target.position.unrealizedInr >= 0 ? 'text-[#00B386]' : 'text-[#EB5B3C]'
-                  }`}
-                >
-                  {target.position.unrealizedInr >= 0 ? '+' : ''}
-                  {formatInr(target.position.unrealizedInr)}
+              <div className="flex flex-wrap items-center gap-5 text-right">
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-slate-400">
+                    Market MTM P&amp;L (Now vs Entry)
+                  </div>
+                  <div
+                    className={`font-mono text-lg font-bold tabular-nums ${
+                      target.position.unrealizedInr >= 0 ? 'text-[#00B386]' : 'text-[#EB5B3C]'
+                    }`}
+                  >
+                    {target.position.unrealizedInr >= 0 ? '+' : ''}
+                    {formatInr(target.position.unrealizedInr)}
+                  </div>
+                </div>
+                <div className="border-l border-slate-200 pl-4">
+                  <div className="text-[11px] uppercase tracking-wider text-slate-400">
+                    After 4-Leg Charges (₹{(target.position.estChargesInr ?? 151.25).toFixed(0)})
+                  </div>
+                  <div
+                    className={`font-mono text-sm font-semibold tabular-nums ${
+                      (target.position.netUnrealizedInr ?? target.position.unrealizedInr) >= 0
+                        ? 'text-[#00B386]'
+                        : 'text-slate-600'
+                    }`}
+                  >
+                    {(target.position.netUnrealizedInr ?? target.position.unrealizedInr) >= 0 ? '+' : ''}
+                    {formatInr(target.position.netUnrealizedInr ?? target.position.unrealizedInr)}
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -940,7 +1111,19 @@ export const TerminalChart: React.FC<{
                 <span className="rounded bg-[#00B386] px-1.5 py-0.5 text-[10px] font-bold text-white">BUY LEG (LONG)</span>
                 <span className="font-mono text-xs text-slate-500">Token #{activePlan.long.token}</span>
               </div>
-              <div className="mt-1.5 text-sm font-semibold text-slate-900">{activePlan.long.symbol}</div>
+              <div className="mt-1.5 flex items-baseline justify-between">
+                <span className="text-sm font-semibold text-slate-900">{activePlan.long.symbol}</span>
+                {target.position && target.position.longLegPnlInr !== undefined ? (
+                  <span
+                    className={`font-mono text-xs font-bold tabular-nums ${
+                      target.position.longLegPnlInr >= 0 ? 'text-[#00B386]' : 'text-[#EB5B3C]'
+                    }`}
+                  >
+                    {target.position.longLegPnlInr >= 0 ? '+' : ''}
+                    {formatInr(target.position.longLegPnlInr)}
+                  </span>
+                ) : null}
+              </div>
               <div className="mt-2 flex justify-between text-xs text-slate-600">
                 <span>Entry Ask: <strong className="font-mono text-slate-900">₹{activePlan.long.ask.toFixed(2)}</strong></span>
                 <span>Live Bid/Ask: <strong className="font-mono text-slate-900">₹{(activeMark?.longBid ?? activePlan.long.bid).toFixed(2)} / ₹{(activeMark?.longAsk ?? activePlan.long.ask).toFixed(2)}</strong></span>
@@ -959,7 +1142,19 @@ export const TerminalChart: React.FC<{
                 <span className="rounded bg-[#EB5B3C] px-1.5 py-0.5 text-[10px] font-bold text-white">SELL LEG (SHORT HEDGE)</span>
                 <span className="font-mono text-xs text-slate-500">Token #{activePlan.short.token}</span>
               </div>
-              <div className="mt-1.5 text-sm font-semibold text-slate-900">{activePlan.short.symbol}</div>
+              <div className="mt-1.5 flex items-baseline justify-between">
+                <span className="text-sm font-semibold text-slate-900">{activePlan.short.symbol}</span>
+                {target.position && target.position.shortLegPnlInr !== undefined ? (
+                  <span
+                    className={`font-mono text-xs font-bold tabular-nums ${
+                      target.position.shortLegPnlInr >= 0 ? 'text-[#00B386]' : 'text-[#EB5B3C]'
+                    }`}
+                  >
+                    {target.position.shortLegPnlInr >= 0 ? '+' : ''}
+                    {formatInr(target.position.shortLegPnlInr)}
+                  </span>
+                ) : null}
+              </div>
               <div className="mt-2 flex justify-between text-xs text-slate-600">
                 <span>Entry Bid: <strong className="font-mono text-slate-900">₹{activePlan.short.bid.toFixed(2)}</strong></span>
                 <span>Live Bid/Ask: <strong className="font-mono text-slate-900">₹{(activeMark?.shortBid ?? activePlan.short.bid).toFixed(2)} / ₹{(activeMark?.shortAsk ?? activePlan.short.ask).toFixed(2)}</strong></span>

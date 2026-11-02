@@ -8,6 +8,7 @@ import {
   mutateLedger,
   readActiveLedger,
   readJournal,
+  refreshLiveState,
   resetPaperLedger,
   runPaperCycle,
 } from './src/quant/paperEngine.js';
@@ -33,9 +34,10 @@ function authorized(req: express.Request): boolean {
   return Boolean(secret) && req.header('x-admin-secret') === secret;
 }
 
-app.get('/api/state', async (_req, res) => {
+app.get('/api/state', async (req, res) => {
   try {
-    const state = await readActiveLedger(store);
+    const useLive = req.query.live !== '0';
+    const state = useLive ? await refreshLiveState(store, market) : await readActiveLedger(store);
     if (!state) {
       res.json({ ledger: null, persistent: databaseConfigured(), generatedAt: new Date().toISOString() });
       return;
@@ -78,8 +80,11 @@ app.get('/api/research', (_req, res) => {
 app.get('/api/candles', async (req, res) => {
   try {
     const underlying = typeof req.query.underlying === 'string' ? req.query.underlying : 'NIFTY';
-    const rawInterval = typeof req.query.interval === 'string' ? req.query.interval : '5m';
-    const interval: TerminalInterval = rawInterval === '15m' || rawInterval === '1h' ? rawInterval : '5m';
+    const rawInterval = typeof req.query.interval === 'string' ? req.query.interval : '1m';
+    const interval: TerminalInterval =
+      rawInterval === '1m' || rawInterval === '5m' || rawInterval === '15m' || rawInterval === '1h'
+        ? rawInterval
+        : '1m';
     const exchange = req.query.exchange === 'NFO' ? 'NFO' : 'NSE';
     const token = typeof req.query.token === 'string' ? req.query.token : undefined;
     const strike = req.query.strike ? Number(req.query.strike) : undefined;

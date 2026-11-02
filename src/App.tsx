@@ -152,7 +152,7 @@ export default function App() {
 
   const loadState = useCallback(async () => {
     try {
-      const res = await fetch('/api/state');
+      const res = await fetch('/api/state?live=1');
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || 'State request failed');
       setState(body);
@@ -174,10 +174,10 @@ export default function App() {
 
   useEffect(() => {
     void loadState();
-    const poll = setInterval(() => void loadState(), 15_000);
+    const poll = setInterval(() => void loadState(), 3_000);
     const tick = setInterval(() => {
       void fetch('/api/tick').finally(() => void loadState());
-    }, 60_000);
+    }, 30_000);
     return () => {
       clearInterval(poll);
       clearInterval(tick);
@@ -369,7 +369,7 @@ export default function App() {
 
         {/* Second Row: Underline Sub-Navigation Tabs + Right-Aligned Terminal Button */}
         <div className="mx-auto flex max-w-7xl items-center justify-between border-t border-slate-100 px-4 sm:px-6">
-          <nav className="flex items-center gap-6 overflow-x-auto" aria-label="Main sections">
+          <nav className="no-scrollbar flex items-center gap-6 overflow-x-auto" aria-label="Main sections">
             {TABS.map((item) => {
               const active = tab === item.id;
               const badge =
@@ -420,7 +420,7 @@ export default function App() {
 
         {/* Third Row: Horizontal Live NSE Index & F&O Ticker Strip */}
         <div className="border-t border-slate-100 bg-slate-50/50">
-          <div className="mx-auto flex max-w-7xl items-center gap-6 overflow-x-auto px-4 py-2 text-xs whitespace-nowrap sm:px-6">
+          <div className="no-scrollbar mx-auto flex max-w-7xl items-center gap-6 overflow-x-auto px-4 py-2 text-xs whitespace-nowrap sm:px-6">
             {tickerList.map((sym) => {
               const q = spots[sym];
               if (!q) return null;
@@ -658,7 +658,8 @@ function Overview({
     return all;
   }, [spots, regimes, dash.openPositions, dash.activeCandidates, moverTab]);
 
-  const totalReturnInr = dash.equity - dash.startingCapitalInr;
+  const mtmEquity = dash.mtmEquityInr ?? dash.equity + (dash.estOpenChargesInr ?? 0);
+  const totalReturnInr = mtmEquity - dash.startingCapitalInr;
   const totalReturnPct = (totalReturnInr / dash.startingCapitalInr) * 100;
   const passCount = dash.readiness.checks.filter((c) => c.pass).length;
 
@@ -933,13 +934,16 @@ function Overview({
             {/* Portfolio Equity & P&L Header */}
             <div className="flex items-baseline justify-between border-b border-slate-100 pb-4">
               <div>
-                <div className="text-xs font-medium text-slate-400">Current Paper Equity</div>
+                <div className="text-xs font-medium text-slate-400">Current Value (MTM)</div>
                 <div className="mt-1 font-mono text-2xl font-bold text-slate-900 tabular-nums">
-                  {formatInr(dash.equity)}
+                  {formatInr(mtmEquity)}
+                </div>
+                <div className="mt-0.5 font-mono text-[11px] text-slate-400">
+                  Net after ₹{(dash.estOpenChargesInr ?? 0).toFixed(0)} charges: {formatInr(dash.equity)}
                 </div>
               </div>
               <div className="text-right">
-                <div className="text-xs font-medium text-slate-400">Total Returns</div>
+                <div className="text-xs font-medium text-slate-400">Open MTM Returns</div>
                 <div
                   className={`mt-1 font-mono text-sm font-bold tabular-nums ${
                     totalReturnInr >= 0 ? 'text-[#00B386]' : 'text-[#EB5B3C]'
@@ -960,10 +964,10 @@ function Overview({
                 </div>
               </div>
               <div className="text-right">
-                <span className="text-slate-400">Today&apos;s P&amp;L</span>
-                <div className={`mt-0.5 font-mono font-semibold tabular-nums ${pnlColor(dash.dayPnlInr)}`}>
-                  {dash.dayPnlInr >= 0 ? '+' : ''}
-                  {formatInr(dash.dayPnlInr)}
+                <span className="text-slate-400">Open Market P&amp;L</span>
+                <div className={`mt-0.5 font-mono font-semibold tabular-nums ${pnlColor(dash.unrealizedPnlInr)}`}>
+                  {dash.unrealizedPnlInr >= 0 ? '+' : ''}
+                  {formatInr(dash.unrealizedPnlInr)}
                 </div>
               </div>
             </div>
@@ -975,7 +979,10 @@ function Overview({
                   Open Positions ({dash.openPositions.length})
                 </span>
                 {dash.openPositions.length > 0 ? (
-                  <span className="text-[11px] font-medium text-[#00B386]">Live Bid/Ask Mark</span>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#00B386]">
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#00B386]" />
+                    <span>Real-time 3s Mark</span>
+                  </span>
                 ) : null}
               </div>
 
@@ -995,31 +1002,34 @@ function Overview({
                 <div className="space-y-3">
                   {dash.openPositions.map((p) => {
                     const mark = p.lastMark?.liquidationValue ?? p.plan.entryDebit;
+                    const diffPts = mark - p.plan.entryDebit;
+                    const diffPct = p.plan.entryDebit > 0 ? (diffPts / p.plan.entryDebit) * 100 : 0;
                     const up = p.unrealizedInr >= 0;
+                    const longNow = p.lastMark?.longBid ?? p.plan.long.bid;
+                    const shortNow = p.lastMark?.shortAsk ?? p.plan.short.ask;
                     return (
-                      <button
+                      <div
                         key={p.id}
-                        type="button"
                         onClick={() =>
                           onOpenTerminal({ kind: 'position', id: p.id, underlying: p.underlying, position: p })
                         }
-                        className="group block w-full cursor-pointer rounded-xl border border-slate-200 bg-slate-50/40 p-3.5 text-left transition hover:border-[#00B386] hover:bg-white hover:shadow-xs"
+                        className="group cursor-pointer rounded-xl border border-slate-200 bg-slate-50/40 p-3.5 text-left transition hover:border-[#00B386] hover:bg-white hover:shadow-xs"
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div>
                             <div className="flex items-center gap-1.5">
                               <span className="rounded bg-[#00B386]/15 px-1.5 py-0.5 text-[10px] font-bold text-[#008F6B]">
-                                {p.direction} SPREAD
+                                {p.direction} DEBIT SPREAD
                               </span>
                               <span className="text-xs font-medium text-slate-400">
-                                {p.lots} Lot ({p.plan.lotSize} qty)
+                                {p.lots} Lot ({p.lots * p.plan.lotSize} qty)
                               </span>
                             </div>
                             <div className="mt-1 text-sm font-bold text-slate-900 group-hover:text-[#00B386]">
-                              {p.underlying} {formatExpiryLabel(p.plan.expiry)} {p.plan.long.strike} {p.direction}
+                              {p.underlying} {formatExpiryLabel(p.plan.expiry)} {p.plan.long.strike}/{p.plan.short.strike} {p.direction}
                             </div>
                             <div className="text-[11px] text-slate-500">
-                              Hedge: Short {p.plan.short.strike} {p.direction} · {p.strategy.replace('_', ' ')}
+                              Opened {formatIst(p.openedAt)} · {p.strategy.replace('_', ' ')}
                             </div>
                           </div>
 
@@ -1028,22 +1038,50 @@ function Overview({
                               {up ? '+' : ''}
                               {formatInr(p.unrealizedInr)}
                             </div>
-                            <div className="mt-0.5 text-[11px] text-slate-500">
-                              Mark ₹{mark.toFixed(2)}
+                            <div className={`text-[11px] font-medium ${up ? 'text-[#00B386]' : 'text-[#EB5B3C]'}`}>
+                              {diffPts >= 0 ? '+' : ''}
+                              {diffPts.toFixed(2)} pts ({diffPct >= 0 ? '+' : ''}
+                              {diffPct.toFixed(2)}%)
                             </div>
                           </div>
                         </div>
 
-                        <div className="mt-3 flex items-center justify-between border-t border-slate-200/70 pt-2.5 text-xs">
+                        {/* Individual Leg Breakdown inside Position Card */}
+                        <div className="mt-2.5 space-y-1 rounded-lg border border-slate-200/80 bg-white px-2.5 py-2 font-mono text-[11px]">
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-700">
+                              <span className="mr-1.5 rounded bg-emerald-50 px-1 py-0.5 text-[10px] font-bold text-[#008F6B]">
+                                BUY
+                              </span>
+                              {p.plan.long.strike} {p.direction}
+                            </span>
+                            <span className="text-slate-600">
+                              ₹{p.plan.long.ask.toFixed(2)} → <strong className="text-slate-900">₹{longNow.toFixed(2)}</strong>
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-700">
+                              <span className="mr-1.5 rounded bg-rose-50 px-1 py-0.5 text-[10px] font-bold text-[#EB5B3C]">
+                                SELL
+                              </span>
+                              {p.plan.short.strike} {p.direction}
+                            </span>
+                            <span className="text-slate-600">
+                              ₹{p.plan.short.bid.toFixed(2)} → <strong className="text-slate-900">₹{shortNow.toFixed(2)}</strong>
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="mt-2.5 flex items-center justify-between border-t border-slate-200/70 pt-2 text-xs">
                           <span className="font-mono text-[11px] text-slate-500">
-                            Entry ₹{p.plan.entryDebit.toFixed(2)} · Bid ₹{(p.lastMark?.longBid ?? p.plan.long.bid).toFixed(2)}
+                            Entry ₹{p.plan.entryDebit.toFixed(2)} → Now ₹{mark.toFixed(2)}
                           </span>
                           <span className="inline-flex items-center gap-1 font-semibold text-[#00B386]">
-                            <span>View in Terminal</span>
+                            <span>Terminal</span>
                             <span>→</span>
                           </span>
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -1189,19 +1227,28 @@ function Book({
   dash: DashboardPayload;
   onOpenTerminal: (t: TerminalTarget) => void;
 }) {
+  const mtmEquity = dash.mtmEquityInr ?? dash.equity + (dash.estOpenChargesInr ?? 0);
+  const estCharges = dash.estOpenChargesInr ?? 0;
+
   return (
     <div className="space-y-6">
       {/* Top Summary Strip */}
       <div className="grid gap-4 sm:grid-cols-4">
         <div className="rounded-xl border border-slate-200 bg-white p-4">
-          <div className="text-xs text-slate-400">Liquidation Equity</div>
-          <div className="mt-1 font-mono text-xl font-bold text-slate-900 tabular-nums">{formatInr(dash.equity)}</div>
+          <div className="text-xs text-slate-400">Current Equity (MTM)</div>
+          <div className="mt-1 font-mono text-xl font-bold text-slate-900 tabular-nums">{formatInr(mtmEquity)}</div>
+          <div className="mt-0.5 font-mono text-[11px] text-slate-400">
+            After charges: {formatInr(dash.equity)}
+          </div>
         </div>
         <div className="rounded-xl border border-slate-200 bg-white p-4">
-          <div className="text-xs text-slate-400">Open Unrealized P&amp;L</div>
+          <div className="text-xs text-slate-400">Open Market P&amp;L (MTM)</div>
           <div className={`mt-1 font-mono text-xl font-bold tabular-nums ${pnlColor(dash.unrealizedPnlInr)}`}>
             {dash.unrealizedPnlInr >= 0 ? '+' : ''}
             {formatInr(dash.unrealizedPnlInr)}
+          </div>
+          <div className="mt-0.5 font-mono text-[11px] text-slate-400">
+            Est. 4-leg charges: ₹{estCharges.toFixed(2)}
           </div>
         </div>
         <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -1210,22 +1257,32 @@ function Book({
             {dash.realizedPnlInr >= 0 ? '+' : ''}
             {formatInr(dash.realizedPnlInr)}
           </div>
+          <div className="mt-0.5 font-mono text-[11px] text-slate-400">
+            Closed trades: {dash.counters.tradesClosed}
+          </div>
         </div>
         <div className="rounded-xl border border-slate-200 bg-white p-4">
           <div className="text-xs text-slate-400">Available Cash</div>
           <div className="mt-1 font-mono text-xl font-bold text-slate-900 tabular-nums">{formatInr(dash.cash)}</div>
+          <div className="mt-0.5 font-mono text-[11px] text-slate-400">
+            Started with {formatInr(dash.startingCapitalInr)}
+          </div>
         </div>
       </div>
 
       {/* Open Paper Positions Table */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-base font-bold text-slate-900">Open Paper Positions ({positions.length})</h2>
             <p className="text-xs text-slate-400">
-              Click any position to view its live option candlesticks and bid/ask boxes in the Terminal
+              Live Angel One Bid/Ask valuation every 3s · Shows both Net Spread and Individual Option Legs (Buy + Sell Hedge)
             </p>
           </div>
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-[#008F6B]">
+            <span className="h-2 w-2 rounded-full bg-[#00B386]" />
+            <span>Real-time L1 Bid/Ask</span>
+          </span>
         </div>
 
         {positions.length === 0 ? (
@@ -1236,56 +1293,173 @@ function Book({
               <thead className="border-b border-slate-100 text-xs font-medium text-slate-400">
                 <tr>
                   <th className="pb-3 pr-3">Opened</th>
-                  <th className="pb-3 pr-3">Contract Spread</th>
-                  <th className="pb-3 pr-3">Strategy</th>
+                  <th className="pb-3 pr-3">Contract / Leg</th>
+                  <th className="pb-3 pr-3">Strategy / Token</th>
                   <th className="pb-3 pr-3 text-right">Lots (Qty)</th>
-                  <th className="pb-3 pr-3 text-right">Entry Debit</th>
+                  <th className="pb-3 pr-3 text-right">Entry Price</th>
                   <th className="pb-3 pr-3 text-right">Now (Bid/Ask)</th>
-                  <th className="pb-3 pr-3 text-right">Unrealized P&amp;L</th>
+                  <th className="pb-3 pr-3 text-right">Market P&amp;L (MTM)</th>
+                  <th className="pb-3 pr-3 text-right">After Charges</th>
                   <th className="pb-3 text-right">Terminal</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {positions.map((p) => (
-                  <tr
-                    key={p.id}
-                    onClick={() =>
-                      onOpenTerminal({ kind: 'position', id: p.id, underlying: p.underlying, position: p })
-                    }
-                    className="cursor-pointer hover:bg-slate-50"
-                  >
-                    <td className="py-3.5 pr-3 font-mono text-xs text-slate-500">{formatIst(p.openedAt)}</td>
-                    <td className="py-3.5 pr-3 font-semibold text-slate-900">
-                      {p.underlying} {formatExpiryLabel(p.plan.expiry)} {p.plan.long.strike}/{p.plan.short.strike} {p.direction}
-                    </td>
-                    <td className="py-3.5 pr-3 text-xs text-slate-600">{p.strategy.replace('_', ' ')}</td>
-                    <td className="py-3.5 pr-3 text-right font-mono tabular-nums text-slate-700">
-                      {p.lots} ({p.lots * p.plan.lotSize})
-                    </td>
-                    <td className="py-3.5 pr-3 text-right font-mono tabular-nums text-slate-800">
-                      ₹{p.plan.entryDebit.toFixed(2)}
-                    </td>
-                    <td className="py-3.5 pr-3 text-right font-mono tabular-nums text-slate-800">
-                      {p.lastMark ? `₹${p.lastMark.liquidationValue.toFixed(2)}` : '—'}
-                    </td>
-                    <td className={`py-3.5 pr-3 text-right font-mono font-bold tabular-nums ${pnlColor(p.unrealizedInr)}`}>
-                      {p.unrealizedInr >= 0 ? '+' : ''}
-                      {formatInr(p.unrealizedInr)}
-                    </td>
-                    <td className="py-3.5 text-right">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onOpenTerminal({ kind: 'position', id: p.id, underlying: p.underlying, position: p });
-                        }}
-                        className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-[#008F6B] hover:bg-emerald-100"
+                {positions.map((p) => {
+                  const units = p.lots * p.plan.lotSize;
+                  const nowSpread = p.lastMark ? p.lastMark.liquidationValue : p.plan.entryDebit;
+                  const spreadDiff = nowSpread - p.plan.entryDebit;
+                  const spreadPct = p.plan.entryDebit > 0 ? (spreadDiff / p.plan.entryDebit) * 100 : 0;
+
+                  const longBid = p.lastMark?.longBid ?? p.plan.long.bid;
+                  const longAsk = p.lastMark?.longAsk ?? p.plan.long.ask;
+                  const longPnl = p.longLegPnlInr ?? Number(((longBid - p.plan.long.ask) * units).toFixed(2));
+
+                  const shortBid = p.lastMark?.shortBid ?? p.plan.short.bid;
+                  const shortAsk = p.lastMark?.shortAsk ?? p.plan.short.ask;
+                  const shortPnl = p.shortLegPnlInr ?? Number(((p.plan.short.bid - shortAsk) * units).toFixed(2));
+
+                  const netAfterCharges = p.netUnrealizedInr ?? p.unrealizedInr;
+                  const charges = p.estChargesInr ?? 151.25;
+
+                  return (
+                    <React.Fragment key={p.id}>
+                      {/* Parent Spread Row */}
+                      <tr
+                        onClick={() =>
+                          onOpenTerminal({ kind: 'position', id: p.id, underlying: p.underlying, position: p })
+                        }
+                        className="cursor-pointer bg-white transition hover:bg-slate-50"
                       >
-                        🕯 Chart
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                        <td className="py-3.5 pr-3 font-mono text-xs text-slate-500">{formatIst(p.openedAt)}</td>
+                        <td className="py-3.5 pr-3">
+                          <div className="font-bold text-slate-900">
+                            {p.underlying} {formatExpiryLabel(p.plan.expiry)} {p.plan.long.strike}/{p.plan.short.strike} {p.direction}
+                          </div>
+                          <div className="text-[11px] text-slate-400">
+                            2-Leg Vertical Debit Spread · Expiry {p.plan.expiry}
+                          </div>
+                        </td>
+                        <td className="py-3.5 pr-3 text-xs text-slate-600">{p.strategy.replace('_', ' ')}</td>
+                        <td className="py-3.5 pr-3 text-right font-mono tabular-nums text-slate-700">
+                          {p.lots} ({units})
+                        </td>
+                        <td className="py-3.5 pr-3 text-right font-mono font-medium tabular-nums text-slate-800">
+                          ₹{p.plan.entryDebit.toFixed(2)}
+                        </td>
+                        <td className="py-3.5 pr-3 text-right font-mono font-semibold tabular-nums text-slate-900">
+                          <div>₹{nowSpread.toFixed(2)}</div>
+                          <div className={`text-[11px] font-medium ${spreadDiff >= 0 ? 'text-[#00B386]' : 'text-[#EB5B3C]'}`}>
+                            {spreadDiff >= 0 ? '+' : ''}
+                            {spreadDiff.toFixed(2)} ({spreadPct >= 0 ? '+' : ''}
+                            {spreadPct.toFixed(2)}%)
+                          </div>
+                        </td>
+                        <td className={`py-3.5 pr-3 text-right font-mono font-bold tabular-nums ${pnlColor(p.unrealizedInr)}`}>
+                          <div>
+                            {p.unrealizedInr >= 0 ? '+' : ''}
+                            {formatInr(p.unrealizedInr)}
+                          </div>
+                          <div className="text-[10px] font-normal text-slate-400">
+                            (Now - Entry) × {units}
+                          </div>
+                        </td>
+                        <td className="py-3.5 pr-3 text-right font-mono tabular-nums">
+                          <div className={`text-xs font-semibold ${pnlColor(netAfterCharges)}`}>
+                            {netAfterCharges >= 0 ? '+' : ''}
+                            {formatInr(netAfterCharges)}
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            Est. ₹{charges.toFixed(0)} charges
+                          </div>
+                        </td>
+                        <td className="py-3.5 text-right">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenTerminal({ kind: 'position', id: p.id, underlying: p.underlying, position: p });
+                            }}
+                            className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-[#008F6B] hover:bg-emerald-100"
+                          >
+                            🕯 Chart
+                          </button>
+                        </td>
+                      </tr>
+
+                      {/* Sub-Row 1: BUY Leg (Long Option) */}
+                      <tr
+                        onClick={() =>
+                          onOpenTerminal({ kind: 'position', id: p.id, underlying: p.underlying, position: p })
+                        }
+                        className="cursor-pointer bg-slate-50/50 text-xs transition hover:bg-slate-100/70"
+                      >
+                        <td className="py-2 pr-3 pl-4 font-mono text-[11px] text-slate-400">↳ Leg 1</td>
+                        <td className="py-2 pr-3">
+                          <span className="mr-2 rounded bg-[#00B386] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                            BUY
+                          </span>
+                          <span className="font-semibold text-slate-800">
+                            {p.underlying} {formatExpiryLabel(p.plan.expiry)} {p.plan.long.strike} {p.direction}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-[11px] text-slate-500">
+                          {p.plan.long.symbol} (#{p.plan.long.token})
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono tabular-nums text-slate-600">
+                          +{units}
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono tabular-nums text-slate-700">
+                          ₹{p.plan.long.ask.toFixed(2)} <span className="text-[10px] text-slate-400">(Ask)</span>
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono tabular-nums text-slate-800">
+                          ₹{longBid.toFixed(2)} <span className="text-[10px] text-slate-400">/ ₹{longAsk.toFixed(2)}</span>
+                        </td>
+                        <td className={`py-2 pr-3 text-right font-mono font-semibold tabular-nums ${pnlColor(longPnl)}`}>
+                          {longPnl >= 0 ? '+' : ''}
+                          {formatInr(longPnl)}
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono text-[11px] text-slate-400">Long Leg</td>
+                        <td className="py-2 text-right" />
+                      </tr>
+
+                      {/* Sub-Row 2: SELL Leg (Short Hedge Option) */}
+                      <tr
+                        onClick={() =>
+                          onOpenTerminal({ kind: 'position', id: p.id, underlying: p.underlying, position: p })
+                        }
+                        className="cursor-pointer bg-slate-50/50 text-xs transition hover:bg-slate-100/70"
+                      >
+                        <td className="py-2 pr-3 pl-4 font-mono text-[11px] text-slate-400">↳ Leg 2</td>
+                        <td className="py-2 pr-3">
+                          <span className="mr-2 rounded bg-[#EB5B3C] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                            SELL
+                          </span>
+                          <span className="font-semibold text-slate-800">
+                            {p.underlying} {formatExpiryLabel(p.plan.expiry)} {p.plan.short.strike} {p.direction}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-3 font-mono text-[11px] text-slate-500">
+                          {p.plan.short.symbol} (#{p.plan.short.token})
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono tabular-nums text-slate-600">
+                          -{units}
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono tabular-nums text-slate-700">
+                          ₹{p.plan.short.bid.toFixed(2)} <span className="text-[10px] text-slate-400">(Bid)</span>
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono tabular-nums text-slate-800">
+                          ₹{shortAsk.toFixed(2)} <span className="text-[10px] text-slate-400">(Ask to close)</span>
+                        </td>
+                        <td className={`py-2 pr-3 text-right font-mono font-semibold tabular-nums ${pnlColor(shortPnl)}`}>
+                          {shortPnl >= 0 ? '+' : ''}
+                          {formatInr(shortPnl)}
+                        </td>
+                        <td className="py-2 pr-3 text-right font-mono text-[11px] text-slate-400">Short Hedge</td>
+                        <td className="py-2 text-right" />
+                      </tr>
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

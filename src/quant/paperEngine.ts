@@ -401,10 +401,16 @@ function revalue(state: LedgerState, niftyLtp: number | null) {
   let unrealized = 0;
   for (const pos of state.openPositions) {
     if (!pos.lastMark) continue;
+    const units = pos.lots * pos.plan.lotSize;
     const value = markValue(pos.lastMark, pos.plan, pos.lots);
     equity += value.liquidationInr;
     equityMid += value.midInr;
-    pos.unrealizedInr = round2(value.liquidationInr - pos.entryCashOutInr);
+    const entryCharges = round2(pos.entryCashOutInr - pos.plan.entryDebit * units);
+    pos.estChargesInr = round2(entryCharges + value.exitCharges);
+    pos.netUnrealizedInr = round2(value.liquidationInr - pos.entryCashOutInr);
+    pos.longLegPnlInr = round2((pos.lastMark.longBid - pos.plan.long.ask) * units);
+    pos.shortLegPnlInr = round2((pos.plan.short.bid - pos.lastMark.shortAsk) * units);
+    pos.unrealizedInr = round2((pos.lastMark.liquidationValue - pos.plan.entryDebit) * units);
     unrealized += pos.unrealizedInr;
   }
   equity = round2(equity);
@@ -1031,5 +1037,99 @@ export async function readActiveLedger(store: KvStore): Promise<LedgerState | nu
   const active = await store.get<{ ledgerId: string }>(KEY_ACTIVE);
   if (!active) return null;
   const row = await store.get<LedgerState>(stateKey(active.data.ledgerId));
-  return row?.data ?? null;
+  if (!row) return null;
+  revalue(row.data, row.data.market?.spots?.NIFTY?.ltp ?? null);
+  return row.data;
 }
+
+let lastLiveRefreshMs = 0;
+let lastLiveStateMemo: LedgerState | null = null;
+let lastDbPersistMs = 0;
+
+/**
+ * Fast real-time quote & position mark refresher (< 250ms).
+ * Fetches live Angel One NSE spot quotes and NFO option quotes for open positions/candidates
+ * in parallel without running the heavy 9-symbol historical candle scan.
+ */
+export async function refreshLiveState(
+  store: KvStore,
+  market: MarketData,
+  nowMs = Date.now()
+): Promise<LedgerState | null> {
+  if (lastLiveStateMemo && nowMs - lastLiveRefreshMs < 1800) {
+    return lastLiveStateMemo;
+  }
+  const active = await store.get<{ ledgerId: string }>(KEY_ACTIVE);
+  if (!active) return null;
+  const row = await store.get<LedgerState>(stateKey(active.data.ledgerId));
+  if (!row) return null;
+
+  const state = row.data;
+  const cfg = state.config;
+
+  const quoteTokens = new Set<string>();
+  for (const pos of state.openPositions) {
+    quoteTokens.add(pos.plan.long.token);
+    quoteTokens.add(pos.plan.short.token);
+  }
+  for (const cand of state.activeCandidates) {
+    quoteTokens.add(cand.plan.long.token);
+    quoteTokens.add(cand.plan.short.token);
+  }
+
+  try {
+    const [spots, optionQuotes] = await Promise.all([
+      market.fetchSpots().catch(() => null),
+      quoteTokens.size > 0 ? market.fetchOptionQuotes([...quoteTokens]).catch(() => null) : Promise.resolve(null),
+    ]);
+
+    state.angel = market.status();
+
+    if (spots && spots.NIFTY) {
+      const live = marketLive(spots, nowMs);
+      state.market = {
+        at: new Date(nowMs).toISOString(),
+        live: live.live,
+        liveReason: live.reason,
+        spots,
+        vix: spots.INDIA_VIX?.ltp ?? state.market?.vix ?? null,
+        vixPctile: state.market?.vixPctile ?? null,
+        regimes: state.market?.regimes ?? {},
+      };
+    }
+
+    if (optionQuotes && Object.keys(optionQuotes).length > 0) {
+      for (const pos of state.openPositions) {
+        const marked = markSpread(pos.plan, optionQuotes, nowMs, cfg.quoteMaxAgeSec);
+        if (marked.ok) {
+          pos.lastMark = marked.mark;
+          pos.peakValue = Math.max(pos.peakValue, marked.mark.liquidationValue);
+          pos.troughValue = Math.min(pos.troughValue, marked.mark.liquidationValue);
+        }
+      }
+      for (const cand of state.activeCandidates) {
+        const marked = markSpread(cand.plan, optionQuotes, nowMs, cfg.quoteMaxAgeSec);
+        if (marked.ok) {
+          cand.lastMark = marked.mark;
+          cand.peakValue = Math.max(cand.peakValue, marked.mark.liquidationValue);
+          cand.troughValue = Math.min(cand.troughValue, marked.mark.liquidationValue);
+        }
+      }
+    }
+
+    revalue(state, state.market?.spots?.NIFTY?.ltp ?? null);
+    lastLiveRefreshMs = nowMs;
+    lastLiveStateMemo = state;
+
+    // Persist live marks to DB every 15s so the database stays current without lock contention
+    if (nowMs - lastDbPersistMs >= 15_000 && state.market?.live) {
+      lastDbPersistMs = nowMs;
+      void store.put(stateKey(state.ledgerId), state, row.rev).catch(() => {});
+    }
+  } catch {
+    revalue(state, state.market?.spots?.NIFTY?.ltp ?? null);
+  }
+
+  return state;
+}
+

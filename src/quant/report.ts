@@ -25,9 +25,12 @@ export interface DashboardPayload {
   cash: number;
   equity: number;
   equityMid: number;
+  mtmEquityInr: number;
   dayPnlInr: number;
   realizedPnlInr: number;
   unrealizedPnlInr: number;
+  netUnrealizedPnlInr: number;
+  estOpenChargesInr: number;
   peakEquity: number;
   maxDrawdownPct: number;
   weeksElapsed: number;
@@ -66,7 +69,10 @@ function cards(
 
 export function buildDashboard(state: LedgerState, nowMs = Date.now()): DashboardPayload {
   const unrealized = state.openPositions.reduce((sum, p) => sum + p.unrealizedInr, 0);
+  const netUnrealized = state.openPositions.reduce((sum, p) => sum + (p.netUnrealizedInr ?? p.unrealizedInr), 0);
+  const estCharges = state.openPositions.reduce((sum, p) => sum + (p.estChargesInr ?? 0), 0);
   const realized = state.closedSummaries.reduce((sum, t) => sum + t.netPnlInr, 0);
+  const mtmEquity = Math.round((state.startingCapitalInr + realized + unrealized) * 100) / 100;
   const tradeRows = state.closedSummaries.map((t) => ({
     strategy: t.strategy,
     underlying: t.underlying,
@@ -94,9 +100,12 @@ export function buildDashboard(state: LedgerState, nowMs = Date.now()): Dashboar
     cash: state.cash,
     equity: state.lastEquity,
     equityMid: state.lastEquityMid,
-    dayPnlInr: state.lastEquity - state.dayStartEquity,
+    mtmEquityInr: mtmEquity,
+    dayPnlInr: unrealized + realized,
     realizedPnlInr: realized,
     unrealizedPnlInr: unrealized,
+    netUnrealizedPnlInr: netUnrealized,
+    estOpenChargesInr: estCharges,
     peakEquity: state.peakEquity,
     maxDrawdownPct: state.maxDrawdownPct,
     weeksElapsed: weeksBetween(state.createdAt, nowMs),

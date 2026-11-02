@@ -196,94 +196,180 @@ function toLegQuote(item: RawQuote): LegQuote | null {
   };
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+let lastQuoteCallMs = 0;
+let quoteMutex: Promise<unknown> = Promise.resolve();
+
+function enqueueQuoteCall<T>(fn: () => Promise<T>): Promise<T> {
+  const next = quoteMutex.then(async () => {
+    const elapsed = Date.now() - lastQuoteCallMs;
+    if (elapsed < 180) await sleep(180 - elapsed);
+    lastQuoteCallMs = Date.now();
+    return fn();
+  });
+  quoteMutex = next.catch(() => undefined);
+  return next;
+}
+
 async function fetchQuoteBatch(exchange: 'NSE' | 'NFO', tokens: string[]): Promise<RawQuote[] | null> {
   const { apiKey, configured } = credentials();
   if (!configured || tokens.length === 0) return tokens.length === 0 ? [] : null;
   let jwt = await ensureAngelOneSession(false);
   if (!jwt) return null;
 
-  const call = async (token: string) => {
-    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`, {
-      method: 'POST',
-      headers: headers(apiKey, token),
-      body: JSON.stringify({ mode: 'FULL', exchangeTokens: { [exchange]: tokens } }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const data = (await res.json()) as {
-      status?: boolean;
-      message?: string;
-      errorcode?: string;
-      data?: { fetched?: RawQuote[] };
+  return enqueueQuoteCall(async () => {
+    const call = async (token: string) => {
+      const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`, {
+        method: 'POST',
+        headers: headers(apiKey, token),
+        body: JSON.stringify({ mode: 'FULL', exchangeTokens: { [exchange]: tokens } }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const text = await res.text();
+      if (!text.startsWith('{')) {
+        return { res, data: { status: false, message: text.slice(0, 120) }, rateLimited: res.status === 403 || text.includes('exceeding access rate') };
+      }
+      const data = JSON.parse(text) as {
+        status?: boolean;
+        message?: string;
+        errorcode?: string;
+        data?: { fetched?: RawQuote[] };
+      };
+      return { res, data, rateLimited: res.status === 403 || data.errorcode === 'AB1004' };
     };
-    return { res, data };
-  };
 
-  try {
-    let { res, data } = await call(jwt);
-    if (!data.status && (data.errorcode === 'AG8001' || res.status === 401)) {
-      jwt = await ensureAngelOneSession(true);
-      if (!jwt) return null;
-      ({ res, data } = await call(jwt));
-    }
-    if (!data.status || !Array.isArray(data.data?.fetched)) {
-      lastAngelError = data.message || data.errorcode || 'Angel quote fetch failed';
+    try {
+      let { res, data, rateLimited } = await call(jwt!);
+      if (rateLimited) {
+        await sleep(500);
+        ({ res, data, rateLimited } = await call(jwt!));
+      }
+      if (!data.status && (data.errorcode === 'AG8001' || res.status === 401)) {
+        jwt = await ensureAngelOneSession(true);
+        if (!jwt) return null;
+        ({ res, data } = await call(jwt));
+      }
+      if (!data.status || !Array.isArray(data.data?.fetched)) {
+        lastAngelError = data.message || data.errorcode || 'Angel quote fetch failed';
+        return null;
+      }
+      lastQuoteFetchAtIso = new Date().toISOString();
+      lastAngelError = null;
+      return data.data.fetched;
+    } catch (err) {
+      lastAngelError = err instanceof Error ? err.message : 'Angel quote fetch failed';
       return null;
     }
-    lastQuoteFetchAtIso = new Date().toISOString();
-    lastAngelError = null;
-    return data.data.fetched;
-  } catch (err) {
-    lastAngelError = err instanceof Error ? err.message : 'Angel quote fetch failed';
-    return null;
-  }
+  });
 }
 
+let cachedSpotQuotes: { atMs: number; data: Record<string, SpotQuote> } | null = null;
+let inflightSpotQuotes: Promise<Record<string, SpotQuote> | null> | null = null;
+
 export async function fetchSpotQuotes(): Promise<Record<string, SpotQuote> | null> {
-  const metas = Object.values(ANGEL_ONE_NSE_TOKENS);
-  const fetched = await fetchQuoteBatch('NSE', metas.map((m) => m.angelToken));
-  if (!fetched) return null;
-  const byToken = new Map(metas.map((m) => [m.angelToken, m.symbol]));
-  const out: Record<string, SpotQuote> = {};
-  for (const item of fetched) {
-    const symbol = byToken.get(String(item.symbolToken ?? ''));
-    const ltp = Number(item.ltp ?? 0);
-    if (!symbol || !(ltp > 0)) continue;
-    const prevClose = Number(item.close ?? ltp);
-    out[symbol] = {
-      symbol,
-      ltp,
-      open: Number(item.open ?? ltp),
-      high: Number(item.high ?? ltp),
-      low: Number(item.low ?? ltp),
-      prevClose,
-      changePct:
-        typeof item.percentChange === 'number'
-          ? item.percentChange
-          : prevClose > 0
-            ? ((ltp - prevClose) / prevClose) * 100
-            : 0,
-      feedTimeMs: parseAngelFeedTime(item.exchFeedTime || item.exchTradeTime),
-    };
+  const now = Date.now();
+  if (cachedSpotQuotes && now - cachedSpotQuotes.atMs < 2200) {
+    return cachedSpotQuotes.data;
   }
-  return out;
+  if (inflightSpotQuotes) return inflightSpotQuotes;
+
+  inflightSpotQuotes = (async () => {
+    const metas = Object.values(ANGEL_ONE_NSE_TOKENS);
+    const fetched = await fetchQuoteBatch('NSE', metas.map((m) => m.angelToken));
+    if (!fetched) return cachedSpotQuotes?.data ?? null;
+    const byToken = new Map(metas.map((m) => [m.angelToken, m.symbol]));
+    const out: Record<string, SpotQuote> = {};
+    for (const item of fetched) {
+      const symbol = byToken.get(String(item.symbolToken ?? ''));
+      const ltp = Number(item.ltp ?? 0);
+      if (!symbol || !(ltp > 0)) continue;
+      const prevClose = Number(item.close ?? ltp);
+      out[symbol] = {
+        symbol,
+        ltp,
+        open: Number(item.open ?? ltp),
+        high: Number(item.high ?? ltp),
+        low: Number(item.low ?? ltp),
+        prevClose,
+        changePct:
+          typeof item.percentChange === 'number'
+            ? item.percentChange
+            : prevClose > 0
+              ? ((ltp - prevClose) / prevClose) * 100
+              : 0,
+        feedTimeMs: parseAngelFeedTime(item.exchFeedTime || item.exchTradeTime),
+      };
+    }
+    if (Object.keys(out).length > 0) {
+      cachedSpotQuotes = { atMs: Date.now(), data: out };
+    }
+    return out;
+  })().finally(() => {
+    inflightSpotQuotes = null;
+  });
+
+  return inflightSpotQuotes;
 }
+
+const optionQuoteCache = new Map<string, { atMs: number; quote: LegQuote }>();
 
 export async function fetchOptionQuotes(tokens: string[]): Promise<Record<string, LegQuote> | null> {
   const unique = [...new Set(tokens.filter(Boolean))];
+  if (unique.length === 0) return {};
+  const now = Date.now();
   const out: Record<string, LegQuote> = {};
-  for (let i = 0; i < unique.length; i += QUOTE_BATCH) {
-    const batch = unique.slice(i, i + QUOTE_BATCH);
+  const missing: string[] = [];
+
+  for (const t of unique) {
+    const hit = optionQuoteCache.get(t);
+    if (hit && now - hit.atMs < 2200) {
+      out[t] = hit.quote;
+    } else {
+      missing.push(t);
+    }
+  }
+  if (missing.length === 0) return out;
+
+  for (let i = 0; i < missing.length; i += QUOTE_BATCH) {
+    const batch = missing.slice(i, i + QUOTE_BATCH);
     const fetched = await fetchQuoteBatch('NFO', batch);
-    if (!fetched) return null;
+    if (!fetched) {
+      for (const t of batch) {
+        const stale = optionQuoteCache.get(t);
+        if (stale) out[t] = stale.quote;
+      }
+      return Object.keys(out).length > 0 ? out : null;
+    }
+    const fetchedTime = Date.now();
     for (const item of fetched) {
       const leg = toLegQuote(item);
-      if (leg) out[leg.token] = leg;
+      if (leg) {
+        out[leg.token] = leg;
+        optionQuoteCache.set(leg.token, { atMs: fetchedTime, quote: leg });
+      }
     }
   }
   return out;
 }
 
-export type AngelCandleInterval = 'FIVE_MINUTE' | 'FIFTEEN_MINUTE' | 'ONE_HOUR' | 'ONE_DAY';
+export type AngelCandleInterval = 'ONE_MINUTE' | 'FIVE_MINUTE' | 'FIFTEEN_MINUTE' | 'ONE_HOUR' | 'ONE_DAY';
+
+const candleCache = new Map<string, { atMs: number; candles: Candle[] }>();
+const inflightCandleRequests = new Map<string, Promise<Candle[] | null>>();
+let lastCandleCallMs = 0;
+let candleMutex: Promise<unknown> = Promise.resolve();
+
+function enqueueCandleCall<T>(fn: () => Promise<T>): Promise<T> {
+  const next = candleMutex.then(async () => {
+    const elapsed = Date.now() - lastCandleCallMs;
+    if (elapsed < 420) await sleep(420 - elapsed);
+    lastCandleCallMs = Date.now();
+    return fn();
+  });
+  candleMutex = next.catch(() => undefined);
+  return next;
+}
 
 export async function fetchCandlesByToken(
   exchange: 'NSE' | 'NFO',
@@ -294,37 +380,87 @@ export async function fetchCandlesByToken(
 ): Promise<Candle[] | null> {
   const { apiKey, configured } = credentials();
   if (!configured || !symbolToken) return null;
-  const jwt = await ensureAngelOneSession(false);
-  if (!jwt) return null;
-  try {
-    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/historical/v1/getCandleData`, {
-      method: 'POST',
-      headers: headers(apiKey, jwt),
-      body: JSON.stringify({
-        exchange,
-        symboltoken: symbolToken,
-        interval,
-        fromdate: fromIst,
-        todate: toIst,
-      }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const text = await res.text();
-    if (!text.startsWith('{')) return null;
-    const payload = JSON.parse(text) as { status?: boolean; data?: Array<[string, number, number, number, number, number]> };
-    if (!payload.status || !Array.isArray(payload.data)) return null;
-    return payload.data.map((row) => ({
-      time: String(row[0]),
-      open: Number(row[1]),
-      high: Number(row[2]),
-      low: Number(row[3]),
-      close: Number(row[4]),
-      volume: Number(row[5] ?? 0),
-    }));
-  } catch (err) {
-    lastAngelError = err instanceof Error ? err.message : 'Angel candle fetch failed';
-    return null;
+
+  const cacheKey = `${exchange}:${symbolToken}:${interval}`;
+  const ttlMs = interval === 'ONE_MINUTE' ? 8_000 : interval === 'FIVE_MINUTE' ? 15_000 : 30_000;
+  const cached = candleCache.get(cacheKey);
+  if (cached && Date.now() - cached.atMs < ttlMs) {
+    return cached.candles;
   }
+
+  const existing = inflightCandleRequests.get(cacheKey);
+  if (existing) return existing;
+
+  const promise = enqueueCandleCall(async () => {
+    const hitAfterWait = candleCache.get(cacheKey);
+    if (hitAfterWait && Date.now() - hitAfterWait.atMs < ttlMs) {
+      return hitAfterWait.candles;
+    }
+
+    let jwt = await ensureAngelOneSession(false);
+    if (!jwt) return cached?.candles ?? null;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/historical/v1/getCandleData`, {
+          method: 'POST',
+          headers: headers(apiKey, jwt ?? undefined),
+          body: JSON.stringify({
+            exchange,
+            symboltoken: symbolToken,
+            interval,
+            fromdate: fromIst,
+            todate: toIst,
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const text = await res.text();
+        if (res.status === 403 || text.includes('exceeding access rate')) {
+          await sleep(650 * (attempt + 1));
+          lastCandleCallMs = Date.now();
+          continue;
+        }
+        if (res.status === 401) {
+          jwt = await ensureAngelOneSession(true);
+          if (!jwt) break;
+          continue;
+        }
+        if (!text.startsWith('{')) break;
+        const payload = JSON.parse(text) as {
+          status?: boolean;
+          errorcode?: string;
+          data?: Array<[string, number, number, number, number, number]>;
+        };
+        if (payload.errorcode === 'AB1004') {
+          await sleep(650 * (attempt + 1));
+          lastCandleCallMs = Date.now();
+          continue;
+        }
+        if (!payload.status || !Array.isArray(payload.data) || payload.data.length === 0) {
+          return cached?.candles ?? null;
+        }
+        const rows: Candle[] = payload.data.map((row) => ({
+          time: String(row[0]),
+          open: Number(row[1]),
+          high: Number(row[2]),
+          low: Number(row[3]),
+          close: Number(row[4]),
+          volume: Number(row[5] ?? 0),
+        }));
+        candleCache.set(cacheKey, { atMs: Date.now(), candles: rows });
+        return rows;
+      } catch (err) {
+        lastAngelError = err instanceof Error ? err.message : 'Angel candle fetch failed';
+        if (attempt < 2) await sleep(500);
+      }
+    }
+    return cached?.candles ?? null;
+  }).finally(() => {
+    inflightCandleRequests.delete(cacheKey);
+  });
+
+  inflightCandleRequests.set(cacheKey, promise);
+  return promise;
 }
 
 export async function fetchHourlyCandles(symbol: string, fromIst: string, toIst: string): Promise<Candle[] | null> {
@@ -377,21 +513,40 @@ export function filterScripMaster(
   return out;
 }
 
+let cachedInstrumentMaster: { atMs: number; instruments: NfoInstrument[] } | null = null;
+let inflightInstrumentMaster: Promise<NfoInstrument[] | null> | null = null;
+
 export async function downloadInstrumentMaster(
   nowMs: number,
   spotByUnderlying: Record<string, number> = {}
 ): Promise<NfoInstrument[] | null> {
-  try {
-    const res = await fetch(SCRIP_MASTER_URL, { signal: AbortSignal.timeout(20000) });
-    if (!res.ok) {
-      lastAngelError = `Instrument master HTTP ${res.status}`;
-      return null;
-    }
-    const rows = (await res.json()) as unknown[];
-    if (!Array.isArray(rows)) return null;
-    return filterScripMaster(rows, nowMs, spotByUnderlying);
-  } catch (err) {
-    lastAngelError = err instanceof Error ? err.message : 'Instrument master download failed';
-    return null;
+  if (cachedInstrumentMaster && Date.now() - cachedInstrumentMaster.atMs < 20 * 60_000) {
+    return cachedInstrumentMaster.instruments;
   }
+  if (inflightInstrumentMaster) return inflightInstrumentMaster;
+
+  inflightInstrumentMaster = (async () => {
+    try {
+      const res = await fetch(SCRIP_MASTER_URL, { signal: AbortSignal.timeout(20000) });
+      if (!res.ok) {
+        lastAngelError = `Instrument master HTTP ${res.status}`;
+        return cachedInstrumentMaster?.instruments ?? null;
+      }
+      const rows = (await res.json()) as unknown[];
+      if (!Array.isArray(rows)) return cachedInstrumentMaster?.instruments ?? null;
+      const filtered = filterScripMaster(rows, nowMs, spotByUnderlying);
+      if (filtered.length > 0) {
+        cachedInstrumentMaster = { atMs: Date.now(), instruments: filtered };
+      }
+      return filtered;
+    } catch (err) {
+      lastAngelError = err instanceof Error ? err.message : 'Instrument master download failed';
+      return cachedInstrumentMaster?.instruments ?? null;
+    }
+  })().finally(() => {
+    inflightInstrumentMaster = null;
+  });
+
+  return inflightInstrumentMaster;
 }
+
