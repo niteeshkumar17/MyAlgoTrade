@@ -2391,6 +2391,7 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
     state.dailyHalt = false;
   }
   const finish = async (status, summary) => {
+    state.angel = market2.status();
     state.lastCycle = { at: new Date(nowMs).toISOString(), durationMs: Date.now() - started, status, summary };
     log(state, "CYCLE", summary);
     const persisted = await persist(store2, state, rev);

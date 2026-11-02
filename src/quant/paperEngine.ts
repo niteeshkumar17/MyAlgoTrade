@@ -567,6 +567,7 @@ async function runPaperCycleUnlocked(
   }
 
   const finish = async (status: NonNullable<LedgerState['lastCycle']>['status'], summary: string) => {
+    state.angel = market.status();
     state.lastCycle = { at: new Date(nowMs).toISOString(), durationMs: Date.now() - started, status, summary };
     log(state, 'CYCLE', summary);
     const persisted = await persist(store, state, rev);
