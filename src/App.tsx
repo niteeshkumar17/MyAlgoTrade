@@ -160,7 +160,7 @@ export default function App() {
         </div>
         <div className="text-right text-xs text-slate-500">
           <div>{dash ? formatIst(dash.generatedAt) : '—'}</div>
-          <div>{state?.persistent ? 'Saved in Postgres' : 'Not connected to a database'}</div>
+          <div>{!state ? 'Loading the ledger' : state.persistent ? 'Saved in Postgres' : 'Not connected to a database'}</div>
         </div>
       </header>
 
@@ -185,7 +185,9 @@ export default function App() {
         ))}
       </nav>
 
-      {!dash ? (
+      {!state ? (
+        <p className="text-sm text-slate-400">Loading the ledger.</p>
+      ) : !dash ? (
         <p className="text-sm text-slate-400">No ledger yet. The first visit to /api/tick creates a ₹50,000 paper ledger.</p>
       ) : tab === 'overview' ? (
         <Overview dash={dash} />
