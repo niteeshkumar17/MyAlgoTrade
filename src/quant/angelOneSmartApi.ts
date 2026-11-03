@@ -21,6 +21,7 @@ export const ANGEL_ONE_NSE_TOKENS: Record<string, AngelOneTokenMeta> = {
   NIFTY: { symbol: 'NIFTY', angelToken: '99926000', tradingSymbol: 'Nifty 50', exchange: 'NSE' },
   BANKNIFTY: { symbol: 'BANKNIFTY', angelToken: '99926009', tradingSymbol: 'Nifty Bank', exchange: 'NSE' },
   FINNIFTY: { symbol: 'FINNIFTY', angelToken: '99926037', tradingSymbol: 'Nifty Fin Service', exchange: 'NSE' },
+  MIDCPNIFTY: { symbol: 'MIDCPNIFTY', angelToken: '99926074', tradingSymbol: 'NIFTY MID SELECT', exchange: 'NSE' },
   INDIA_VIX: { symbol: 'INDIA_VIX', angelToken: '99926017', tradingSymbol: 'India VIX', exchange: 'NSE' },
   RELIANCE: { symbol: 'RELIANCE', angelToken: '2885', tradingSymbol: 'RELIANCE-EQ', exchange: 'NSE' },
   TCS: { symbol: 'TCS', angelToken: '11536', tradingSymbol: 'TCS-EQ', exchange: 'NSE' },
@@ -28,6 +29,31 @@ export const ANGEL_ONE_NSE_TOKENS: Record<string, AngelOneTokenMeta> = {
   INFY: { symbol: 'INFY', angelToken: '1594', tradingSymbol: 'INFY-EQ', exchange: 'NSE' },
   ICICIBANK: { symbol: 'ICICIBANK', angelToken: '4963', tradingSymbol: 'ICICIBANK-EQ', exchange: 'NSE' },
   SBIN: { symbol: 'SBIN', angelToken: '3045', tradingSymbol: 'SBIN-EQ', exchange: 'NSE' },
+  BHARTIARTL: { symbol: 'BHARTIARTL', angelToken: '10604', tradingSymbol: 'BHARTIARTL-EQ', exchange: 'NSE' },
+  ITC: { symbol: 'ITC', angelToken: '1660', tradingSymbol: 'ITC-EQ', exchange: 'NSE' },
+  KOTAKBANK: { symbol: 'KOTAKBANK', angelToken: '1922', tradingSymbol: 'KOTAKBANK-EQ', exchange: 'NSE' },
+  LT: { symbol: 'LT', angelToken: '11483', tradingSymbol: 'LT-EQ', exchange: 'NSE' },
+  AXISBANK: { symbol: 'AXISBANK', angelToken: '5900', tradingSymbol: 'AXISBANK-EQ', exchange: 'NSE' },
+  BAJFINANCE: { symbol: 'BAJFINANCE', angelToken: '317', tradingSymbol: 'BAJFINANCE-EQ', exchange: 'NSE' },
+  MARUTI: { symbol: 'MARUTI', angelToken: '10999', tradingSymbol: 'MARUTI-EQ', exchange: 'NSE' },
+  ASIANPAINT: { symbol: 'ASIANPAINT', angelToken: '236', tradingSymbol: 'ASIANPAINT-EQ', exchange: 'NSE' },
+  SUNPHARMA: { symbol: 'SUNPHARMA', angelToken: '3351', tradingSymbol: 'SUNPHARMA-EQ', exchange: 'NSE' },
+  TITAN: { symbol: 'TITAN', angelToken: '3506', tradingSymbol: 'TITAN-EQ', exchange: 'NSE' },
+  ULTRACEMCO: { symbol: 'ULTRACEMCO', angelToken: '11532', tradingSymbol: 'ULTRACEMCO-EQ', exchange: 'NSE' },
+  TATASTEEL: { symbol: 'TATASTEEL', angelToken: '3499', tradingSymbol: 'TATASTEEL-EQ', exchange: 'NSE' },
+  NTPC: { symbol: 'NTPC', angelToken: '11630', tradingSymbol: 'NTPC-EQ', exchange: 'NSE' },
+  'M&M': { symbol: 'M&M', angelToken: '2031', tradingSymbol: 'M&M-EQ', exchange: 'NSE' },
+  POWERGRID: { symbol: 'POWERGRID', angelToken: '14977', tradingSymbol: 'POWERGRID-EQ', exchange: 'NSE' },
+  ADANIENT: { symbol: 'ADANIENT', angelToken: '25', tradingSymbol: 'ADANIENT-EQ', exchange: 'NSE' },
+  BAJAJFINSV: { symbol: 'BAJAJFINSV', angelToken: '16675', tradingSymbol: 'BAJAJFINSV-EQ', exchange: 'NSE' },
+  WIPRO: { symbol: 'WIPRO', angelToken: '3787', tradingSymbol: 'WIPRO-EQ', exchange: 'NSE' },
+  COALINDIA: { symbol: 'COALINDIA', angelToken: '20374', tradingSymbol: 'COALINDIA-EQ', exchange: 'NSE' },
+  JSWSTEEL: { symbol: 'JSWSTEEL', angelToken: '11723', tradingSymbol: 'JSWSTEEL-EQ', exchange: 'NSE' },
+  HINDALCO: { symbol: 'HINDALCO', angelToken: '1363', tradingSymbol: 'HINDALCO-EQ', exchange: 'NSE' },
+  ONGC: { symbol: 'ONGC', angelToken: '2475', tradingSymbol: 'ONGC-EQ', exchange: 'NSE' },
+  GRASIM: { symbol: 'GRASIM', angelToken: '1232', tradingSymbol: 'GRASIM-EQ', exchange: 'NSE' },
+  TECHM: { symbol: 'TECHM', angelToken: '13538', tradingSymbol: 'TECHM-EQ', exchange: 'NSE' },
+  HCLTECH: { symbol: 'HCLTECH', angelToken: '7229', tradingSymbol: 'HCLTECH-EQ', exchange: 'NSE' },
 };
 
 const ANGEL_BASE_URL = 'https://apiconnect.angelone.in';
@@ -355,15 +381,19 @@ export async function fetchOptionQuotes(tokens: string[]): Promise<Record<string
 
 export type AngelCandleInterval = 'ONE_MINUTE' | 'FIVE_MINUTE' | 'FIFTEEN_MINUTE' | 'ONE_HOUR' | 'ONE_DAY';
 
-const candleCache = new Map<string, { atMs: number; candles: Candle[] }>();
+const candleCache = new Map<string, { atMs: number; hourSlot: number; candles: Candle[] }>();
 const inflightCandleRequests = new Map<string, Promise<Candle[] | null>>();
 let lastCandleCallMs = 0;
 let candleMutex: Promise<unknown> = Promise.resolve();
 
+function currentIstHourSlot(nowMs = Date.now()): number {
+  return Math.floor((nowMs + 5.5 * 3600_000 - 15 * 60_000) / 3600_000);
+}
+
 function enqueueCandleCall<T>(fn: () => Promise<T>): Promise<T> {
   const next = candleMutex.then(async () => {
     const elapsed = Date.now() - lastCandleCallMs;
-    if (elapsed < 420) await sleep(420 - elapsed);
+    if (elapsed < 360) await sleep(360 - elapsed);
     lastCandleCallMs = Date.now();
     return fn();
   });
@@ -447,7 +477,8 @@ export async function fetchCandlesByToken(
           close: Number(row[4]),
           volume: Number(row[5] ?? 0),
         }));
-        candleCache.set(cacheKey, { atMs: Date.now(), candles: rows });
+        const now = Date.now();
+        candleCache.set(cacheKey, { atMs: now, hourSlot: currentIstHourSlot(now), candles: rows });
         return rows;
       } catch (err) {
         lastAngelError = err instanceof Error ? err.message : 'Angel candle fetch failed';
@@ -466,6 +497,14 @@ export async function fetchCandlesByToken(
 export async function fetchHourlyCandles(symbol: string, fromIst: string, toIst: string): Promise<Candle[] | null> {
   const meta = ANGEL_ONE_NSE_TOKENS[symbol];
   if (!meta) return null;
+  const cacheKey = `${meta.exchange}:${meta.angelToken}:ONE_HOUR`;
+  const now = Date.now();
+  const slot = currentIstHourSlot(now);
+  const cached = candleCache.get(cacheKey);
+  // Completed hourly bars only advance at :15 past each hour; reuse within the same :15 slot
+  if (cached && cached.hourSlot === slot && cached.candles.length >= 60) {
+    return cached.candles;
+  }
   return fetchCandlesByToken(meta.exchange, meta.angelToken, 'ONE_HOUR', fromIst, toIst);
 }
 

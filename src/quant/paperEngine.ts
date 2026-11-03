@@ -125,15 +125,20 @@ function startingCapitalFromEnv(): number {
   return Number.isFinite(n) && n > 0 ? n : 50_000;
 }
 
+let cycleInFlight = false;
+
 async function withLease<T>(store: KvStore, fn: () => Promise<T>): Promise<{ busy: true } | { busy: false; value: T }> {
+  if (cycleInFlight) return { busy: true };
   const now = Date.now();
   const current = await store.get<{ owner: string; until: number }>(KEY_LEASE);
   if (current && current.data.until > now && current.data.owner !== OWNER) return { busy: true };
   const claimed = await store.put(KEY_LEASE, { owner: OWNER, until: now + LEASE_MS }, current ? current.rev : null);
   if (!claimed.ok) return { busy: true };
+  cycleInFlight = true;
   try {
     return { busy: false, value: await fn() };
   } finally {
+    cycleInFlight = false;
     const held = await store.get<{ owner: string; until: number }>(KEY_LEASE);
     if (held && held.data.owner === OWNER) {
       await store.put(KEY_LEASE, { owner: OWNER, until: 0 }, held.rev);
@@ -199,8 +204,14 @@ async function archivePending(store: KvStore, state: LedgerState): Promise<boole
 }
 
 async function persist(store: KvStore, state: LedgerState, rev: number): Promise<boolean> {
-  const saved = await store.put(stateKey(state.ledgerId), state, rev);
+  let saved = await store.put(stateKey(state.ledgerId), state, rev);
+  if (!saved.ok) {
+    const latest = await store.get<LedgerState>(stateKey(state.ledgerId));
+    saved = await store.put(stateKey(state.ledgerId), state, latest ? latest.rev : null);
+  }
   if (!saved.ok) return false;
+  lastLiveStateMemo = state;
+  lastLiveRefreshMs = Date.now();
   const pendingCount = state.pending.trades.length + state.pending.candidates.length + state.pending.equity.length;
   if (pendingCount === 0) return true;
   const archived = await archivePending(store, state);
@@ -514,7 +525,11 @@ async function loadInstruments(
 ): Promise<NfoInstrument[]> {
   const today = istDate(nowMs);
   const cached = await store.get<{ asOf: string; items: NfoInstrument[] }>(KEY_INSTRUMENTS);
-  if (cached && cached.data.asOf === today && cached.data.items.length > 0) return cached.data.items;
+  const expectedCount = Object.keys(spots).filter((k) => k !== 'INDIA_VIX').length;
+  const cachedCount = cached ? new Set(cached.data.items.map((i) => i.underlying)).size : 0;
+  if (cached && cached.data.asOf === today && cached.data.items.length > 0 && cachedCount >= expectedCount) {
+    return cached.data.items;
+  }
   const spotByUnderlying: Record<string, number> = {};
   for (const [sym, q] of Object.entries(spots)) if (q.ltp > 0) spotByUnderlying[sym] = q.ltp;
   const items = await market.fetchInstruments(nowMs, spotByUnderlying);
@@ -644,7 +659,7 @@ async function runPaperCycleUnlocked(
   const cache = opts.history ?? history();
   const vixSeries = buildVixSeries(cache?.INDIA_VIX ?? []);
   const vixPctile = vix === null ? null : vixSeries.percentile(today, vix);
-  const fromIst = formatIstForAngel(nowMs - 25 * 86_400_000);
+  const fromIst = formatIstForAngel(nowMs - 35 * 86_400_000);
   const toIst = formatIstForAngel(nowMs);
 
   const regimes: MarketSnapshot['regimes'] = {};
@@ -714,7 +729,7 @@ async function runPaperCycleUnlocked(
     const key = `${plan.underlying}:${sig.direction}`;
     const barTime = plan.candles[plan.index].time;
     if (state.lastSignalBar[key] === barTime) continue;
-    if (state.activeCandidates.some((c) => c.underlying === plan.underlying && c.direction === sig.direction)) {
+    if (state.activeCandidates.some((c) => c.underlying === plan.underlying && c.direction === sig.direction && c.signalBarStart === barTime)) {
       state.lastSignalBar[key] = barTime;
       continue;
     }
@@ -1110,6 +1125,8 @@ export async function refreshLiveState(
       };
     }
 
+    const today = istDate(nowMs);
+    let immediateExitHit = false;
     if (optionQuotes && Object.keys(optionQuotes).length > 0) {
       for (const pos of state.openPositions) {
         const marked = markSpread(pos.plan, optionQuotes, nowMs, cfg.quoteMaxAgeSec);
@@ -1117,6 +1134,7 @@ export async function refreshLiveState(
           pos.lastMark = marked.mark;
           pos.peakValue = Math.max(pos.peakValue, marked.mark.liquidationValue);
           pos.troughValue = Math.min(pos.troughValue, marked.mark.liquidationValue);
+          if (exitReasonFor(pos, cfg, today)) immediateExitHit = true;
         }
       }
       for (const cand of state.activeCandidates) {
@@ -1125,6 +1143,7 @@ export async function refreshLiveState(
           cand.lastMark = marked.mark;
           cand.peakValue = Math.max(cand.peakValue, marked.mark.liquidationValue);
           cand.troughValue = Math.min(cand.troughValue, marked.mark.liquidationValue);
+          if (exitReasonFor(cand, cfg, today)) immediateExitHit = true;
         }
       }
     }
@@ -1133,8 +1152,20 @@ export async function refreshLiveState(
     lastLiveRefreshMs = nowMs;
     lastLiveStateMemo = state;
 
-    // Persist live marks to DB every 15s so the database stays current without lock contention
-    if (nowMs - lastDbPersistMs >= 15_000 && state.market?.live) {
+    // Trigger an immediate cycle if a real-time 3s mark hit TAKE_PROFIT/STOP_LOSS
+    // or if a new :15 hourly bar completed since the last cycle
+    const lastCycleMs = state.lastCycle ? Date.parse(state.lastCycle.at) : 0;
+    const istMin = istParts(nowMs).minuteOfDay;
+    const barBoundaryPassed =
+      state.market?.live &&
+      istMin >= 9 * 60 + 30 &&
+      istMin <= 15 * 60 + 20 &&
+      Math.floor((nowMs + 5.5 * 3600_000 - 15 * 60_000) / 3600_000) >
+        Math.floor((lastCycleMs + 5.5 * 3600_000 - 15 * 60_000) / 3600_000);
+
+    if ((immediateExitHit || barBoundaryPassed) && !cycleInFlight) {
+      void runPaperCycle(store, market, { force: true }).catch(() => {});
+    } else if (nowMs - lastDbPersistMs >= 15_000 && state.market?.live && !cycleInFlight) {
       lastDbPersistMs = nowMs;
       void store.put(stateKey(state.ledgerId), state, row.rev).catch(() => {});
     }

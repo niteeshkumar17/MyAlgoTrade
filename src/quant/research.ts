@@ -40,18 +40,44 @@ export const RESEARCH_LOT_SIZES: Record<string, number> = {
   NIFTY: 65,
   BANKNIFTY: 30,
   FINNIFTY: 60,
+  MIDCPNIFTY: 120,
   RELIANCE: 500,
   TCS: 225,
   HDFCBANK: 650,
   INFY: 400,
   ICICIBANK: 700,
   SBIN: 750,
+  BHARTIARTL: 475,
+  ITC: 1725,
+  KOTAKBANK: 2000,
+  LT: 175,
+  AXISBANK: 625,
+  BAJFINANCE: 750,
+  MARUTI: 50,
+  ASIANPAINT: 250,
+  SUNPHARMA: 350,
+  TITAN: 175,
+  ULTRACEMCO: 50,
+  TATASTEEL: 2750,
+  NTPC: 1500,
+  'M&M': 200,
+  POWERGRID: 1900,
+  ADANIENT: 309,
+  BAJAJFINSV: 300,
+  WIPRO: 3000,
+  COALINDIA: 1350,
+  JSWSTEEL: 675,
+  HINDALCO: 700,
+  ONGC: 2250,
+  GRASIM: 250,
+  TECHM: 600,
+  HCLTECH: 400,
 };
 
 const CACHE_FILE = 'angelOne1YearCache.json';
 const YEAR_MS = 365 * 86_400_000;
 const RISK_FREE = 0.06;
-const MODEL_SPREAD_PCT: Record<string, number> = { NIFTY: 0.0025, BANKNIFTY: 0.003, FINNIFTY: 0.004 };
+const MODEL_SPREAD_PCT: Record<string, number> = { NIFTY: 0.0025, BANKNIFTY: 0.003, FINNIFTY: 0.004, MIDCPNIFTY: 0.004 };
 const STOCK_SPREAD_PCT = 0.006;
 
 let cacheMemo: HistoricalCache | null | undefined;
