@@ -1594,50 +1594,70 @@ function OrdersAndSignals({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {allRows.map((c) => (
-                  <tr
-                    key={c.id}
-                    onClick={() => onOpenTerminal({ kind: 'candidate', id: c.id, underlying: c.underlying, candidate: c })}
-                    className="cursor-pointer hover:bg-slate-50"
-                  >
-                    <td className="py-3 pr-3 font-mono text-xs text-slate-500">{formatIst(c.createdAt)}</td>
-                    <td className="py-3 pr-3 font-semibold text-slate-900">
-                      {c.underlying} {formatExpiryLabel(c.plan.expiry)} {c.plan.long.strike}/{c.plan.short.strike} {c.direction}
-                    </td>
-                    <td className="py-3 pr-3 text-xs text-slate-600">
-                      <span className="font-medium text-slate-800">{c.strategy.replace('_', ' ')}</span> · {c.reason}
-                    </td>
-                    <td className="py-3 pr-3 text-right font-mono text-xs text-slate-700 tabular-nums">
-                      {c.modelProb !== null ? formatPct(c.modelProb * 100, 1) : '—'}
-                    </td>
-                    <td className="py-3 pr-3">
-                      <span
-                        className={`rounded px-2 py-0.5 text-xs font-semibold ${
-                          c.takenByLedger
-                            ? 'bg-emerald-50 text-[#008F6B]'
-                            : 'bg-slate-100 text-slate-600'
-                        }`}
-                      >
-                        {c.takenByLedger ? 'Taken by Ledger' : c.skipReason || 'Shadow Only'}
-                      </span>
-                    </td>
-                    <td className={`py-3 pr-3 text-right font-mono font-medium tabular-nums ${pnlColor(c.pnlPerLotInr)}`}>
-                      {c.pnlPerLotInr === undefined ? 'Tracking Live' : formatInr(c.pnlPerLotInr)}
-                    </td>
-                    <td className="py-3 text-right">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onOpenTerminal({ kind: 'candidate', id: c.id, underlying: c.underlying, candidate: c });
-                        }}
-                        className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                      >
-                        🕯 View
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {allRows.map((c) => {
+                  const liveLiq = c.lastMark?.liquidationValue ?? c.plan.entryDebit;
+                  const liveOneLotPnl = Math.round((liveLiq - c.plan.entryDebit) * c.plan.lotSize);
+                  return (
+                    <tr
+                      key={c.id}
+                      onClick={() => onOpenTerminal({ kind: 'candidate', id: c.id, underlying: c.underlying, candidate: c })}
+                      className="cursor-pointer hover:bg-slate-50"
+                    >
+                      <td className="py-3 pr-3 font-mono text-xs text-slate-500">{formatIst(c.createdAt)}</td>
+                      <td className="py-3 pr-3 font-semibold text-slate-900">
+                        {c.underlying} {formatExpiryLabel(c.plan.expiry)} {c.plan.long.strike}/{c.plan.short.strike} {c.direction}
+                      </td>
+                      <td className="py-3 pr-3 text-xs text-slate-600">
+                        <span className="font-medium text-slate-800">{c.strategy.replace('_', ' ')}</span> · {c.reason}
+                      </td>
+                      <td className="py-3 pr-3 text-right font-mono text-xs text-slate-700 tabular-nums">
+                        {c.modelProb !== null ? formatPct(c.modelProb * 100, 1) : '—'}
+                      </td>
+                      <td className="py-3 pr-3">
+                        <span
+                          className={`rounded px-2 py-0.5 text-xs font-semibold ${
+                            c.takenByLedger
+                              ? 'bg-emerald-50 text-[#008F6B]'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {c.takenByLedger ? 'Taken by Ledger' : c.skipReason || 'Shadow Only'}
+                        </span>
+                      </td>
+                      <td className="py-3 pr-3 text-right font-mono tabular-nums">
+                        {c.pnlPerLotInr !== undefined ? (
+                          <div className={`font-semibold ${pnlColor(c.pnlPerLotInr)}`}>
+                            {c.pnlPerLotInr >= 0 ? '+' : ''}
+                            {formatInr(c.pnlPerLotInr)}
+                            <div className="text-[10px] font-normal text-slate-400">Closed · Trained Model</div>
+                          </div>
+                        ) : (
+                          <div>
+                            <div className={`font-semibold ${pnlColor(liveOneLotPnl)}`}>
+                              {liveOneLotPnl >= 0 ? '+' : ''}
+                              {formatInr(liveOneLotPnl)}
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              ₹{c.plan.entryDebit.toFixed(2)} → ₹{liveLiq.toFixed(2)} · Tracking Live
+                            </div>
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-3 text-right">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenTerminal({ kind: 'candidate', id: c.id, underlying: c.underlying, candidate: c });
+                          }}
+                          className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                        >
+                          🕯 View
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

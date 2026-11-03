@@ -847,6 +847,19 @@ async function runPaperCycleUnlocked(
       log(state, 'SKIP', `${pending.underlying} ${sig.direction}: ${built.reason}`, pending.underlying);
       continue;
     }
+    if (
+      state.activeCandidates.some(
+        (c) =>
+          c.underlying === pending.underlying &&
+          c.direction === sig.direction &&
+          c.plan.expiry === pending.expiry &&
+          c.plan.long.strike === built.plan.long.strike &&
+          c.plan.short.strike === built.plan.short.strike
+      )
+    ) {
+      state.lastSignalBar[`${pending.underlying}:${sig.direction}`] = pending.candles[pending.index].time;
+      continue;
+    }
     const features = buildFeatures(sig, {
       vixPctile,
       isIndex: INDEX_UNDERLYINGS.has(pending.underlying),
@@ -1087,6 +1100,14 @@ export async function refreshLiveState(
 
   const state = row.data;
   state.config = { ...DEFAULT_ENGINE_CONFIG };
+  // Deduplicate any identical active shadow contracts (keep the earliest entry)
+  const seenContracts = new Set<string>();
+  state.activeCandidates = state.activeCandidates.filter((c) => {
+    const contractKey = `${c.underlying}:${c.direction}:${c.plan.expiry}:${c.plan.long.strike}:${c.plan.short.strike}`;
+    if (seenContracts.has(contractKey) && !c.takenByLedger) return false;
+    seenContracts.add(contractKey);
+    return true;
+  });
   try {
     maybeTrain(state, nowMs, false);
   } catch {
