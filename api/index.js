@@ -3325,7 +3325,7 @@ var ResilientKvStore = class {
     if (key === KEY_LEASE) return 0;
     if (key === KEY_INSTRUMENTS) return 36e5;
     if (key === KEY_ACTIVE) return 6e4;
-    return 2500;
+    return isWithinSessionHours(Date.now()) ? 3e3 : 6e4;
   }
   handlePgError(err) {
     if (isQuotaError(err)) {
@@ -4047,6 +4047,15 @@ function closePosition(state, position, reason, nowMs) {
   return trade;
 }
 function revalue(state, niftyLtp) {
+  const seenClosed = /* @__PURE__ */ new Set();
+  state.closedSummaries = state.closedSummaries.filter((s) => {
+    if (!s || !s.id || seenClosed.has(s.id)) return false;
+    seenClosed.add(s.id);
+    return true;
+  });
+  const realizedInr = state.closedSummaries.reduce((sum, s) => sum + (Number.isFinite(s.netPnlInr) ? s.netPnlInr : 0), 0);
+  const openCostInr = state.openPositions.reduce((sum, p) => sum + (Number.isFinite(p.entryCashOutInr) ? p.entryCashOutInr : 0), 0);
+  state.cash = round23(state.startingCapitalInr + realizedInr - openCostInr);
   let equity = state.cash;
   let equityMid = state.cash;
   let unrealized = 0;
@@ -4233,9 +4242,16 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
       }
     }
   }
+  const prevCycleStatus = state.lastCycle?.status;
   const finish = async (status, summary) => {
     state.angel = market2.status();
     state.lastCycle = { at: new Date(nowMs).toISOString(), durationMs: Date.now() - started, status, summary };
+    const isIdleOffHours = (status === "OFF_HOURS" || status === "MARKET_CLOSED") && prevCycleStatus === status && !opts.force && state.pending.trades.length === 0 && state.pending.candidates.length === 0 && state.pending.equity.length === 0;
+    if (isIdleOffHours) {
+      lastLiveStateMemo = state;
+      lastLiveRefreshMs = nowMs;
+      return { ran: true, summary, ledgerId: state.ledgerId, equity: state.lastEquity, persisted: true };
+    }
     log(state, "CYCLE", summary);
     const persisted = await persist(store2, state, rev);
     return { ran: true, summary, ledgerId: state.ledgerId, equity: state.lastEquity, persisted };

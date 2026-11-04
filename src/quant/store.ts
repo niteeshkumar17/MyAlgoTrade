@@ -8,6 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import pg from 'pg';
 
+import { isWithinSessionHours } from './clock.js';
+
 export interface KvRow<T> {
   rev: number;
   data: T;
@@ -144,7 +146,7 @@ export class ResilientKvStore implements KvStore {
     if (key === KEY_LEASE) return 0;
     if (key === KEY_INSTRUMENTS) return 3_600_000; // 1 hour for 898KB instrument master
     if (key === KEY_ACTIVE) return 60_000; // 60s for active ledger pointer
-    return 2_500; // 2.5s for live state & journals
+    return isWithinSessionHours(Date.now()) ? 3_000 : 60_000; // 3s during live NSE hours, 60s during off-hours
   }
 
   private handlePgError(err: unknown) {

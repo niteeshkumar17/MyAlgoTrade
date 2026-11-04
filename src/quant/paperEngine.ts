@@ -790,6 +790,16 @@ function closePosition(state: LedgerState, position: PaperPosition, reason: Exit
 }
 
 function revalue(state: LedgerState, niftyLtp: number | null) {
+  const seenClosed = new Set<string>();
+  state.closedSummaries = state.closedSummaries.filter((s) => {
+    if (!s || !s.id || seenClosed.has(s.id)) return false;
+    seenClosed.add(s.id);
+    return true;
+  });
+  const realizedInr = state.closedSummaries.reduce((sum, s) => sum + (Number.isFinite(s.netPnlInr) ? s.netPnlInr : 0), 0);
+  const openCostInr = state.openPositions.reduce((sum, p) => sum + (Number.isFinite(p.entryCashOutInr) ? p.entryCashOutInr : 0), 0);
+  state.cash = round2(state.startingCapitalInr + realizedInr - openCostInr);
+
   let equity = state.cash;
   let equityMid = state.cash;
   let unrealized = 0;
@@ -1006,9 +1016,22 @@ async function runPaperCycleUnlocked(
     }
   }
 
+  const prevCycleStatus = state.lastCycle?.status;
   const finish = async (status: NonNullable<LedgerState['lastCycle']>['status'], summary: string) => {
     state.angel = market.status();
     state.lastCycle = { at: new Date(nowMs).toISOString(), durationMs: Date.now() - started, status, summary };
+    const isIdleOffHours =
+      (status === 'OFF_HOURS' || status === 'MARKET_CLOSED') &&
+      prevCycleStatus === status &&
+      !opts.force &&
+      state.pending.trades.length === 0 &&
+      state.pending.candidates.length === 0 &&
+      state.pending.equity.length === 0;
+    if (isIdleOffHours) {
+      lastLiveStateMemo = state;
+      lastLiveRefreshMs = nowMs;
+      return { ran: true, summary, ledgerId: state.ledgerId, equity: state.lastEquity, persisted: true };
+    }
     log(state, 'CYCLE', summary);
     const persisted = await persist(store, state, rev);
     return { ran: true, summary, ledgerId: state.ledgerId, equity: state.lastEquity, persisted };
