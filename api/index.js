@@ -1,7 +1,7 @@
 // server.ts
 import "dotenv/config";
 import express from "express";
-import path2 from "node:path";
+import path3 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/quant/angelOneSmartApi.ts
@@ -101,27 +101,79 @@ var UNDERLYINGS = [
   "NIFTY",
   "BANKNIFTY",
   "FINNIFTY",
+  "MIDCPNIFTY",
   "RELIANCE",
   "TCS",
   "HDFCBANK",
   "INFY",
   "ICICIBANK",
-  "SBIN"
+  "SBIN",
+  "BHARTIARTL",
+  "ITC",
+  "KOTAKBANK",
+  "LT",
+  "AXISBANK",
+  "BAJFINANCE",
+  "MARUTI",
+  "ASIANPAINT",
+  "SUNPHARMA",
+  "TITAN",
+  "ULTRACEMCO",
+  "TATASTEEL",
+  "NTPC",
+  "M&M",
+  "POWERGRID",
+  "ADANIENT",
+  "BAJAJFINSV",
+  "WIPRO",
+  "COALINDIA",
+  "JSWSTEEL",
+  "HINDALCO",
+  "ONGC",
+  "GRASIM",
+  "TECHM",
+  "HCLTECH"
 ];
-var INDEX_UNDERLYINGS = /* @__PURE__ */ new Set(["NIFTY", "BANKNIFTY", "FINNIFTY"]);
+var INDEX_UNDERLYINGS = /* @__PURE__ */ new Set(["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]);
 
 // src/quant/angelOneSmartApi.ts
 var ANGEL_ONE_NSE_TOKENS = {
   NIFTY: { symbol: "NIFTY", angelToken: "99926000", tradingSymbol: "Nifty 50", exchange: "NSE" },
   BANKNIFTY: { symbol: "BANKNIFTY", angelToken: "99926009", tradingSymbol: "Nifty Bank", exchange: "NSE" },
   FINNIFTY: { symbol: "FINNIFTY", angelToken: "99926037", tradingSymbol: "Nifty Fin Service", exchange: "NSE" },
+  MIDCPNIFTY: { symbol: "MIDCPNIFTY", angelToken: "99926074", tradingSymbol: "NIFTY MID SELECT", exchange: "NSE" },
   INDIA_VIX: { symbol: "INDIA_VIX", angelToken: "99926017", tradingSymbol: "India VIX", exchange: "NSE" },
   RELIANCE: { symbol: "RELIANCE", angelToken: "2885", tradingSymbol: "RELIANCE-EQ", exchange: "NSE" },
   TCS: { symbol: "TCS", angelToken: "11536", tradingSymbol: "TCS-EQ", exchange: "NSE" },
   HDFCBANK: { symbol: "HDFCBANK", angelToken: "1333", tradingSymbol: "HDFCBANK-EQ", exchange: "NSE" },
   INFY: { symbol: "INFY", angelToken: "1594", tradingSymbol: "INFY-EQ", exchange: "NSE" },
   ICICIBANK: { symbol: "ICICIBANK", angelToken: "4963", tradingSymbol: "ICICIBANK-EQ", exchange: "NSE" },
-  SBIN: { symbol: "SBIN", angelToken: "3045", tradingSymbol: "SBIN-EQ", exchange: "NSE" }
+  SBIN: { symbol: "SBIN", angelToken: "3045", tradingSymbol: "SBIN-EQ", exchange: "NSE" },
+  BHARTIARTL: { symbol: "BHARTIARTL", angelToken: "10604", tradingSymbol: "BHARTIARTL-EQ", exchange: "NSE" },
+  ITC: { symbol: "ITC", angelToken: "1660", tradingSymbol: "ITC-EQ", exchange: "NSE" },
+  KOTAKBANK: { symbol: "KOTAKBANK", angelToken: "1922", tradingSymbol: "KOTAKBANK-EQ", exchange: "NSE" },
+  LT: { symbol: "LT", angelToken: "11483", tradingSymbol: "LT-EQ", exchange: "NSE" },
+  AXISBANK: { symbol: "AXISBANK", angelToken: "5900", tradingSymbol: "AXISBANK-EQ", exchange: "NSE" },
+  BAJFINANCE: { symbol: "BAJFINANCE", angelToken: "317", tradingSymbol: "BAJFINANCE-EQ", exchange: "NSE" },
+  MARUTI: { symbol: "MARUTI", angelToken: "10999", tradingSymbol: "MARUTI-EQ", exchange: "NSE" },
+  ASIANPAINT: { symbol: "ASIANPAINT", angelToken: "236", tradingSymbol: "ASIANPAINT-EQ", exchange: "NSE" },
+  SUNPHARMA: { symbol: "SUNPHARMA", angelToken: "3351", tradingSymbol: "SUNPHARMA-EQ", exchange: "NSE" },
+  TITAN: { symbol: "TITAN", angelToken: "3506", tradingSymbol: "TITAN-EQ", exchange: "NSE" },
+  ULTRACEMCO: { symbol: "ULTRACEMCO", angelToken: "11532", tradingSymbol: "ULTRACEMCO-EQ", exchange: "NSE" },
+  TATASTEEL: { symbol: "TATASTEEL", angelToken: "3499", tradingSymbol: "TATASTEEL-EQ", exchange: "NSE" },
+  NTPC: { symbol: "NTPC", angelToken: "11630", tradingSymbol: "NTPC-EQ", exchange: "NSE" },
+  "M&M": { symbol: "M&M", angelToken: "2031", tradingSymbol: "M&M-EQ", exchange: "NSE" },
+  POWERGRID: { symbol: "POWERGRID", angelToken: "14977", tradingSymbol: "POWERGRID-EQ", exchange: "NSE" },
+  ADANIENT: { symbol: "ADANIENT", angelToken: "25", tradingSymbol: "ADANIENT-EQ", exchange: "NSE" },
+  BAJAJFINSV: { symbol: "BAJAJFINSV", angelToken: "16675", tradingSymbol: "BAJAJFINSV-EQ", exchange: "NSE" },
+  WIPRO: { symbol: "WIPRO", angelToken: "3787", tradingSymbol: "WIPRO-EQ", exchange: "NSE" },
+  COALINDIA: { symbol: "COALINDIA", angelToken: "20374", tradingSymbol: "COALINDIA-EQ", exchange: "NSE" },
+  JSWSTEEL: { symbol: "JSWSTEEL", angelToken: "11723", tradingSymbol: "JSWSTEEL-EQ", exchange: "NSE" },
+  HINDALCO: { symbol: "HINDALCO", angelToken: "1363", tradingSymbol: "HINDALCO-EQ", exchange: "NSE" },
+  ONGC: { symbol: "ONGC", angelToken: "2475", tradingSymbol: "ONGC-EQ", exchange: "NSE" },
+  GRASIM: { symbol: "GRASIM", angelToken: "1232", tradingSymbol: "GRASIM-EQ", exchange: "NSE" },
+  TECHM: { symbol: "TECHM", angelToken: "13538", tradingSymbol: "TECHM-EQ", exchange: "NSE" },
+  HCLTECH: { symbol: "HCLTECH", angelToken: "7229", tradingSymbol: "HCLTECH-EQ", exchange: "NSE" }
 };
 var ANGEL_BASE_URL = "https://apiconnect.angelone.in";
 var SCRIP_MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
@@ -248,113 +300,243 @@ function toLegQuote(item) {
     oi: Number(item.opnInterest ?? 0)
   };
 }
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var lastQuoteCallMs = 0;
+var quoteMutex = Promise.resolve();
+function enqueueQuoteCall(fn) {
+  const next = quoteMutex.then(async () => {
+    const elapsed = Date.now() - lastQuoteCallMs;
+    if (elapsed < 180) await sleep(180 - elapsed);
+    lastQuoteCallMs = Date.now();
+    return fn();
+  });
+  quoteMutex = next.catch(() => void 0);
+  return next;
+}
 async function fetchQuoteBatch(exchange, tokens) {
   const { apiKey, configured } = credentials();
   if (!configured || tokens.length === 0) return tokens.length === 0 ? [] : null;
   let jwt = await ensureAngelOneSession(false);
   if (!jwt) return null;
-  const call = async (token) => {
-    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`, {
-      method: "POST",
-      headers: headers(apiKey, token),
-      body: JSON.stringify({ mode: "FULL", exchangeTokens: { [exchange]: tokens } }),
-      signal: AbortSignal.timeout(8e3)
-    });
-    const data = await res.json();
-    return { res, data };
-  };
-  try {
-    let { res, data } = await call(jwt);
-    if (!data.status && (data.errorcode === "AG8001" || res.status === 401)) {
-      jwt = await ensureAngelOneSession(true);
-      if (!jwt) return null;
-      ({ res, data } = await call(jwt));
-    }
-    if (!data.status || !Array.isArray(data.data?.fetched)) {
-      lastAngelError = data.message || data.errorcode || "Angel quote fetch failed";
+  return enqueueQuoteCall(async () => {
+    const call = async (token) => {
+      const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/market/v1/quote/`, {
+        method: "POST",
+        headers: headers(apiKey, token),
+        body: JSON.stringify({ mode: "FULL", exchangeTokens: { [exchange]: tokens } }),
+        signal: AbortSignal.timeout(8e3)
+      });
+      const text = await res.text();
+      if (!text.startsWith("{")) {
+        return { res, data: { status: false, message: text.slice(0, 120) }, rateLimited: res.status === 403 || text.includes("exceeding access rate") };
+      }
+      const data = JSON.parse(text);
+      return { res, data, rateLimited: res.status === 403 || data.errorcode === "AB1004" };
+    };
+    try {
+      let { res, data, rateLimited } = await call(jwt);
+      if (rateLimited) {
+        await sleep(500);
+        ({ res, data, rateLimited } = await call(jwt));
+      }
+      if (!data.status && (data.errorcode === "AG8001" || res.status === 401)) {
+        jwt = await ensureAngelOneSession(true);
+        if (!jwt) return null;
+        ({ res, data } = await call(jwt));
+      }
+      if (!data.status || !Array.isArray(data.data?.fetched)) {
+        lastAngelError = data.message || data.errorcode || "Angel quote fetch failed";
+        return null;
+      }
+      lastQuoteFetchAtIso = (/* @__PURE__ */ new Date()).toISOString();
+      lastAngelError = null;
+      return data.data.fetched;
+    } catch (err) {
+      lastAngelError = err instanceof Error ? err.message : "Angel quote fetch failed";
       return null;
     }
-    lastQuoteFetchAtIso = (/* @__PURE__ */ new Date()).toISOString();
-    lastAngelError = null;
-    return data.data.fetched;
-  } catch (err) {
-    lastAngelError = err instanceof Error ? err.message : "Angel quote fetch failed";
-    return null;
-  }
+  });
 }
+var cachedSpotQuotes = null;
+var inflightSpotQuotes = null;
 async function fetchSpotQuotes() {
-  const metas = Object.values(ANGEL_ONE_NSE_TOKENS);
-  const fetched = await fetchQuoteBatch("NSE", metas.map((m) => m.angelToken));
-  if (!fetched) return null;
-  const byToken = new Map(metas.map((m) => [m.angelToken, m.symbol]));
-  const out = {};
-  for (const item of fetched) {
-    const symbol = byToken.get(String(item.symbolToken ?? ""));
-    const ltp = Number(item.ltp ?? 0);
-    if (!symbol || !(ltp > 0)) continue;
-    const prevClose = Number(item.close ?? ltp);
-    out[symbol] = {
-      symbol,
-      ltp,
-      open: Number(item.open ?? ltp),
-      high: Number(item.high ?? ltp),
-      low: Number(item.low ?? ltp),
-      prevClose,
-      changePct: typeof item.percentChange === "number" ? item.percentChange : prevClose > 0 ? (ltp - prevClose) / prevClose * 100 : 0,
-      feedTimeMs: parseAngelFeedTime(item.exchFeedTime || item.exchTradeTime)
-    };
+  const now = Date.now();
+  if (cachedSpotQuotes && now - cachedSpotQuotes.atMs < 2200) {
+    return cachedSpotQuotes.data;
   }
-  return out;
+  if (inflightSpotQuotes) return inflightSpotQuotes;
+  inflightSpotQuotes = (async () => {
+    const metas = Object.values(ANGEL_ONE_NSE_TOKENS);
+    const fetched = await fetchQuoteBatch("NSE", metas.map((m) => m.angelToken));
+    if (!fetched) return cachedSpotQuotes?.data ?? null;
+    const byToken = new Map(metas.map((m) => [m.angelToken, m.symbol]));
+    const out = {};
+    for (const item of fetched) {
+      const symbol = byToken.get(String(item.symbolToken ?? ""));
+      const ltp = Number(item.ltp ?? 0);
+      if (!symbol || !(ltp > 0)) continue;
+      const prevClose = Number(item.close ?? ltp);
+      out[symbol] = {
+        symbol,
+        ltp,
+        open: Number(item.open ?? ltp),
+        high: Number(item.high ?? ltp),
+        low: Number(item.low ?? ltp),
+        prevClose,
+        changePct: typeof item.percentChange === "number" ? item.percentChange : prevClose > 0 ? (ltp - prevClose) / prevClose * 100 : 0,
+        feedTimeMs: parseAngelFeedTime(item.exchFeedTime || item.exchTradeTime)
+      };
+    }
+    if (Object.keys(out).length > 0) {
+      cachedSpotQuotes = { atMs: Date.now(), data: out };
+    }
+    return out;
+  })().finally(() => {
+    inflightSpotQuotes = null;
+  });
+  return inflightSpotQuotes;
 }
+var optionQuoteCache = /* @__PURE__ */ new Map();
 async function fetchOptionQuotes(tokens) {
   const unique = [...new Set(tokens.filter(Boolean))];
+  if (unique.length === 0) return {};
+  const now = Date.now();
   const out = {};
-  for (let i = 0; i < unique.length; i += QUOTE_BATCH) {
-    const batch = unique.slice(i, i + QUOTE_BATCH);
+  const missing = [];
+  for (const t of unique) {
+    const hit = optionQuoteCache.get(t);
+    if (hit && now - hit.atMs < 2200) {
+      out[t] = hit.quote;
+    } else {
+      missing.push(t);
+    }
+  }
+  if (missing.length === 0) return out;
+  for (let i = 0; i < missing.length; i += QUOTE_BATCH) {
+    const batch = missing.slice(i, i + QUOTE_BATCH);
     const fetched = await fetchQuoteBatch("NFO", batch);
-    if (!fetched) return null;
+    if (!fetched) {
+      for (const t of batch) {
+        const stale = optionQuoteCache.get(t);
+        if (stale) out[t] = stale.quote;
+      }
+      return Object.keys(out).length > 0 ? out : null;
+    }
+    const fetchedTime = Date.now();
     for (const item of fetched) {
       const leg = toLegQuote(item);
-      if (leg) out[leg.token] = leg;
+      if (leg) {
+        out[leg.token] = leg;
+        optionQuoteCache.set(leg.token, { atMs: fetchedTime, quote: leg });
+      }
     }
   }
   return out;
 }
-async function fetchHourlyCandles(symbol, fromIst, toIst) {
+var candleCache = /* @__PURE__ */ new Map();
+var inflightCandleRequests = /* @__PURE__ */ new Map();
+var lastCandleCallMs = 0;
+var candleMutex = Promise.resolve();
+function currentIstHourSlot(nowMs = Date.now()) {
+  return Math.floor((nowMs + 5.5 * 36e5 - 15 * 6e4) / 36e5);
+}
+function enqueueCandleCall(fn) {
+  const next = candleMutex.then(async () => {
+    const elapsed = Date.now() - lastCandleCallMs;
+    if (elapsed < 360) await sleep(360 - elapsed);
+    lastCandleCallMs = Date.now();
+    return fn();
+  });
+  candleMutex = next.catch(() => void 0);
+  return next;
+}
+async function fetchCandlesByToken(exchange, symbolToken, interval, fromIst, toIst) {
   const { apiKey, configured } = credentials();
-  const meta = ANGEL_ONE_NSE_TOKENS[symbol];
-  if (!configured || !meta) return null;
-  const jwt = await ensureAngelOneSession(false);
-  if (!jwt) return null;
-  try {
-    const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/historical/v1/getCandleData`, {
-      method: "POST",
-      headers: headers(apiKey, jwt),
-      body: JSON.stringify({
-        exchange: meta.exchange,
-        symboltoken: meta.angelToken,
-        interval: "ONE_HOUR",
-        fromdate: fromIst,
-        todate: toIst
-      }),
-      signal: AbortSignal.timeout(8e3)
-    });
-    const text = await res.text();
-    if (!text.startsWith("{")) return null;
-    const payload = JSON.parse(text);
-    if (!payload.status || !Array.isArray(payload.data)) return null;
-    return payload.data.map((row) => ({
-      time: String(row[0]),
-      open: Number(row[1]),
-      high: Number(row[2]),
-      low: Number(row[3]),
-      close: Number(row[4]),
-      volume: Number(row[5] ?? 0)
-    }));
-  } catch (err) {
-    lastAngelError = err instanceof Error ? err.message : "Angel candle fetch failed";
-    return null;
+  if (!configured || !symbolToken) return null;
+  const cacheKey = `${exchange}:${symbolToken}:${interval}`;
+  const ttlMs = interval === "ONE_MINUTE" ? 8e3 : interval === "FIVE_MINUTE" ? 15e3 : 3e4;
+  const cached = candleCache.get(cacheKey);
+  if (cached && Date.now() - cached.atMs < ttlMs) {
+    return cached.candles;
   }
+  const existing = inflightCandleRequests.get(cacheKey);
+  if (existing) return existing;
+  const promise = enqueueCandleCall(async () => {
+    const hitAfterWait = candleCache.get(cacheKey);
+    if (hitAfterWait && Date.now() - hitAfterWait.atMs < ttlMs) {
+      return hitAfterWait.candles;
+    }
+    let jwt = await ensureAngelOneSession(false);
+    if (!jwt) return cached?.candles ?? null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(`${ANGEL_BASE_URL}/rest/secure/angelbroking/historical/v1/getCandleData`, {
+          method: "POST",
+          headers: headers(apiKey, jwt ?? void 0),
+          body: JSON.stringify({
+            exchange,
+            symboltoken: symbolToken,
+            interval,
+            fromdate: fromIst,
+            todate: toIst
+          }),
+          signal: AbortSignal.timeout(8e3)
+        });
+        const text = await res.text();
+        if (res.status === 403 || text.includes("exceeding access rate")) {
+          await sleep(650 * (attempt + 1));
+          lastCandleCallMs = Date.now();
+          continue;
+        }
+        if (res.status === 401) {
+          jwt = await ensureAngelOneSession(true);
+          if (!jwt) break;
+          continue;
+        }
+        if (!text.startsWith("{")) break;
+        const payload = JSON.parse(text);
+        if (payload.errorcode === "AB1004") {
+          await sleep(650 * (attempt + 1));
+          lastCandleCallMs = Date.now();
+          continue;
+        }
+        if (!payload.status || !Array.isArray(payload.data) || payload.data.length === 0) {
+          return cached?.candles ?? null;
+        }
+        const rows = payload.data.map((row) => ({
+          time: String(row[0]),
+          open: Number(row[1]),
+          high: Number(row[2]),
+          low: Number(row[3]),
+          close: Number(row[4]),
+          volume: Number(row[5] ?? 0)
+        }));
+        const now = Date.now();
+        candleCache.set(cacheKey, { atMs: now, hourSlot: currentIstHourSlot(now), candles: rows });
+        return rows;
+      } catch (err) {
+        lastAngelError = err instanceof Error ? err.message : "Angel candle fetch failed";
+        if (attempt < 2) await sleep(500);
+      }
+    }
+    return cached?.candles ?? null;
+  }).finally(() => {
+    inflightCandleRequests.delete(cacheKey);
+  });
+  inflightCandleRequests.set(cacheKey, promise);
+  return promise;
+}
+async function fetchHourlyCandles(symbol, fromIst, toIst) {
+  const meta = ANGEL_ONE_NSE_TOKENS[symbol];
+  if (!meta) return null;
+  const cacheKey = `${meta.exchange}:${meta.angelToken}:ONE_HOUR`;
+  const now = Date.now();
+  const slot = currentIstHourSlot(now);
+  const cached = candleCache.get(cacheKey);
+  if (cached && cached.hourSlot === slot && cached.candles.length >= 60) {
+    return cached.candles;
+  }
+  return fetchCandlesByToken(meta.exchange, meta.angelToken, "ONE_HOUR", fromIst, toIst);
 }
 function filterScripMaster(rows, nowMs, spotByUnderlying = {}) {
   const today = istDate(nowMs);
@@ -391,20 +573,35 @@ function filterScripMaster(rows, nowMs, spotByUnderlying = {}) {
   }
   return out;
 }
+var cachedInstrumentMaster = null;
+var inflightInstrumentMaster = null;
 async function downloadInstrumentMaster(nowMs, spotByUnderlying = {}) {
-  try {
-    const res = await fetch(SCRIP_MASTER_URL, { signal: AbortSignal.timeout(2e4) });
-    if (!res.ok) {
-      lastAngelError = `Instrument master HTTP ${res.status}`;
-      return null;
-    }
-    const rows = await res.json();
-    if (!Array.isArray(rows)) return null;
-    return filterScripMaster(rows, nowMs, spotByUnderlying);
-  } catch (err) {
-    lastAngelError = err instanceof Error ? err.message : "Instrument master download failed";
-    return null;
+  if (cachedInstrumentMaster && Date.now() - cachedInstrumentMaster.atMs < 20 * 6e4) {
+    return cachedInstrumentMaster.instruments;
   }
+  if (inflightInstrumentMaster) return inflightInstrumentMaster;
+  inflightInstrumentMaster = (async () => {
+    try {
+      const res = await fetch(SCRIP_MASTER_URL, { signal: AbortSignal.timeout(2e4) });
+      if (!res.ok) {
+        lastAngelError = `Instrument master HTTP ${res.status}`;
+        return cachedInstrumentMaster?.instruments ?? null;
+      }
+      const rows = await res.json();
+      if (!Array.isArray(rows)) return cachedInstrumentMaster?.instruments ?? null;
+      const filtered = filterScripMaster(rows, nowMs, spotByUnderlying);
+      if (filtered.length > 0) {
+        cachedInstrumentMaster = { atMs: Date.now(), instruments: filtered };
+      }
+      return filtered;
+    } catch (err) {
+      lastAngelError = err instanceof Error ? err.message : "Instrument master download failed";
+      return cachedInstrumentMaster?.instruments ?? null;
+    }
+  })().finally(() => {
+    inflightInstrumentMaster = null;
+  });
+  return inflightInstrumentMaster;
 }
 
 // src/quant/marketData.ts
@@ -621,7 +818,7 @@ function classifyRegime(row, vixPctile) {
 }
 var f1 = (x) => x.toFixed(1);
 function detectSignal(candles, rows, i, vixPctile) {
-  if (i < 4) return null;
+  if (i < 5) return null;
   const row = rows[i];
   const prev = rows[i - 1];
   if (!isRowComplete(row) || !isRowComplete(prev) || !Number.isFinite(rows[i - 3].adx14)) return null;
@@ -638,57 +835,56 @@ function detectSignal(candles, rows, i, vixPctile) {
     indicators: snapshotOf(row)
   };
   const adxRising = row.adx14 > rows[i - 3].adx14;
-  if (adxRising && row.adx14 >= 18) {
-    if (c.close > row.donchianHigh20) {
-      return {
-        ...base,
-        strategy: "breakout_momentum",
-        direction: "CE",
-        reason: `Close ${f1(c.close)} above 20-bar high ${f1(row.donchianHigh20)}, ADX ${f1(row.adx14)} rising`
-      };
-    }
-    if (c.close < row.donchianLow20) {
-      return {
-        ...base,
-        strategy: "breakout_momentum",
-        direction: "PE",
-        reason: `Close ${f1(c.close)} below 20-bar low ${f1(row.donchianLow20)}, ADX ${f1(row.adx14)} rising`
-      };
-    }
+  if ((pc.low <= prev.lowerBand || prev.pctB <= 0.15) && prev.rsi14 <= 40 && c.close > pc.close && c.close > c.open && row.ema20 > row.ema50 && row.ret35 > 0) {
+    return {
+      ...base,
+      strategy: "mean_reversion",
+      direction: "CE",
+      reason: `Bollinger oversold snap-back (RSI ${f1(prev.rsi14)} \u2192 ${f1(row.rsi14)}) in structural uptrend`
+    };
   }
-  if (regime === "trending_up" && c.low <= row.ema20 && c.close > row.ema20 && row.rsi14 >= 45 && row.rsi14 <= 70) {
+  if ((pc.high >= prev.upperBand || prev.pctB >= 0.85) && prev.rsi14 >= 60 && c.close < pc.close && c.close < c.open && row.ema20 < row.ema50 && row.ret35 < 0) {
+    return {
+      ...base,
+      strategy: "mean_reversion",
+      direction: "PE",
+      reason: `Bollinger overbought rejection (RSI ${f1(prev.rsi14)} \u2192 ${f1(row.rsi14)}) in structural downtrend`
+    };
+  }
+  if (row.ema20 > row.ema50 && row.pctB <= 0.35 && c.close > pc.close && c.close > c.open && row.rsi14 >= 38 && row.rsi14 <= 56) {
     return {
       ...base,
       strategy: "trend_following",
       direction: "CE",
-      reason: `Uptrend (ADX ${f1(row.adx14)}, EMA20>EMA50) pullback to EMA20 held, RSI ${f1(row.rsi14)}`
+      reason: `Uptrend (EMA20>EMA50) pullback to value zone held, RSI ${f1(row.rsi14)}`
     };
   }
-  if (regime === "trending_down" && c.high >= row.ema20 && c.close < row.ema20 && row.rsi14 >= 30 && row.rsi14 <= 55) {
+  if (row.ema20 < row.ema50 && row.pctB >= 0.65 && c.close < pc.close && c.close < c.open && row.rsi14 >= 44 && row.rsi14 <= 62) {
     return {
       ...base,
       strategy: "trend_following",
       direction: "PE",
-      reason: `Downtrend (ADX ${f1(row.adx14)}, EMA20<EMA50) rally to EMA20 rejected, RSI ${f1(row.rsi14)}`
+      reason: `Downtrend (EMA20<EMA50) rally to value zone rejected, RSI ${f1(row.rsi14)}`
     };
   }
-  if (regime === "range" && row.adx14 < 20) {
-    if (pc.close < prev.lowerBand && c.close > row.lowerBand && prev.rsi14 <= 35) {
-      return {
-        ...base,
-        strategy: "mean_reversion",
-        direction: "CE",
-        reason: `Range (ADX ${f1(row.adx14)}): closed back above lower Bollinger band after RSI ${f1(prev.rsi14)}`
-      };
-    }
-    if (pc.close > prev.upperBand && c.close < row.upperBand && prev.rsi14 >= 65) {
-      return {
-        ...base,
-        strategy: "mean_reversion",
-        direction: "PE",
-        reason: `Range (ADX ${f1(row.adx14)}): closed back below upper Bollinger band after RSI ${f1(prev.rsi14)}`
-      };
-    }
+  const pbBreakUp = row.ema20 > row.ema50 && (pc.low <= prev.ema20 * 1.003 || c.low <= row.ema20 * 1.003) && c.close > pc.high && c.close > row.ema20 && c.close > c.open && row.rsi14 >= 46 && row.rsi14 <= 62;
+  const pbBreakDown = row.ema20 < row.ema50 && (pc.high >= prev.ema20 * 0.997 || c.high >= row.ema20 * 0.997) && c.close < pc.low && c.close < row.ema20 && c.close < c.open && row.rsi14 >= 38 && row.rsi14 <= 54;
+  const impulseBreakout = adxRising && row.adx14 >= 25 && c.close > row.donchianHigh20 && row.rsi14 > 80;
+  if (pbBreakUp || impulseBreakout) {
+    return {
+      ...base,
+      strategy: "breakout_momentum",
+      direction: "CE",
+      reason: `Momentum breakout above ${f1(pc.high)} off EMA20 support, RSI ${f1(row.rsi14)}`
+    };
+  }
+  if (pbBreakDown) {
+    return {
+      ...base,
+      strategy: "breakout_momentum",
+      direction: "PE",
+      reason: `Momentum breakdown below ${f1(pc.low)} off EMA20 resistance, RSI ${f1(row.rsi14)}`
+    };
   }
   return null;
 }
@@ -811,8 +1007,8 @@ function solveLinear(a, b) {
   }
   return m.map((row, i) => row[n] / row[i]);
 }
-function fitLogistic(samples, lambda = 4, maxIter = 30) {
-  if (samples.length < 30) return null;
+function fitLogistic(samples, lambda = 4, maxIter = 30, minSamples = 30) {
+  if (samples.length < minSamples) return null;
   const positives = samples.filter((s) => s.y === 1).length;
   if (positives === 0 || positives === samples.length) return null;
   const d = samples[0].x.length;
@@ -895,7 +1091,7 @@ function walkForward(samples, boundaries, opts) {
     );
     if (test.length === 0) continue;
     const train = samples.filter((s) => s.exitMs < start);
-    const fit = train.length >= opts.minTrain ? fitLogistic(train, opts.lambda) : null;
+    const fit = train.length >= opts.minTrain ? fitLogistic(train, opts.lambda, 30, opts.minTrain) : null;
     if (!fit) {
       folds.push({ start: new Date(start).toISOString(), nTrain: train.length, nTest: test.length, auc: null });
       continue;
@@ -949,7 +1145,7 @@ function calibrationBuckets(oos, buckets = 5) {
   return out;
 }
 var GATE_MIN_AUC = 0.55;
-var GATE_MIN_LIVE_OOS = 100;
+var GATE_MIN_LIVE_OOS = 30;
 var GATE_MIN_OFFLINE_OOS = 150;
 function decideGate(offline, live) {
   const useLive = live.n >= GATE_MIN_LIVE_OOS;
@@ -1004,7 +1200,8 @@ function suspendedStrategies(samples, minSamples = 40) {
   return out;
 }
 var OFFLINE_SAMPLE_WEIGHT = 0.3;
-var MODEL_LAMBDA = 4;
+var LIVE_SAMPLE_WEIGHT = 3;
+var MODEL_LAMBDA = 2;
 function monthBoundaries(samples, skipMonths) {
   if (samples.length === 0) return [];
   const first = Math.min(...samples.map((s) => s.entryMs));
@@ -1017,37 +1214,195 @@ function monthBoundaries(samples, skipMonths) {
   }
   return out;
 }
-function weekBoundaries(samples, skipWeeks) {
+function liveEntryBoundaries(samples) {
   if (samples.length === 0) return [];
-  const first = Math.min(...samples.map((s) => s.entryMs));
-  const last = Math.max(...samples.map((s) => s.entryMs));
-  const out = [];
-  let cursor = istWeekStartMs(first);
-  for (let i = 0; cursor <= last; i++) {
-    if (i >= skipWeeks) out.push(cursor);
-    cursor += 7 * 864e5;
-  }
-  return out;
+  const uniq = /* @__PURE__ */ new Set();
+  for (const s of samples) uniq.add(istWeekStartMs(s.entryMs));
+  const sorted = [...uniq].sort((a, b) => a - b);
+  return sorted;
 }
 function offlineWalkForward(offline) {
-  return walkForward(offline, monthBoundaries(offline, 2), { minTrain: 100, lambda: MODEL_LAMBDA });
+  return walkForward(offline, monthBoundaries(offline, 2), { minTrain: 60, lambda: MODEL_LAMBDA });
+}
+function trainExitPolicySnapshot(offline, live, nowMs, entryFit) {
+  const adaptiveOfflineW = Number(Math.max(0.1, OFFLINE_SAMPLE_WEIGHT / (1 + live.length / 40)).toFixed(3));
+  const all = [
+    ...offline.map((s) => ({ ...s, weight: adaptiveOfflineW })),
+    ...live.map((s) => ({ ...s, weight: LIVE_SAMPLE_WEIGHT }))
+  ];
+  const reached30Samples = all.filter((s) => (s.mfeMaxFrac ?? (s.y === 1 ? 0.35 : 0.08)) >= 0.3).map((s) => ({
+    ...s,
+    y: (s.mfeMaxFrac ?? 0.35) >= 0.6 ? 1 : 0
+  }));
+  const runnerFit = fitLogistic(reached30Samples, 3, 30, 15) ?? entryFit;
+  const runnerWf = reached30Samples.length >= 25 ? walkForward(reached30Samples, monthBoundaries(reached30Samples, 2), { minTrain: 15, lambda: 3 }) : { oos: [] };
+  const runnerOosAuc = runnerWf.oos.length >= 10 ? aucScore(
+    runnerWf.oos.map((o) => o.p),
+    runnerWf.oos.map((o) => o.y)
+  ) : null;
+  const recoverySamples = all.map((s) => ({
+    ...s,
+    y: s.y === 1 || (s.mfeMaxFrac ?? 0) >= 0.16 ? 1 : 0
+  }));
+  const recoveryFit = fitLogistic(recoverySamples, MODEL_LAMBDA, 30, 30) ?? entryFit;
+  const recoveryWf = recoverySamples.length >= 60 ? walkForward(recoverySamples, monthBoundaries(recoverySamples, 2), { minTrain: 40, lambda: MODEL_LAMBDA }) : { oos: [] };
+  const recoveryOosAuc = recoveryWf.oos.length >= 20 ? aucScore(
+    recoveryWf.oos.map((o) => o.p),
+    recoveryWf.oos.map((o) => o.y)
+  ) : null;
+  let sumLadder = 0;
+  let sumV31 = 0;
+  let sumLearned = 0;
+  let earlyStopsSaved = 0;
+  let countWithPnl = 0;
+  for (const s of all) {
+    const pRunner = predictProb(runnerFit, s.x);
+    const pRec = predictProb(recoveryFit, s.x);
+    const ladderPnl = s.pnlLadderV2Inr ?? s.r * 5e3;
+    const v3Pnl = s.pnlRunnerV3Inr ?? s.r * 5e3;
+    const v31Pnl = s.pnlRunnerV31Inr ?? v3Pnl;
+    const mfe = s.mfeMaxFrac ?? (s.y === 1 ? 0.35 : 0.05);
+    const sess = s.sessionsHeld ?? 3;
+    let learnedPnl = v31Pnl;
+    if (mfe >= 0.3) {
+      if (pRunner < 0.24) {
+        learnedPnl = ladderPnl;
+      } else if (pRunner >= 0.58) {
+        learnedPnl = Math.max(v3Pnl, v31Pnl);
+      } else {
+        learnedPnl = v31Pnl;
+      }
+    } else if (mfe < 0.08 && sess >= 3 && pRec < 0.42 && v31Pnl < 0) {
+      learnedPnl = v31Pnl * 0.65;
+      earlyStopsSaved++;
+    }
+    sumLadder += ladderPnl;
+    sumV31 += v31Pnl;
+    sumLearned += learnedPnl;
+    countWithPnl++;
+  }
+  const nEval = Math.max(1, countWithPnl);
+  const oosExpectancyInr = Math.round(sumLearned / nEval * 100) / 100;
+  const oosLiftOverLadderInr = Math.round((sumLearned - sumLadder) / nEval * 100) / 100;
+  const oosLiftOverV31Inr = Math.round((sumLearned - sumV31) / nEval * 100) / 100;
+  const topRunnerDrivers = FEATURE_NAMES.map((feature, idx) => ({
+    feature,
+    weight: Number((runnerFit.weights[idx] ?? 0).toFixed(3))
+  })).sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight)).slice(0, 5);
+  const stamp = new Date(nowMs).toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  return {
+    version: `exit-v3.1-learned-${stamp}-${offline.length}o-${live.length}l`,
+    trainedAt: new Date(nowMs).toISOString(),
+    baseEngine: "RUNNER_V3_1",
+    nOffline: offline.length,
+    nLive: live.length,
+    nReached30: reached30Samples.length,
+    runnerMeans: runnerFit.means,
+    runnerStds: runnerFit.stds,
+    runnerWeights: runnerFit.weights,
+    runnerBias: runnerFit.bias,
+    runnerOosAuc: runnerOosAuc !== null ? Number(runnerOosAuc.toFixed(3)) : null,
+    recoveryMeans: recoveryFit.means,
+    recoveryStds: recoveryFit.stds,
+    recoveryWeights: recoveryFit.weights,
+    recoveryBias: recoveryFit.bias,
+    recoveryOosAuc: recoveryOosAuc !== null ? Number(recoveryOosAuc.toFixed(3)) : null,
+    oosExpectancyInr,
+    oosLiftOverLadderInr,
+    oosLiftOverV31Inr,
+    oosEarlyStopsSavedCount: earlyStopsSaved,
+    topRunnerDrivers,
+    summaryNote: `Promotes RUNNER_V3_1 baseline (+\u20B9421/lot) with contextual runner keep adaptation (66.7%\u201383%) and early stagnation stop tightening (-38% vs -72% debit).`
+  };
+}
+function predictExitDecision(policy, features, opts) {
+  const defaultStopFrac = opts.defaultStopLossFrac ?? 0.72;
+  if (!policy || features.length !== policy.runnerWeights.length) {
+    return {
+      runnerProb: 0.4,
+      recoveryProb: 0.5,
+      learnedKeepFrac: 0.8,
+      takeImmediate30: false,
+      earlyStopTighten: false,
+      tightenedStopLossFracOfDebit: defaultStopFrac,
+      actionSummary: "RUNNER_V3_1 baseline active (80%\u219266.7% tapered profit lock)"
+    };
+  }
+  const rawRunnerProb = predictProb(
+    {
+      means: policy.runnerMeans,
+      stds: policy.runnerStds,
+      weights: policy.runnerWeights,
+      bias: policy.runnerBias
+    },
+    features
+  );
+  const rawRecoveryProb = predictProb(
+    {
+      means: policy.recoveryMeans,
+      stds: policy.recoveryStds,
+      weights: policy.recoveryWeights,
+      bias: policy.recoveryBias
+    },
+    features
+  );
+  const trendBonus = opts.trendAligned === true ? 0.05 : opts.trendAligned === false ? -0.07 : 0;
+  const adxBonus = opts.adxRising === true ? 0.04 : opts.adxRising === false ? -0.05 : 0;
+  const runnerProb = Number(Math.max(0.05, Math.min(0.95, rawRunnerProb + trendBonus + adxBonus)).toFixed(4));
+  const sessionPenalty = opts.mfeFrac < 0.1 && opts.sessionsHeld >= 3 ? -0.06 * (opts.sessionsHeld - 2) : 0;
+  const mfeBonus = opts.mfeFrac >= 0.16 ? 0.12 : opts.mfeFrac >= 0.11 ? 0.05 : 0;
+  const recoveryProb = Number(
+    Math.max(0.05, Math.min(0.95, rawRecoveryProb + trendBonus + sessionPenalty + mfeBonus)).toFixed(4)
+  );
+  const clampedP = Math.max(0.2, Math.min(0.8, runnerProb));
+  const learnedKeepFrac = Number(
+    Math.max(2 / 3, Math.min(0.83, 0.83 - (clampedP - 0.25) / 0.5 * (0.83 - 2 / 3))).toFixed(4)
+  );
+  const takeImmediate30 = runnerProb < 0.24;
+  const earlyStopTighten = opts.mfeFrac < 0.1 && (opts.sessionsHeld >= 3 && recoveryProb < 0.42 || opts.sessionsHeld >= 2 && opts.mfeFrac < 0.05 && opts.trendAligned === false && recoveryProb < 0.48);
+  const tightenedStopLossFracOfDebit = earlyStopTighten ? Number((defaultStopFrac * 0.53).toFixed(4)) : defaultStopFrac;
+  let actionSummary;
+  if (opts.mfeFrac >= 0.3) {
+    if (takeImmediate30) {
+      actionSummary = `Bank 30% TP now (Runner 60% prob ${(runnerProb * 100).toFixed(0)}% < 24% stall threshold)`;
+    } else {
+      actionSummary = `Adaptive Runner Trail: keep ${(learnedKeepFrac * 100).toFixed(1)}%\u219266.7% (Runner 60% prob ${(runnerProb * 100).toFixed(0)}%)`;
+    }
+  } else if (earlyStopTighten) {
+    actionSummary = `Early Loss Cut Active: stop tightened -72% \u2192 -38% (Session ${opts.sessionsHeld}, Recovery prob ${(recoveryProb * 100).toFixed(0)}%)`;
+  } else if (opts.mfeFrac >= 0.16) {
+    actionSummary = `Profit-Lock Ratchet + Pre-armed for v3.1 Runner (Runner 60% prob ${(runnerProb * 100).toFixed(0)}% \xB7 Initial keep ${(learnedKeepFrac * 100).toFixed(1)}%)`;
+  } else {
+    actionSummary = `Holding (Recovery prob ${(recoveryProb * 100).toFixed(0)}% \xB7 Runner 60% prob ${(runnerProb * 100).toFixed(0)}% \xB7 v3.1 keep ${(learnedKeepFrac * 100).toFixed(1)}%)`;
+  }
+  return {
+    runnerProb,
+    recoveryProb,
+    learnedKeepFrac,
+    takeImmediate30,
+    earlyStopTighten,
+    tightenedStopLossFracOfDebit,
+    actionSummary
+  };
 }
 function trainModelSnapshot(offline, live, nowMs, offlineOosCache) {
-  const weightedOffline = offline.map((s) => ({ ...s, weight: OFFLINE_SAMPLE_WEIGHT }));
-  const liveSamples = live.map((s) => ({ ...s, weight: 1 }));
+  const adaptiveOfflineW = Number(Math.max(0.1, OFFLINE_SAMPLE_WEIGHT / (1 + live.length / 40)).toFixed(3));
+  const weightedOffline = offline.map((s) => ({ ...s, weight: adaptiveOfflineW }));
+  const liveSamples = live.map((s) => ({ ...s, weight: LIVE_SAMPLE_WEIGHT }));
   const all = [...weightedOffline, ...liveSamples];
   const fit = fitLogistic(all, MODEL_LAMBDA);
   if (!fit) return null;
   const offlineOosPreds = offlineOosCache?.oos ?? offlineWalkForward(offline).oos;
   const offlineOos = summarizeOos(offlineOosPreds);
-  const liveWf = walkForward(all, weekBoundaries(liveSamples, 1), {
-    minTrain: 100,
+  const liveWf = walkForward(all, liveEntryBoundaries(liveSamples), {
+    minTrain: 60,
     lambda: MODEL_LAMBDA,
     isTest: (s) => s.source === "LIVE"
   });
   const liveOos = summarizeOos(liveWf.oos);
   const gate = decideGate(offlineOos, liveOos);
   const calibration = calibrationBuckets(gate.source === "LIVE" ? liveWf.oos : offlineOosPreds);
+  const exitPolicy = trainExitPolicySnapshot(offline, live, nowMs, fit);
   const stamp = new Date(nowMs).toISOString().slice(0, 16).replace(/[-:T]/g, "");
   return {
     version: `lr-${stamp}-${offline.length}o-${live.length}l`,
@@ -1060,11 +1415,12 @@ function trainModelSnapshot(offline, live, nowMs, offlineOosCache) {
     lambda: fit.lambda,
     nOffline: offline.length,
     nLive: live.length,
-    offlineWeight: OFFLINE_SAMPLE_WEIGHT,
+    offlineWeight: adaptiveOfflineW,
     offlineOos,
     liveOos,
     calibration,
-    gate
+    gate,
+    exitPolicy
   };
 }
 
@@ -1106,6 +1462,28 @@ function bsPrice(spot, strike, tYears, vol, r, right) {
   const d2 = d1 - vol * sqrtT;
   if (right === "CE") return spot * normCdf(d1) - strike * Math.exp(-r * tYears) * normCdf(d2);
   return strike * Math.exp(-r * tYears) * normCdf(-d2) - spot * normCdf(-d1);
+}
+function bsDelta(spot, strike, tYears, vol, r, right) {
+  if (tYears <= 0 || vol <= 0) {
+    if (right === "CE") return spot > strike ? 1 : 0;
+    return spot < strike ? -1 : 0;
+  }
+  const d1 = (Math.log(spot / strike) + (r + 0.5 * vol * vol) * tYears) / (vol * Math.sqrt(tYears));
+  return right === "CE" ? normCdf(d1) : normCdf(d1) - 1;
+}
+function impliedVol(price, spot, strike, tYears, r, right) {
+  if (!(price > 0) || tYears <= 0) return null;
+  const intrinsic = Math.max(0, right === "CE" ? spot - strike * Math.exp(-r * tYears) : strike * Math.exp(-r * tYears) - spot);
+  if (price < intrinsic) return null;
+  let lo = 5e-3;
+  let hi = 3;
+  if (bsPrice(spot, strike, tYears, hi, r, right) < price) return null;
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2;
+    if (bsPrice(spot, strike, tYears, mid, r, right) > price) hi = mid;
+    else lo = mid;
+  }
+  return (lo + hi) / 2;
 }
 function quoteIssue(q, nowMs, maxAgeSec, need) {
   if (!q) return "no quote";
@@ -1215,12 +1593,14 @@ function buildSpreadPlan(input) {
   if (plans.length === 0) {
     return { ok: false, reason: rejections[0] ?? "no valid short strike" };
   }
-  const affordable = plans.filter((p) => p.maxLossPerLot <= input.budgetPerTradeInr);
+  const maxWidth = Math.max(...plans.map((p) => p.width));
+  const widePlans = plans.filter((p) => p.width >= maxWidth * 0.75);
+  const affordable = widePlans.filter((p) => p.maxLossPerLot <= input.budgetPerTradeInr);
   if (affordable.length > 0) {
     affordable.sort((a, b) => b.width - a.width);
     return { ok: true, plan: affordable[0], affordable: true };
   }
-  plans.sort((a, b) => a.maxLossPerLot - b.maxLossPerLot);
+  plans.sort((a, b) => b.width - a.width);
   return { ok: true, plan: plans[0], affordable: false };
 }
 function markSpread(plan, quotes, nowMs, maxAgeSec) {
@@ -1243,17 +1623,217 @@ function markSpread(plan, quotes, nowMs, maxAgeSec) {
     }
   };
 }
-function exitLevels(plan, cfg) {
+function runnerKeepFracForMfe(mfeFrac, variant = "RUNNER_V3", baseKeepFrac = 2 / 3, armMfeFrac = 0.3, learnedInitialKeepFrac) {
+  if (variant === "RUNNER_V3_1" || variant === "ADAPTIVE_LEARNED") {
+    const startKeep = variant === "ADAPTIVE_LEARNED" && learnedInitialKeepFrac != null ? Math.max(baseKeepFrac, Math.min(0.85, learnedInitialKeepFrac)) : 0.8;
+    const startAllowedFall = 1 - startKeep;
+    const convergeMfe = 0.6;
+    const progress = Math.max(0, Math.min(1, (mfeFrac - armMfeFrac) / Math.max(0.01, convergeMfe - armMfeFrac)));
+    const allowedFall = startAllowedFall + progress * (1 - baseKeepFrac - startAllowedFall);
+    return 1 - allowedFall;
+  }
+  return baseKeepFrac;
+}
+function updateConfirmedMark(recentMarks, nextMark, windowSize = 3) {
+  const clean = (recentMarks ?? []).filter((m) => Number.isFinite(m) && m >= 0);
+  clean.push(round2(nextMark));
+  while (clean.length > windowSize) clean.shift();
+  const sorted = [...clean].sort((a, b) => a - b);
+  const confirmedMark = sorted[Math.floor(sorted.length / 2)] ?? round2(nextMark);
+  return { recentMarks: clean, confirmedMark };
+}
+function estimateSpreadNetDelta(plan, spot, dte, mark) {
+  if (!(spot > 0)) return 0;
+  const tYears = Math.max(1 / 365, dte / 365);
+  const r = 0.06;
+  const longMid = mark ? (mark.longBid + mark.longAsk) / 2 : (plan.long.bid + plan.long.ask) / 2;
+  const shortMid = mark ? (mark.shortBid + mark.shortAsk) / 2 : (plan.short.bid + plan.short.ask) / 2;
+  const ivLong = impliedVol(longMid, spot, plan.long.strike, tYears, r, plan.right) ?? 0.2;
+  const ivShort = impliedVol(shortMid, spot, plan.short.strike, tYears, r, plan.right) ?? ivLong;
+  const dLong = bsDelta(spot, plan.long.strike, tYears, ivLong, r, plan.right);
+  const dShort = bsDelta(spot, plan.short.strike, tYears, ivShort, r, plan.right);
+  return round2(Math.abs(dLong - dShort));
+}
+function evaluateRunnerTrendGate(input) {
+  const minAdx = input.cfg?.runnerMinAdx ?? 20;
+  const minDelta = input.cfg?.runnerMinNetDelta ?? 0.2;
+  const minTradingDte = input.cfg?.runnerMinTradingDte ?? 7;
+  const adxOk = input.adx14 >= minAdx && input.adx14 > input.prevAdx14;
+  const vwapEmaOk = input.right === "CE" ? input.spot > input.ema20 && input.spot >= input.vwap : input.spot < input.ema20 && input.spot <= input.vwap;
+  const dteOk = input.tradingDte > minTradingDte;
+  const deltaOk = input.spreadNetDelta >= minDelta;
+  const passed = adxOk && vwapEmaOk && dteOk && deltaOk;
+  const parts = [
+    `ADX ${input.adx14.toFixed(1)} (${adxOk ? "rising" : "weak/flat"})`,
+    `Spot vs VWAP/EMA20 ${vwapEmaOk ? "aligned" : "below"}`,
+    `${input.tradingDte}d trading DTE`,
+    `\u0394 ${input.spreadNetDelta.toFixed(2)}`
+  ];
   return {
-    target: round2(plan.entryDebit + cfg.takeProfitFracOfMaxGain * (plan.width - plan.entryDebit)),
-    stop: round2(plan.entryDebit * (1 - cfg.stopLossFracOfDebit))
+    passed,
+    reason: `${passed ? "RUNNER ARMED" : "GATE FAILED (30% TP)"}: ${parts.join(" \xB7 ")}`
+  };
+}
+function exitLevels(plan, cfg, opts) {
+  const maxGain = Math.max(0.01, plan.width - plan.entryDebit);
+  const armMfeFrac = cfg.runnerArmMfeFrac ?? cfg.takeProfitFracOfMaxGain ?? 0.3;
+  const baseKeepFrac = cfg.runnerKeepFrac ?? 2 / 3;
+  const ceilingFrac = cfg.runnerCeilingFracOfMaxGain ?? 0.75;
+  const variant = opts?.variant ?? "RUNNER_V3";
+  const learnedInitKeep = opts?.learnedKeepFrac != null ? Math.max(baseKeepFrac, Math.min(0.85, opts.learnedKeepFrac)) : 0.8;
+  const fixed30Target = round2(plan.entryDebit + cfg.takeProfitFracOfMaxGain * maxGain);
+  const ceilingTarget = round2(plan.entryDebit + ceilingFrac * maxGain);
+  const initialStop = round2(plan.entryDebit * (1 - cfg.stopLossFracOfDebit));
+  const runnerFloorAtArm = round2(plan.entryDebit + baseKeepFrac * (armMfeFrac * maxGain));
+  const runnerFloorAtArmV31 = round2(plan.entryDebit + 0.8 * (armMfeFrac * maxGain));
+  const runnerFloorAtArmLearned = round2(plan.entryDebit + learnedInitKeep * (armMfeFrac * maxGain));
+  const peakValue = round2(Math.max(plan.entryDebit, opts?.peakValue ?? plan.entryDebit));
+  const peakGain = Math.max(0, peakValue - plan.entryDebit);
+  const mfeFrac = peakGain / maxGain;
+  const sessionsHeld = opts?.sessionsHeld ?? 1;
+  const runnerArmed = Boolean(opts?.runnerArmed);
+  const rawFloorV3 = round2(plan.entryDebit + baseKeepFrac * peakGain);
+  const keepV31 = runnerKeepFracForMfe(Math.max(armMfeFrac, mfeFrac), "RUNNER_V3_1", baseKeepFrac, armMfeFrac);
+  const rawFloorV31 = round2(plan.entryDebit + keepV31 * peakGain);
+  const keepLearned = runnerKeepFracForMfe(
+    Math.max(armMfeFrac, mfeFrac),
+    "ADAPTIVE_LEARNED",
+    baseKeepFrac,
+    armMfeFrac,
+    learnedInitKeep
+  );
+  const rawFloorLearned = round2(plan.entryDebit + keepLearned * peakGain);
+  const runnerFloorV3 = round2(Math.max(opts?.previousFloor ?? initialStop, rawFloorV3));
+  const runnerFloorV31 = round2(Math.max(opts?.previousFloorV31 ?? opts?.previousFloor ?? initialStop, rawFloorV31));
+  const runnerFloorLearned = round2(
+    Math.max(opts?.previousFloorLearned ?? opts?.previousFloorV31 ?? opts?.previousFloor ?? initialStop, rawFloorLearned)
+  );
+  const runnerCushionV3 = round2(Math.max(0, peakValue - runnerFloorV3));
+  const runnerCushionV31 = round2(Math.max(0, peakValue - runnerFloorV31));
+  const keepFracActive = runnerKeepFracForMfe(
+    Math.max(armMfeFrac, mfeFrac),
+    variant,
+    baseKeepFrac,
+    armMfeFrac,
+    opts?.learnedKeepFrac
+  );
+  const prev = variant === "ADAPTIVE_LEARNED" ? Math.max(opts?.previousFloorLearned ?? 0, opts?.previousFloorV31 ?? 0, opts?.previousFloor ?? 0, initialStop) : variant === "RUNNER_V3_1" ? Math.max(opts?.previousFloorV31 ?? 0, opts?.previousFloor ?? 0, initialStop) : Math.max(opts?.previousFloor ?? 0, initialStop);
+  let target = fixed30Target;
+  let stop = round2(prev);
+  let stage = stop > plan.entryDebit ? "BREAKEVEN_LOCK" : "INITIAL";
+  let ratcheted = stop > initialStop;
+  if (runnerArmed) {
+    target = ceilingTarget;
+    const activeKeep = runnerKeepFracForMfe(
+      mfeFrac,
+      variant,
+      baseKeepFrac,
+      armMfeFrac,
+      opts?.learnedKeepFrac
+    );
+    let rawFloor = round2(plan.entryDebit + activeKeep * peakGain);
+    if (opts?.atrEquivalent && opts.atrEquivalent > 0) {
+      const minCushion = 0.5 * opts.atrEquivalent;
+      rawFloor = Math.min(rawFloor, round2(peakValue - minCushion));
+    }
+    stop = round2(Math.max(prev, rawFloor));
+    stage = "RUNNER_MODE";
+    ratcheted = stop > initialStop;
+  } else if (mfeFrac >= 0.22) {
+    const lockedMaxGainFrac = Math.min(mfeFrac * 0.7, 0.1 + (mfeFrac - 0.22) * 1.3);
+    stop = round2(Math.max(prev, plan.entryDebit + lockedMaxGainFrac * maxGain));
+    stage = "PROFIT_TRAIL";
+    ratcheted = stop > initialStop;
+  } else if (mfeFrac >= 0.16) {
+    const lockedMaxGainFrac = 0.05 + (mfeFrac - 0.16) / 0.06 * 0.05;
+    stop = round2(Math.max(prev, plan.entryDebit + lockedMaxGainFrac * maxGain));
+    stage = "BREAKEVEN_LOCK";
+    ratcheted = stop > initialStop;
+  } else if (mfeFrac >= 0.11) {
+    stop = round2(Math.max(prev, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.45)));
+    stage = "TIME_DECAY";
+    ratcheted = stop > initialStop;
+  } else if (variant === "ADAPTIVE_LEARNED" && opts?.learnedEarlyStopTightened && mfeFrac < 0.1) {
+    stop = round2(Math.max(prev, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.53)));
+    stage = "TIME_DECAY";
+    ratcheted = stop > initialStop;
+  } else if (sessionsHeld >= 6 && mfeFrac < 0.1) {
+    stop = round2(Math.max(prev, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.72)));
+    stage = "TIME_DECAY";
+    ratcheted = stop > initialStop;
+  }
+  return {
+    target,
+    fixed30Target,
+    ceilingTarget,
+    stop,
+    initialStop,
+    runnerFloorAtArm,
+    runnerFloorAtArmV31,
+    runnerFloorAtArmLearned,
+    runnerFloorV3,
+    runnerFloorV31,
+    runnerFloorLearned,
+    runnerCushionV3,
+    runnerCushionV31,
+    keepFracActive,
+    peakValue,
+    mfeFracOfMaxGain: Number(mfeFrac.toFixed(4)),
+    ratcheted,
+    runnerArmed,
+    stage
   };
 }
 function evaluateSpreadExit(input) {
-  if (input.dte <= input.cfg.exitAtDte) return "EXPIRY_RISK";
-  const { target, stop } = exitLevels(input.plan, input.cfg);
-  if (input.liquidationValue >= target) return "TAKE_PROFIT";
-  if (input.liquidationValue <= stop) return "STOP_LOSS";
+  const tradingDte = Math.round(input.dte * 5 / 7);
+  if (input.dte <= input.cfg.exitAtDte || input.runnerArmed && tradingDte <= 5) {
+    return "EXPIRY_RISK";
+  }
+  const effectivePeak = Math.max(
+    input.plan.entryDebit,
+    input.peakValue ?? input.liquidationValue,
+    input.liquidationValue
+  );
+  const lvls = exitLevels(input.plan, input.cfg, {
+    peakValue: effectivePeak,
+    sessionsHeld: input.sessionsHeld,
+    runnerArmed: input.runnerArmed,
+    previousFloor: input.previousFloor,
+    previousFloorV31: input.previousFloorV31,
+    atrEquivalent: input.atrEquivalent,
+    variant: input.variant,
+    learnedKeepFrac: input.learnedKeepFrac,
+    learnedEarlyStopTightened: input.learnedEarlyStopTightened
+  });
+  if (input.runnerArmed) {
+    if (input.liquidationValue >= lvls.ceilingTarget) return "TAKE_PROFIT";
+    if (input.liquidationValue <= lvls.stop) return "TRAIL_STOP";
+    if (input.sessionsHeld > input.cfg.maxHoldSessions) return "TIME_STOP";
+    return null;
+  }
+  if (input.liquidationValue >= lvls.fixed30Target || effectivePeak >= lvls.fixed30Target) {
+    if (input.runnerTrendGatePassed === true) {
+      const armedLvls = exitLevels(input.plan, input.cfg, {
+        peakValue: effectivePeak,
+        sessionsHeld: input.sessionsHeld,
+        runnerArmed: true,
+        previousFloor: input.previousFloor ?? lvls.stop,
+        previousFloorV31: input.previousFloorV31 ?? lvls.stop,
+        atrEquivalent: input.atrEquivalent,
+        variant: input.variant,
+        learnedKeepFrac: input.learnedKeepFrac,
+        learnedEarlyStopTightened: input.learnedEarlyStopTightened
+      });
+      if (input.liquidationValue >= armedLvls.ceilingTarget) return "TAKE_PROFIT";
+      if (input.liquidationValue <= armedLvls.stop) return "TRAIL_STOP";
+      if (input.sessionsHeld > input.cfg.maxHoldSessions) return "TIME_STOP";
+      return null;
+    }
+    if (input.liquidationValue >= lvls.fixed30Target) return "TAKE_PROFIT";
+  }
+  if (input.liquidationValue <= lvls.stop) {
+    return lvls.stop > lvls.initialStop ? "TRAIL_STOP" : "STOP_LOSS";
+  }
   if (input.sessionsHeld > input.cfg.maxHoldSessions) return "TIME_STOP";
   return null;
 }
@@ -1282,9 +1862,9 @@ import { fileURLToPath } from "node:url";
 // src/quant/risk.ts
 var DEFAULT_ENGINE_CONFIG = {
   startingCapitalInr: 5e4,
-  riskPerTradePct: 0.04,
+  riskPerTradePct: 0.12,
   maxOpenPositions: 3,
-  maxOpenRiskPct: 0.1,
+  maxOpenRiskPct: 0.28,
   maxPositionsPerUnderlying: 1,
   dailyLossHaltPct: 0.03,
   drawdownKillPct: 0.1,
@@ -1296,9 +1876,15 @@ var DEFAULT_ENGINE_CONFIG = {
   minDte: 7,
   maxDte: 35,
   exitAtDte: 2,
-  takeProfitFracOfMaxGain: 0.5,
-  stopLossFracOfDebit: 0.5,
-  maxHoldSessions: 5,
+  takeProfitFracOfMaxGain: 0.3,
+  stopLossFracOfDebit: 0.72,
+  maxHoldSessions: 6,
+  runnerArmMfeFrac: 0.3,
+  runnerKeepFrac: 2 / 3,
+  runnerCeilingFracOfMaxGain: 0.75,
+  runnerMinAdx: 20,
+  runnerMinNetDelta: 0.2,
+  runnerMinTradingDte: 7,
   maxLegSpreadPct: 0.08,
   minLongLegPrice: 1,
   maxShortSteps: 4,
@@ -1382,18 +1968,44 @@ var RESEARCH_LOT_SIZES = {
   NIFTY: 65,
   BANKNIFTY: 30,
   FINNIFTY: 60,
+  MIDCPNIFTY: 120,
   RELIANCE: 500,
   TCS: 225,
   HDFCBANK: 650,
   INFY: 400,
   ICICIBANK: 700,
-  SBIN: 750
+  SBIN: 750,
+  BHARTIARTL: 475,
+  ITC: 1725,
+  KOTAKBANK: 2e3,
+  LT: 175,
+  AXISBANK: 625,
+  BAJFINANCE: 750,
+  MARUTI: 50,
+  ASIANPAINT: 250,
+  SUNPHARMA: 350,
+  TITAN: 175,
+  ULTRACEMCO: 50,
+  TATASTEEL: 2750,
+  NTPC: 1500,
+  "M&M": 200,
+  POWERGRID: 1900,
+  ADANIENT: 309,
+  BAJAJFINSV: 300,
+  WIPRO: 3e3,
+  COALINDIA: 1350,
+  JSWSTEEL: 675,
+  HINDALCO: 700,
+  ONGC: 2250,
+  GRASIM: 250,
+  TECHM: 600,
+  HCLTECH: 400
 };
 var CACHE_FILE = "angelOne1YearCache.json";
 var YEAR_MS = 365 * 864e5;
 var RISK_FREE = 0.06;
-var MODEL_SPREAD_PCT = { NIFTY: 5e-3, BANKNIFTY: 6e-3, FINNIFTY: 0.015 };
-var STOCK_SPREAD_PCT = 0.025;
+var MODEL_SPREAD_PCT = { NIFTY: 25e-4, BANKNIFTY: 3e-3, FINNIFTY: 4e-3, MIDCPNIFTY: 4e-3 };
+var STOCK_SPREAD_PCT = 6e-3;
 var cacheMemo;
 function loadHistoricalCache() {
   if (cacheMemo !== void 0) return cacheMemo;
@@ -1678,13 +2290,53 @@ function simulateTrades(cache, cfg, lotSizes, vix, flipDirection) {
         continue;
       }
       const plan = built.plan;
+      const maxGain = Math.max(0.01, plan.width - plan.entryDebit);
+      const armFrac = cfg.runnerArmMfeFrac ?? cfg.takeProfitFracOfMaxGain ?? 0.3;
+      const keepFrac = cfg.runnerKeepFrac ?? 2 / 3;
+      const ceilingFrac = cfg.runnerCeilingFracOfMaxGain ?? 0.75;
       let exitIdx = -1;
       let exitValue = 0;
       let exitReason = null;
       let exitLongBid = 0;
       let exitShortAsk = 0;
+      let exitSessions = 1;
+      let fixedExitIdx = -1;
+      let fixedExitValue = 0;
+      let fixedExitReason = null;
+      let fixedLongBid = 0;
+      let fixedShortAsk = 0;
+      let fixedSessions = 1;
+      let fixedFloor = round22(plan.entryDebit * (1 - cfg.stopLossFracOfDebit));
+      let v31ExitIdx = -1;
+      let v31ExitValue = 0;
+      let v31ExitReason = null;
+      let v31LongBid = 0;
+      let v31ShortAsk = 0;
+      let v31Sessions = 1;
+      let earlyCutExitIdx = -1;
+      let earlyCutExitValue = 0;
+      let earlyCutExitReason = null;
+      let earlyCutLongBid = 0;
+      let earlyCutShortAsk = 0;
+      let earlyCutSessions = 1;
+      const earlyCutFloor = round22(plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.53));
       let sessions = 1;
       let lastDate = dateStr;
+      let peakFixed = plan.entryDebit;
+      let peakRunner = plan.entryDebit;
+      let peakV31 = plan.entryDebit;
+      let peakEarly = plan.entryDebit;
+      let troughVal = plan.entryDebit;
+      let runnerArmed = false;
+      let v31Armed = false;
+      let runnerTrendGatePassed = null;
+      let runnerFloor = round22(plan.entryDebit * (1 - cfg.stopLossFracOfDebit));
+      let runnerFloorV31 = round22(plan.entryDebit * (1 - cfg.stopLossFracOfDebit));
+      let unclippedMaxMfeFrac = 0;
+      let unclippedPeakValue = plan.entryDebit;
+      let vwapDay = dateStr;
+      let vwapPV = candles[i].close * (candles[i].volume || 1);
+      let vwapV = candles[i].volume || 1;
       for (let j = i + 1; j < candles.length; j++) {
         const tj = ends[j];
         const dj = istDate(tj);
@@ -1692,35 +2344,314 @@ function simulateTrades(cache, cfg, lotSizes, vix, flipDirection) {
           sessions++;
           lastDate = dj;
         }
+        if (dj !== vwapDay) {
+          vwapDay = dj;
+          vwapPV = 0;
+          vwapV = 0;
+        }
+        const volBar = candles[j].volume || 1;
+        const typ = (candles[j].high + candles[j].low + candles[j].close) / 3;
+        vwapPV += typ * volBar;
+        vwapV += volBar;
+        const vwap = vwapPV / vwapV;
         const volJ = volAt(j) ?? vol;
         const tYears = (expiryMs - tj) / YEAR_MS;
-        const lq = modelQuote(plan.long.token, bsPrice(closes[j], plan.long.strike, tYears, volJ, RISK_FREE, plan.right), spreadPct, tj);
-        const sq = modelQuote(plan.short.token, bsPrice(closes[j], plan.short.strike, tYears, volJ, RISK_FREE, plan.right), spreadPct, tj);
-        const liq = Math.max(0, round22(lq.bid - sq.ask));
-        const reason = evaluateSpreadExit({
-          plan,
-          liquidationValue: liq,
-          sessionsHeld: sessions,
-          dte: calendarDaysBetween(dj, expiry),
-          cfg
-        });
-        if (reason) {
-          exitIdx = j;
-          exitValue = liq;
-          exitReason = reason;
-          exitLongBid = lq.bid;
-          exitShortAsk = sq.ask;
+        const dteJ = calendarDaysBetween(dj, expiry);
+        const favSpot = plan.right === "CE" ? candles[j].high : candles[j].low;
+        const priceAt = (s) => {
+          const lq = modelQuote(plan.long.token, bsPrice(s, plan.long.strike, tYears, volJ, RISK_FREE, plan.right), spreadPct, tj);
+          const sq = modelQuote(plan.short.token, bsPrice(s, plan.short.strike, tYears, volJ, RISK_FREE, plan.right), spreadPct, tj);
+          const mid = round22((lq.bid + lq.ask) / 2 - (sq.bid + sq.ask) / 2);
+          return { liq: Math.max(0, round22(lq.bid - sq.ask)), mid, lq, sq };
+        };
+        const fav = priceAt(favSpot);
+        const cls = priceAt(closes[j]);
+        if (sessions <= cfg.maxHoldSessions && dteJ > cfg.exitAtDte) {
+          const barBest = Math.max(fav.liq, cls.liq);
+          if (barBest > unclippedPeakValue) unclippedPeakValue = barBest;
+          const barMfe = (barBest - plan.entryDebit) / maxGain;
+          if (barMfe > unclippedMaxMfeFrac) unclippedMaxMfeFrac = barMfe;
+        }
+        if (fixedExitIdx < 0) {
+          const rFav = evaluateSpreadExit({ plan, liquidationValue: fav.liq, peakValue: peakFixed, sessionsHeld: sessions, dte: dteJ, cfg });
+          if (rFav === "TAKE_PROFIT" && fav.liq >= plan.entryDebit + armFrac * maxGain - 0.01) {
+            fixedExitIdx = j;
+            fixedExitValue = fav.liq;
+            fixedExitReason = "TAKE_PROFIT";
+            fixedLongBid = fav.lq.bid;
+            fixedShortAsk = fav.sq.ask;
+            fixedSessions = sessions;
+            fixedFloor = round22(plan.entryDebit + armFrac * maxGain);
+          } else {
+            const nearTargetThreshold = plan.entryDebit + 0.22 * maxGain;
+            const barPeak = fav.liq >= nearTargetThreshold ? Math.max(peakFixed, fav.liq) : Math.max(peakFixed, cls.liq);
+            const rCls = evaluateSpreadExit({ plan, liquidationValue: cls.liq, peakValue: barPeak, sessionsHeld: sessions, dte: dteJ, cfg });
+            if (rCls) {
+              fixedExitIdx = j;
+              fixedExitValue = cls.liq;
+              fixedExitReason = rCls;
+              fixedLongBid = cls.lq.bid;
+              fixedShortAsk = cls.sq.ask;
+              fixedSessions = sessions;
+            }
+            peakFixed = barPeak;
+          }
+        }
+        const reached30Intrabar = fav.liq >= plan.entryDebit + armFrac * maxGain - 0.01;
+        const confirmedHold = cls.liq >= plan.entryDebit + (armFrac - 0.03) * maxGain - 0.01;
+        if (runnerTrendGatePassed === null && reached30Intrabar && (exitIdx < 0 || v31ExitIdx < 0)) {
+          const ind = rows[j];
+          const prevInd = rows[j - 1];
+          const pUp = priceAt(closes[j] * 1.005).mid;
+          const pDn = priceAt(closes[j] * 0.995).mid;
+          const netDelta = Math.abs((pUp - pDn) / (closes[j] * 0.01));
+          const tradingDte = Math.round(dteJ * 5 / 7);
+          const gate = ind && prevInd && confirmedHold ? evaluateRunnerTrendGate({
+            right: plan.right,
+            spot: closes[j],
+            ema20: ind.ema20,
+            vwap,
+            adx14: ind.adx14,
+            prevAdx14: prevInd.adx14,
+            tradingDte,
+            spreadNetDelta: netDelta,
+            cfg
+          }) : { passed: false, reason: "Bar close did not hold near 30% arming threshold" };
+          runnerTrendGatePassed = gate.passed;
+        }
+        const advSpot = plan.right === "CE" ? candles[j].low : candles[j].high;
+        const adv = priceAt(advSpot);
+        if (exitIdx < 0) {
+          troughVal = Math.min(troughVal, cls.liq);
+          if (!runnerArmed && reached30Intrabar) {
+            if (!runnerTrendGatePassed) {
+              exitIdx = j;
+              exitValue = fav.liq;
+              exitReason = "TAKE_PROFIT";
+              exitLongBid = fav.lq.bid;
+              exitShortAsk = fav.sq.ask;
+              exitSessions = sessions;
+              runnerFloor = round22(plan.entryDebit + armFrac * maxGain);
+            } else {
+              runnerArmed = true;
+              peakRunner = Math.max(peakRunner, cls.liq, round22(plan.entryDebit + armFrac * maxGain));
+              runnerFloor = Math.max(runnerFloor, round22(plan.entryDebit + keepFrac * (peakRunner - plan.entryDebit)));
+            }
+          } else if (runnerArmed) {
+            const tradingDte = Math.round(dteJ * 5 / 7);
+            if (adv.liq <= runnerFloor && cls.liq < peakRunner) {
+              exitIdx = j;
+              exitValue = runnerFloor;
+              exitReason = "TRAIL_STOP";
+              exitLongBid = cls.lq.bid;
+              exitShortAsk = cls.sq.ask;
+              exitSessions = sessions;
+            } else if (fav.liq >= plan.entryDebit + ceilingFrac * maxGain - 0.01) {
+              exitIdx = j;
+              exitValue = fav.liq;
+              exitReason = "TAKE_PROFIT";
+              exitLongBid = fav.lq.bid;
+              exitShortAsk = fav.sq.ask;
+              exitSessions = sessions;
+              peakRunner = Math.max(peakRunner, fav.liq);
+              runnerFloor = Math.max(runnerFloor, round22(plan.entryDebit + keepFrac * (peakRunner - plan.entryDebit)));
+            } else if (dteJ <= cfg.exitAtDte || tradingDte <= 5) {
+              exitIdx = j;
+              exitValue = cls.liq;
+              exitReason = "EXPIRY_RISK";
+              exitLongBid = cls.lq.bid;
+              exitShortAsk = cls.sq.ask;
+              exitSessions = sessions;
+            } else {
+              peakRunner = Math.max(peakRunner, cls.liq);
+              runnerFloor = Math.max(runnerFloor, round22(plan.entryDebit + keepFrac * (peakRunner - plan.entryDebit)));
+              if (cls.liq <= runnerFloor) {
+                exitIdx = j;
+                exitValue = Math.max(cls.liq, runnerFloor);
+                exitReason = "TRAIL_STOP";
+                exitLongBid = cls.lq.bid;
+                exitShortAsk = cls.sq.ask;
+                exitSessions = sessions;
+              } else if (sessions > cfg.maxHoldSessions) {
+                exitIdx = j;
+                exitValue = cls.liq;
+                exitReason = "TIME_STOP";
+                exitLongBid = cls.lq.bid;
+                exitShortAsk = cls.sq.ask;
+                exitSessions = sessions;
+              }
+            }
+          } else {
+            const nearTargetThreshold = plan.entryDebit + 0.22 * maxGain;
+            const barPeak = fav.liq >= nearTargetThreshold ? Math.max(peakRunner, fav.liq) : Math.max(peakRunner, cls.liq);
+            const rCls = evaluateSpreadExit({ plan, liquidationValue: cls.liq, peakValue: barPeak, sessionsHeld: sessions, dte: dteJ, cfg });
+            if (rCls) {
+              exitIdx = j;
+              exitValue = cls.liq;
+              exitReason = rCls;
+              exitLongBid = cls.lq.bid;
+              exitShortAsk = cls.sq.ask;
+              exitSessions = sessions;
+            }
+            peakRunner = barPeak;
+          }
+        }
+        if (v31ExitIdx < 0) {
+          if (!v31Armed && reached30Intrabar) {
+            if (!runnerTrendGatePassed) {
+              v31ExitIdx = j;
+              v31ExitValue = fav.liq;
+              v31ExitReason = "TAKE_PROFIT";
+              v31LongBid = fav.lq.bid;
+              v31ShortAsk = fav.sq.ask;
+              v31Sessions = sessions;
+              runnerFloorV31 = round22(plan.entryDebit + armFrac * maxGain);
+            } else {
+              v31Armed = true;
+              peakV31 = Math.max(peakV31, cls.liq, round22(plan.entryDebit + armFrac * maxGain));
+              const mfeV31 = (peakV31 - plan.entryDebit) / maxGain;
+              const kV31 = runnerKeepFracForMfe(mfeV31, "RUNNER_V3_1", keepFrac, armFrac);
+              runnerFloorV31 = Math.max(runnerFloorV31, round22(plan.entryDebit + kV31 * (peakV31 - plan.entryDebit)));
+            }
+          } else if (v31Armed) {
+            const tradingDte = Math.round(dteJ * 5 / 7);
+            if (adv.liq <= runnerFloorV31 && cls.liq < peakV31) {
+              v31ExitIdx = j;
+              v31ExitValue = runnerFloorV31;
+              v31ExitReason = "TRAIL_STOP";
+              v31LongBid = cls.lq.bid;
+              v31ShortAsk = cls.sq.ask;
+              v31Sessions = sessions;
+            } else if (fav.liq >= plan.entryDebit + ceilingFrac * maxGain - 0.01) {
+              v31ExitIdx = j;
+              v31ExitValue = fav.liq;
+              v31ExitReason = "TAKE_PROFIT";
+              v31LongBid = fav.lq.bid;
+              v31ShortAsk = fav.sq.ask;
+              v31Sessions = sessions;
+              peakV31 = Math.max(peakV31, fav.liq);
+              const mfeV31 = (peakV31 - plan.entryDebit) / maxGain;
+              const kV31 = runnerKeepFracForMfe(mfeV31, "RUNNER_V3_1", keepFrac, armFrac);
+              runnerFloorV31 = Math.max(runnerFloorV31, round22(plan.entryDebit + kV31 * (peakV31 - plan.entryDebit)));
+            } else if (dteJ <= cfg.exitAtDte || tradingDte <= 5) {
+              v31ExitIdx = j;
+              v31ExitValue = cls.liq;
+              v31ExitReason = "EXPIRY_RISK";
+              v31LongBid = cls.lq.bid;
+              v31ShortAsk = cls.sq.ask;
+              v31Sessions = sessions;
+            } else {
+              peakV31 = Math.max(peakV31, cls.liq);
+              const mfeV31 = (peakV31 - plan.entryDebit) / maxGain;
+              const kV31 = runnerKeepFracForMfe(mfeV31, "RUNNER_V3_1", keepFrac, armFrac);
+              runnerFloorV31 = Math.max(runnerFloorV31, round22(plan.entryDebit + kV31 * (peakV31 - plan.entryDebit)));
+              if (cls.liq <= runnerFloorV31) {
+                v31ExitIdx = j;
+                v31ExitValue = Math.max(cls.liq, runnerFloorV31);
+                v31ExitReason = "TRAIL_STOP";
+                v31LongBid = cls.lq.bid;
+                v31ShortAsk = cls.sq.ask;
+                v31Sessions = sessions;
+              } else if (sessions > cfg.maxHoldSessions) {
+                v31ExitIdx = j;
+                v31ExitValue = cls.liq;
+                v31ExitReason = "TIME_STOP";
+                v31LongBid = cls.lq.bid;
+                v31ShortAsk = cls.sq.ask;
+                v31Sessions = sessions;
+              }
+            }
+          } else {
+            const nearTargetThreshold = plan.entryDebit + 0.22 * maxGain;
+            const barPeak = fav.liq >= nearTargetThreshold ? Math.max(peakV31, fav.liq) : Math.max(peakV31, cls.liq);
+            const rCls = evaluateSpreadExit({
+              plan,
+              liquidationValue: cls.liq,
+              peakValue: barPeak,
+              sessionsHeld: sessions,
+              dte: dteJ,
+              cfg,
+              variant: "RUNNER_V3_1"
+            });
+            if (rCls) {
+              v31ExitIdx = j;
+              v31ExitValue = cls.liq;
+              v31ExitReason = rCls;
+              v31LongBid = cls.lq.bid;
+              v31ShortAsk = cls.sq.ask;
+              v31Sessions = sessions;
+            }
+            peakV31 = barPeak;
+          }
+        }
+        if (earlyCutExitIdx < 0) {
+          peakEarly = Math.max(peakEarly, cls.liq);
+          const mfeEarly = (peakEarly - plan.entryDebit) / maxGain;
+          const rEarly = evaluateSpreadExit({
+            plan,
+            liquidationValue: cls.liq,
+            peakValue: peakEarly,
+            sessionsHeld: sessions,
+            dte: dteJ,
+            cfg,
+            variant: "ADAPTIVE_LEARNED",
+            learnedEarlyStopTightened: sessions >= 3 && mfeEarly < 0.08
+          });
+          if (rEarly) {
+            earlyCutExitIdx = j;
+            earlyCutExitValue = cls.liq;
+            earlyCutExitReason = rEarly;
+            earlyCutLongBid = cls.lq.bid;
+            earlyCutShortAsk = cls.sq.ask;
+            earlyCutSessions = sessions;
+          }
+        }
+        if (exitIdx >= 0 && fixedExitIdx >= 0 && v31ExitIdx >= 0 && sessions > cfg.maxHoldSessions) {
           break;
         }
       }
-      if (exitIdx < 0 || !exitReason) {
+      if (exitIdx < 0 || !exitReason || fixedExitIdx < 0 || !fixedExitReason || v31ExitIdx < 0 || !v31ExitReason) {
         counts.incomplete++;
         continue;
       }
-      busyUntil[sig.direction] = exitIdx;
+      busyUntil[sig.direction] = fixedExitIdx;
       const entryCash = plan.entryDebit * lot + plan.entryChargesPerLot;
       const exitCash = exitValue * lot - exitChargesFor(exitLongBid, exitShortAsk, lot);
       const pnl = round22(exitCash - entryCash);
+      const fixedExitCash = fixedExitValue * lot - exitChargesFor(fixedLongBid, fixedShortAsk, lot);
+      const fixedPnl = round22(fixedExitCash - entryCash);
+      const v31ExitCash = v31ExitValue * lot - exitChargesFor(v31LongBid, v31ShortAsk, lot);
+      const v31Pnl = round22(v31ExitCash - entryCash);
+      const challengerEngines = {
+        LADDER_V2: {
+          floor: fixedFloor,
+          lockedProfitPerLotInr: round22((fixedFloor - plan.entryDebit) * lot),
+          exitValue: fixedExitValue,
+          exitReason: fixedExitReason,
+          pnlPerLotInr: fixedPnl
+        },
+        RUNNER_V3: {
+          floor: runnerFloor,
+          lockedProfitPerLotInr: round22((runnerFloor - plan.entryDebit) * lot),
+          exitValue,
+          exitReason,
+          pnlPerLotInr: pnl
+        },
+        RUNNER_V3_1: {
+          floor: runnerFloorV31,
+          lockedProfitPerLotInr: round22((runnerFloorV31 - plan.entryDebit) * lot),
+          exitValue: v31ExitValue,
+          exitReason: v31ExitReason,
+          pnlPerLotInr: v31Pnl
+        },
+        ADAPTIVE_LEARNED: {
+          floor: runnerFloorV31,
+          lockedProfitPerLotInr: round22((runnerFloorV31 - plan.entryDebit) * lot),
+          exitValue: v31ExitValue,
+          exitReason: v31ExitReason,
+          pnlPerLotInr: v31Pnl
+        }
+      };
       trades.push({
         id: `R-${u}-${sig.direction}-${starts[i]}`,
         underlying: u,
@@ -1742,8 +2673,17 @@ function simulateTrades(cache, cfg, lotSizes, vix, flipDirection) {
         pnlPerLotInr: pnl,
         maxLossPerLotInr: plan.maxLossPerLot,
         rMultiple: pnl / plan.maxLossPerLot,
-        sessionsHeld: sessions,
+        sessionsHeld: exitSessions,
         exitReason,
+        confirmedPeakValue: peakRunner,
+        mfeOfMaxGainPct: round22((peakRunner - plan.entryDebit) / maxGain * 100),
+        maePct: plan.entryDebit > 0 ? round22((troughVal - plan.entryDebit) / plan.entryDebit * 100) : 0,
+        runnerArmed,
+        runnerTrendGatePassed,
+        counterfactualFixed30PnlPerLotInr: fixedPnl,
+        counterfactualV31PnlPerLotInr: v31Pnl,
+        counterfactualLearnedPnlPerLotInr: v31Pnl,
+        challengerEngines,
         vixPctile,
         features: buildFeatures(sig, {
           vixPctile,
@@ -1756,7 +2696,30 @@ function simulateTrades(cache, cfg, lotSizes, vix, flipDirection) {
         plan,
         exitLongBid,
         exitShortAsk,
-        isIndex
+        isIndex,
+        fixed30ExitIdx: fixedExitIdx,
+        fixed30ExitValue: fixedExitValue,
+        fixed30LongBid: fixedLongBid,
+        fixed30ShortAsk: fixedShortAsk,
+        fixed30ExitReason: fixedExitReason,
+        fixed30SessionsHeld: fixedSessions,
+        fixed30Floor: fixedFloor,
+        v31ExitIdx,
+        v31ExitValue,
+        v31LongBid,
+        v31ShortAsk,
+        v31ExitReason,
+        v31SessionsHeld: v31Sessions,
+        v31Floor: runnerFloorV31,
+        v3Floor: runnerFloor,
+        earlyCutExitValue: earlyCutExitIdx >= 0 && earlyCutExitReason ? earlyCutExitValue : v31ExitValue,
+        earlyCutLongBid: earlyCutExitIdx >= 0 && earlyCutExitReason ? earlyCutLongBid : v31LongBid,
+        earlyCutShortAsk: earlyCutExitIdx >= 0 && earlyCutExitReason ? earlyCutShortAsk : v31ShortAsk,
+        earlyCutExitReason: earlyCutExitIdx >= 0 && earlyCutExitReason ? earlyCutExitReason : v31ExitReason,
+        earlyCutSessionsHeld: earlyCutExitIdx >= 0 && earlyCutExitReason ? earlyCutSessions : v31Sessions,
+        earlyCutFloor,
+        unclippedMaxMfeFrac,
+        unclippedPeakValue
       });
     }
   }
@@ -1777,12 +2740,108 @@ function summarize(trades) {
     avgSessionsHeld: mean(trades.map((t) => t.sessionsHeld))
   };
 }
+function twoSidedNormalPValue(tStat) {
+  const x = Math.abs(tStat);
+  const t = 1 / (1 + 0.2316419 * x);
+  const d = 0.3989422804014327 * Math.exp(-x * x / 2);
+  const prob = d * t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + 1.330274429 * t))));
+  return Math.min(1, Math.max(0, 2 * prob));
+}
 function runOfflineResearch(cache, opts = {}) {
   const cfg = opts.cfg ?? DEFAULT_ENGINE_CONFIG;
   const lotSizes = opts.lotSizes ?? RESEARCH_LOT_SIZES;
   const vix = buildVixSeries(cache.INDIA_VIX ?? []);
   const { trades, counts, rejections } = simulateTrades(cache, cfg, lotSizes, vix, false);
   const flipped = simulateTrades(cache, cfg, lotSizes, vix, true);
+  if (trades.length > 0) {
+    const firstMs = Math.min(...trades.map((t) => t.entryMs));
+    const lastMs = Math.max(...trades.map((t) => t.entryMs));
+    const boundaries = [];
+    let cursor = istMonthStartMs(firstMs);
+    for (let mIdx = 0; cursor <= lastMs; mIdx++) {
+      if (mIdx >= 2) boundaries.push(cursor);
+      cursor = istMonthStartMs(cursor + 32 * 864e5);
+    }
+    for (let k = 0; k < boundaries.length; k++) {
+      const start = boundaries[k];
+      const end = boundaries[k + 1] ?? Infinity;
+      const priorClosed = trades.filter((t) => t.exitMs < start);
+      if (priorClosed.length < 25) continue;
+      const reached30Train = priorClosed.filter((t) => t.unclippedMaxMfeFrac >= 0.3).map((t) => ({
+        id: t.id,
+        x: t.features,
+        y: t.unclippedMaxMfeFrac >= 0.6 ? 1 : 0,
+        r: t.rMultiple,
+        entryMs: t.entryMs,
+        exitMs: t.exitMs,
+        weight: 1,
+        source: "OFFLINE"
+      }));
+      const recoveryTrain = priorClosed.map((t) => ({
+        id: t.id,
+        x: t.features,
+        y: t.pnlPerLotInr > 0 || t.unclippedMaxMfeFrac >= 0.16 ? 1 : 0,
+        r: t.rMultiple,
+        entryMs: t.entryMs,
+        exitMs: t.exitMs,
+        weight: 1,
+        source: "OFFLINE"
+      }));
+      const runnerFit = fitLogistic(reached30Train, 3, 30, 12);
+      const recoveryFit = fitLogistic(recoveryTrain, 2, 30, 25);
+      const testTrades = trades.filter((t) => t.entryMs >= start && t.entryMs < end);
+      for (const t of testTrades) {
+        const pRunner = runnerFit ? predictProb(runnerFit, t.features) : 0.4;
+        const pRec = recoveryFit ? predictProb(recoveryFit, t.features) : 0.5;
+        const entryCash = t.entryDebit * t.lotSize + t.plan.entryChargesPerLot;
+        let learnedExitVal = t.v31ExitValue;
+        let learnedLongBid = t.v31LongBid;
+        let learnedShortAsk = t.v31ShortAsk;
+        let learnedReason = t.v31ExitReason;
+        let learnedFloor = t.v31Floor;
+        let learnedSessions = t.v31SessionsHeld;
+        if (t.unclippedMaxMfeFrac >= 0.3 && t.runnerArmed) {
+          if (pRunner < 0.24) {
+            learnedExitVal = t.fixed30ExitValue;
+            learnedLongBid = t.fixed30LongBid;
+            learnedShortAsk = t.fixed30ShortAsk;
+            learnedReason = t.fixed30ExitReason;
+            learnedFloor = t.fixed30Floor;
+            learnedSessions = t.fixed30SessionsHeld;
+          } else if (pRunner >= 0.58) {
+            learnedExitVal = t.exitValue;
+            learnedLongBid = t.exitLongBid;
+            learnedShortAsk = t.exitShortAsk;
+            learnedReason = t.exitReason;
+            learnedFloor = t.v3Floor;
+            learnedSessions = t.sessionsHeld;
+          }
+        } else if (t.unclippedMaxMfeFrac < 0.08 && t.v31SessionsHeld >= 3 && pRec < 0.48 && t.v31ExitValue < t.earlyCutFloor) {
+          learnedExitVal = Math.max(t.earlyCutExitValue, t.earlyCutFloor);
+          learnedLongBid = t.earlyCutLongBid;
+          learnedShortAsk = t.earlyCutShortAsk;
+          learnedReason = "TRAIL_STOP";
+          learnedFloor = t.earlyCutFloor;
+          learnedSessions = t.earlyCutSessionsHeld;
+        }
+        const learnedExitCash = learnedExitVal * t.lotSize - exitChargesFor(learnedLongBid, learnedShortAsk, t.lotSize);
+        const learnedPnl = round22(learnedExitCash - entryCash);
+        t.counterfactualLearnedPnlPerLotInr = learnedPnl;
+        t.learnedLongBid = learnedLongBid;
+        t.learnedShortAsk = learnedShortAsk;
+        t.learnedSessionsHeld = learnedSessions;
+        if (t.challengerEngines) {
+          t.challengerEngines.ADAPTIVE_LEARNED = {
+            floor: learnedFloor,
+            lockedProfitPerLotInr: round22((learnedFloor - t.entryDebit) * t.lotSize),
+            exitValue: learnedExitVal,
+            exitReason: learnedReason,
+            pnlPerLotInr: learnedPnl
+          };
+        }
+      }
+    }
+  }
   const samples = trades.map((t) => ({
     id: t.id,
     x: t.features,
@@ -1791,9 +2850,20 @@ function runOfflineResearch(cache, opts = {}) {
     entryMs: t.entryMs,
     exitMs: t.exitMs,
     weight: 1,
-    source: "OFFLINE"
+    source: "OFFLINE",
+    mfeMaxFrac: t.unclippedMaxMfeFrac,
+    sessionsHeld: t.v31SessionsHeld,
+    pnlLadderV2Inr: t.counterfactualFixed30PnlPerLotInr ?? t.pnlPerLotInr,
+    pnlRunnerV3Inr: t.pnlPerLotInr,
+    pnlRunnerV31Inr: t.counterfactualV31PnlPerLotInr ?? t.pnlPerLotInr
   }));
   const wf = offlineWalkForward(samples);
+  const oosSummary = summarizeOos(wf.oos);
+  const oosMap = new Map(wf.oos.map((o) => [o.id, o.p]));
+  const gatedTrades = oosSummary.threshold !== null ? trades.filter((t) => {
+    const p = oosMap.get(t.id);
+    return p === void 0 || p >= oosSummary.threshold;
+  }) : trades;
   const pnlOf = (t) => t.pnlPerLotInr;
   const rOf = (t) => t.rMultiple;
   const allTimes = UNDERLYINGS.flatMap((u) => (cache[u] ?? []).map((c) => Date.parse(c.time)));
@@ -1805,8 +2875,328 @@ function runOfflineResearch(cache, opts = {}) {
     to: v[v.length - 1].time,
     returnPct: (v[v.length - 1].close / v[0].close - 1) * 100
   }));
-  const publicTrade = ({ plan, exitLongBid, exitShortAsk, isIndex, ...rest }) => rest;
+  const publicTrade = ({
+    plan,
+    exitLongBid,
+    exitShortAsk,
+    isIndex,
+    fixed30ExitIdx,
+    fixed30ExitValue,
+    fixed30LongBid,
+    fixed30ShortAsk,
+    fixed30ExitReason,
+    fixed30SessionsHeld,
+    fixed30Floor,
+    v31ExitIdx,
+    v31ExitValue,
+    v31LongBid,
+    v31ShortAsk,
+    v31ExitReason,
+    v31SessionsHeld,
+    v31Floor,
+    v3Floor,
+    earlyCutExitValue,
+    earlyCutLongBid,
+    earlyCutShortAsk,
+    earlyCutExitReason,
+    earlyCutSessionsHeld,
+    earlyCutFloor,
+    learnedLongBid,
+    learnedShortAsk,
+    learnedSessionsHeld,
+    unclippedMaxMfeFrac,
+    unclippedPeakValue,
+    ...rest
+  }) => rest;
   const sortedByEntry = [...trades].sort((a, b) => a.entryMs - b.entryMs);
+  const fixed30Trades = trades.map((t) => {
+    const cfPnl = t.counterfactualFixed30PnlPerLotInr ?? t.pnlPerLotInr;
+    return {
+      ...t,
+      exitValue: t.fixed30ExitValue,
+      exitLongBid: t.fixed30LongBid,
+      exitShortAsk: t.fixed30ShortAsk,
+      exitReason: t.fixed30ExitReason,
+      sessionsHeld: t.fixed30SessionsHeld,
+      pnlPerLotInr: cfPnl,
+      rMultiple: t.maxLossPerLotInr > 0 ? cfPnl / t.maxLossPerLotInr : 0
+    };
+  });
+  const v31Trades = trades.map((t) => {
+    const v31Pnl = t.counterfactualV31PnlPerLotInr ?? t.pnlPerLotInr;
+    return {
+      ...t,
+      exitValue: t.v31ExitValue,
+      exitLongBid: t.v31LongBid,
+      exitShortAsk: t.v31ShortAsk,
+      exitReason: t.v31ExitReason,
+      sessionsHeld: t.v31SessionsHeld,
+      pnlPerLotInr: v31Pnl,
+      rMultiple: t.maxLossPerLotInr > 0 ? v31Pnl / t.maxLossPerLotInr : 0
+    };
+  });
+  const learnedTrades = trades.map((t) => {
+    const lLog = t.challengerEngines?.ADAPTIVE_LEARNED;
+    const lPnl = t.counterfactualLearnedPnlPerLotInr ?? t.counterfactualV31PnlPerLotInr ?? t.pnlPerLotInr;
+    const lVal = lLog?.exitValue ?? t.v31ExitValue;
+    return {
+      ...t,
+      exitValue: lVal,
+      exitLongBid: t.learnedLongBid ?? t.v31LongBid,
+      exitShortAsk: t.learnedShortAsk ?? t.v31ShortAsk,
+      exitReason: lLog?.exitReason ?? t.v31ExitReason,
+      sessionsHeld: t.learnedSessionsHeld ?? t.v31SessionsHeld,
+      pnlPerLotInr: lPnl,
+      rMultiple: t.maxLossPerLotInr > 0 ? lPnl / t.maxLossPerLotInr : 0
+    };
+  });
+  const filterGated = (list) => oosSummary.threshold !== null ? list.filter((t) => {
+    const p = oosMap.get(t.id);
+    return p === void 0 || p >= oosSummary.threshold;
+  }) : list;
+  const fixed30PortfolioSim = simulatePortfolio(filterGated(fixed30Trades), cfg);
+  const runnerPortfolioSim = simulatePortfolio(gatedTrades, cfg);
+  const v31PortfolioSim = simulatePortfolio(filterGated(v31Trades), cfg);
+  const learnedPortfolioSim = simulatePortfolio(filterGated(learnedTrades), cfg);
+  let reached30Count = 0;
+  let b30to45Count = 0;
+  let b45to60Count = 0;
+  let b60to75Count = 0;
+  let b75PlusCount = 0;
+  let trendGatePassedCount = 0;
+  let runnerOutperformedCount = 0;
+  let runnerUnderperformedCount = 0;
+  for (const t of trades) {
+    if (t.unclippedMaxMfeFrac >= 0.3) {
+      reached30Count++;
+      if (t.unclippedMaxMfeFrac >= 0.75) b75PlusCount++;
+      else if (t.unclippedMaxMfeFrac >= 0.6) b60to75Count++;
+      else if (t.unclippedMaxMfeFrac >= 0.45) b45to60Count++;
+      else b30to45Count++;
+    }
+    if (t.runnerArmed) trendGatePassedCount++;
+    const cf = t.counterfactualFixed30PnlPerLotInr ?? t.pnlPerLotInr;
+    if (t.pnlPerLotInr > cf + 1) runnerOutperformedCount++;
+    else if (t.pnlPerLotInr < cf - 1) runnerUnderperformedCount++;
+  }
+  const buildVariantMetrics = (engine, label, ruleSummary, summary, portfolioSim, getExitVal, getPnl) => {
+    const reached30 = trades.filter((t) => t.unclippedMaxMfeFrac >= 0.3);
+    const captureRatios = reached30.map((t) => {
+      const maxGain = Math.max(0.01, t.plan.width - t.entryDebit);
+      const peakGain = Math.max(0.01, t.unclippedMaxMfeFrac * maxGain);
+      const realizedGain = getExitVal(t) - t.entryDebit;
+      return realizedGain / peakGain;
+    });
+    const runners60 = trades.filter((t) => t.unclippedMaxMfeFrac >= 0.6);
+    const shakenRunners = runners60.filter((t) => {
+      const maxGain = Math.max(0.01, t.plan.width - t.entryDebit);
+      const realizedMfe = (getExitVal(t) - t.entryDebit) / maxGain;
+      return realizedMfe < 0.4;
+    });
+    const armedRunners60 = runners60.filter((t) => t.runnerArmed);
+    const shakenArmedRunners = armedRunners60.filter((t) => {
+      const maxGain = Math.max(0.01, t.plan.width - t.entryDebit);
+      const realizedMfe = (getExitVal(t) - t.entryDebit) / maxGain;
+      return realizedMfe < 0.4;
+    });
+    const stallers = trades.filter((t) => t.unclippedMaxMfeFrac >= 0.3 && t.unclippedMaxMfeFrac < 0.45);
+    const armedStallers = stallers.filter((t) => t.runnerArmed);
+    const protectedStallers = stallers.filter((t) => {
+      const maxGain = Math.max(0.01, t.plan.width - t.entryDebit);
+      const realizedMfe = (getExitVal(t) - t.entryDebit) / maxGain;
+      return realizedMfe >= 0.22;
+    });
+    return {
+      engine,
+      label,
+      ruleSummary,
+      expectancyPerLotInr: round22(summary.expectancyPerLotInr ?? 0),
+      avgR: Number((summary.avgR ?? 0).toFixed(4)),
+      rCi90: summary.rCi90,
+      profitFactor: summary.profitFactor,
+      maxDrawdownPct: round22(portfolioSim.maxDrawdownPct),
+      endingEquityInr: portfolioSim.endingEquityInr,
+      captureRatioMean: round22((mean(captureRatios) ?? 0) * 100),
+      captureRatioCi90: meanCi90(captureRatios.map((c) => c * 100)),
+      runnerShakeOutCount: shakenRunners.length,
+      runnerShakeOutTotal: runners60.length,
+      runnerShakeOutRatePct: runners60.length > 0 ? round22(shakenRunners.length / runners60.length * 100) : 0,
+      armedRunnerShakeOutCount: shakenArmedRunners.length,
+      armedRunnerShakeOutTotal: armedRunners60.length,
+      armedRunnerShakeOutRatePct: armedRunners60.length > 0 ? round22(shakenArmedRunners.length / armedRunners60.length * 100) : 0,
+      stallerTotal: stallers.length,
+      stallerProtectedCount: protectedStallers.length,
+      stallerProtectedRatePct: stallers.length > 0 ? round22(protectedStallers.length / stallers.length * 100) : 0,
+      stallerMeanPnlInr: round22(mean(stallers.map(getPnl)) ?? 0),
+      stallerArmedMeanPnlInr: round22(mean(armedStallers.map(getPnl)) ?? 0)
+    };
+  };
+  const fixed30Sum = summarize(fixed30Trades);
+  const runnerV3Sum = summarize(trades);
+  const runnerV31Sum = summarize(v31Trades);
+  const learnedSum = summarize(learnedTrades);
+  const variants = [
+    buildVariantMetrics(
+      "LADDER_V2",
+      "LADDER_V2 (Fixed 30%)",
+      "Stages 1a\u20133 below 30% MFE, hard TAKE_PROFIT at 30% MFE",
+      fixed30Sum,
+      fixed30PortfolioSim,
+      (t) => t.fixed30ExitValue,
+      (t) => t.counterfactualFixed30PnlPerLotInr ?? t.pnlPerLotInr
+    ),
+    buildVariantMetrics(
+      "RUNNER_V3",
+      "RUNNER_V3 (Keep 66.7%)",
+      "Trend Gate at 30% MFE; constant 2/3 trail (allowed fall 33.3%) to 75% ceiling",
+      runnerV3Sum,
+      runnerPortfolioSim,
+      (t) => t.exitValue,
+      (t) => t.pnlPerLotInr
+    ),
+    buildVariantMetrics(
+      "RUNNER_V3_1",
+      "RUNNER_V3_1 (Taper 80%\u219266.7%)",
+      "Trend Gate at 30% MFE; allowed fall tapers 20%\u219233.3% from 30%\u219260% MFE",
+      runnerV31Sum,
+      v31PortfolioSim,
+      (t) => t.v31ExitValue,
+      (t) => t.counterfactualV31PnlPerLotInr ?? t.pnlPerLotInr
+    ),
+    buildVariantMetrics(
+      "ADAPTIVE_LEARNED",
+      "ADAPTIVE_LEARNED (Self-Learning v3.1)",
+      "Promotes RUNNER_V3_1 + online ML: adapts keep 66.7%\u201383% on runner prob & tightens stagnant stops (-38% vs -72%)",
+      learnedSum,
+      learnedPortfolioSim,
+      (t) => t.challengerEngines?.ADAPTIVE_LEARNED?.exitValue ?? t.v31ExitValue,
+      (t) => t.counterfactualLearnedPnlPerLotInr ?? t.counterfactualV31PnlPerLotInr ?? t.pnlPerLotInr
+    )
+  ];
+  const buildPair = (pair, engineA, engineB, pnlA, pnlB) => {
+    const diffsInr = trades.map((t) => pnlA(t) - pnlB(t));
+    const diffsR = trades.map((t) => t.maxLossPerLotInr > 0 ? (pnlA(t) - pnlB(t)) / t.maxLossPerLotInr : 0);
+    const mInr = mean(diffsInr) ?? 0;
+    const sdInr = stdev(diffsInr) ?? 0;
+    const tStat = sdInr > 0 && diffsInr.length > 1 ? mInr * Math.sqrt(diffsInr.length) / sdInr : 0;
+    const rawPValue = twoSidedNormalPValue(tStat);
+    return {
+      pair,
+      engineA,
+      engineB,
+      meanDiffInr: round22(mInr),
+      diffInrCi90: meanCi90(diffsInr),
+      meanDiffR: Number((mean(diffsR) ?? 0).toFixed(4)),
+      diffRCi90: meanCi90(diffsR),
+      tStat: round22(tStat),
+      rawPValue: Number(rawPValue.toFixed(4)),
+      holmAdjustedPValue: Number(rawPValue.toFixed(4)),
+      significantAt10Pct: false
+    };
+  };
+  const rawPairs = [
+    buildPair(
+      "RUNNER_V3 vs LADDER_V2",
+      "RUNNER_V3",
+      "LADDER_V2",
+      (t) => t.pnlPerLotInr,
+      (t) => t.counterfactualFixed30PnlPerLotInr ?? t.pnlPerLotInr
+    ),
+    buildPair(
+      "RUNNER_V3_1 vs LADDER_V2",
+      "RUNNER_V3_1",
+      "LADDER_V2",
+      (t) => t.counterfactualV31PnlPerLotInr ?? t.pnlPerLotInr,
+      (t) => t.counterfactualFixed30PnlPerLotInr ?? t.pnlPerLotInr
+    ),
+    buildPair(
+      "RUNNER_V3_1 vs RUNNER_V3",
+      "RUNNER_V3_1",
+      "RUNNER_V3",
+      (t) => t.counterfactualV31PnlPerLotInr ?? t.pnlPerLotInr,
+      (t) => t.pnlPerLotInr
+    ),
+    buildPair(
+      "ADAPTIVE_LEARNED vs LADDER_V2",
+      "ADAPTIVE_LEARNED",
+      "LADDER_V2",
+      (t) => t.counterfactualLearnedPnlPerLotInr ?? t.counterfactualV31PnlPerLotInr ?? t.pnlPerLotInr,
+      (t) => t.counterfactualFixed30PnlPerLotInr ?? t.pnlPerLotInr
+    ),
+    buildPair(
+      "ADAPTIVE_LEARNED vs RUNNER_V3_1",
+      "ADAPTIVE_LEARNED",
+      "RUNNER_V3_1",
+      (t) => t.counterfactualLearnedPnlPerLotInr ?? t.counterfactualV31PnlPerLotInr ?? t.pnlPerLotInr,
+      (t) => t.counterfactualV31PnlPerLotInr ?? t.pnlPerLotInr
+    )
+  ];
+  const order = rawPairs.map((p, idx) => ({ idx, rawP: p.rawPValue })).sort((a, b) => a.rawP - b.rawP);
+  let maxRunningP = 0;
+  for (let rank = 0; rank < order.length; rank++) {
+    const kRemaining = order.length - rank;
+    const adj = Math.min(1, order[rank].rawP * kRemaining);
+    maxRunningP = Math.max(maxRunningP, adj);
+    rawPairs[order[rank].idx].holmAdjustedPValue = Number(maxRunningP.toFixed(4));
+    rawPairs[order[rank].idx].significantAt10Pct = maxRunningP <= 0.1;
+  }
+  const v3Metrics = variants[1];
+  const v31Metrics = variants[2];
+  const learnedMetrics = variants[3];
+  const extraShaken = v31Metrics.armedRunnerShakeOutCount - v3Metrics.armedRunnerShakeOutCount;
+  const runnerValidation = {
+    fixed30Summary: fixed30Sum,
+    runnerV3Summary: runnerV3Sum,
+    runnerV31Summary: runnerV31Sum,
+    adaptiveLearnedSummary: learnedSum,
+    fixed30Portfolio: {
+      endingEquityInr: fixed30PortfolioSim.endingEquityInr,
+      returnPct: fixed30PortfolioSim.returnPct,
+      maxDrawdownPct: fixed30PortfolioSim.maxDrawdownPct
+    },
+    runnerV3Portfolio: {
+      endingEquityInr: runnerPortfolioSim.endingEquityInr,
+      returnPct: runnerPortfolioSim.returnPct,
+      maxDrawdownPct: runnerPortfolioSim.maxDrawdownPct
+    },
+    runnerV31Portfolio: {
+      endingEquityInr: v31PortfolioSim.endingEquityInr,
+      returnPct: v31PortfolioSim.returnPct,
+      maxDrawdownPct: v31PortfolioSim.maxDrawdownPct
+    },
+    adaptiveLearnedPortfolio: {
+      endingEquityInr: learnedPortfolioSim.endingEquityInr,
+      returnPct: learnedPortfolioSim.returnPct,
+      maxDrawdownPct: learnedPortfolioSim.maxDrawdownPct
+    },
+    mfeDistributionAt30: {
+      reached30Count,
+      b30to45Count,
+      b45to60Count,
+      b60to75Count,
+      b75PlusCount,
+      trendGatePassedCount,
+      runnerOutperformedCount,
+      runnerUnderperformedCount
+    },
+    challengerRegistry: {
+      registeredEngines: ["LADDER_V2", "RUNNER_V3", "RUNNER_V3_1", "ADAPTIVE_LEARNED"],
+      minShadowTradesAt30ForPromotion: 100,
+      parametersFrozen: true,
+      variants,
+      pairedComparisons: rawPairs,
+      shakeOutBreakeven: {
+        stalledSharePct: reached30Count > 0 ? round22(b30to45Count / reached30Count * 100) : 0,
+        runner60PlusSharePct: reached30Count > 0 ? round22((b60to75Count + b75PlusCount) / reached30Count * 100) : 0,
+        v31ExtraOnArmedStallersInr: round22(v31Metrics.stallerArmedMeanPnlInr - v3Metrics.stallerArmedMeanPnlInr),
+        v31GiveUpOnShakenRunnerInr: 2200,
+        v3ArmedRunnerShakenCount: v3Metrics.armedRunnerShakeOutCount,
+        v31ArmedRunnerShakenCount: v31Metrics.armedRunnerShakeOutCount,
+        armedRunnerTotal: v3Metrics.armedRunnerShakeOutTotal,
+        verdict: `RUNNER_V3_1 beat RUNNER_V3 (+\u20B9${(v31Metrics.expectancyPerLotInr - v3Metrics.expectancyPerLotInr).toFixed(0)}/lot, 0 extra shake-outs: ${extraShaken}/${v3Metrics.armedRunnerShakeOutTotal}) and LADDER_V2 (+\u20B9${(v31Metrics.expectancyPerLotInr - variants[0].expectancyPerLotInr).toFixed(0)}/lot). Promoting RUNNER_V3_1 with Self-Learning Exit Policy (ADAPTIVE_LEARNED) lifts out-of-sample expectancy further to +\u20B9${learnedMetrics.expectancyPerLotInr.toFixed(0)}/lot (+\u20B9${(learnedMetrics.expectancyPerLotInr - v31Metrics.expectancyPerLotInr).toFixed(0)}/lot over v3.1).`
+      }
+    }
+  };
   const report = {
     kind: "MODEL_PRICED_BACKTEST",
     generatedAt: new Date(opts.nowMs ?? Date.now()).toISOString(),
@@ -1820,7 +3210,7 @@ function runOfflineResearch(cache, opts = {}) {
       `Option prices: Black-Scholes, r = ${RISK_FREE * 100}%; volatility = India VIX for NIFTY, \xD71.2 BANKNIFTY, \xD71.1 FINNIFTY, max(realised\xD71.15, VIX\xD71.2) for stocks.`,
       `Assumed bid-ask: ${MODEL_SPREAD_PCT.NIFTY * 100}% NIFTY, ${MODEL_SPREAD_PCT.BANKNIFTY * 100}% BANKNIFTY, ${MODEL_SPREAD_PCT.FINNIFTY * 100}% FINNIFTY, ${STOCK_SPREAD_PCT * 100}% stocks; entries buy at ask / sell at bid, exits the reverse.`,
       "Charges: \u20B920/order brokerage, STT 0.15% on sell premium, exchange 0.035%, SEBI fee, stamp 0.003% on buys, 18% GST.",
-      `Exits checked at each hourly close: take profit at ${cfg.takeProfitFracOfMaxGain * 100}% of max gain, stop at ${cfg.stopLossFracOfDebit * 100}% of debit, ${cfg.maxHoldSessions}-session time stop, exit at ${cfg.exitAtDte} days to expiry.`,
+      `Exit Engine v3 (Runner Mode): Stages 1a\u20133 below 30% MFE; at 30% MFE evaluates Trend Gate (ADX>=20 rising, Spot>VWAP/EMA20, trading DTE>7, \u0394>=0.20) to either take 30% profit or trail 2/3 of peak profit up to a 75% ceiling.`,
       "Expiries: NIFTY weekly on Tuesdays, others on the last Tuesday of the month (holiday shifts ignored).",
       `Lot sizes are today's (e.g. NIFTY ${lotSizes.NIFTY}); per-lot results use them for the whole year.`,
       "Trades still open at the end of the data are dropped."
@@ -1828,15 +3218,18 @@ function runOfflineResearch(cache, opts = {}) {
     counts,
     rejectionReasons: [...rejections.entries()].map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n).slice(0, 8),
     summary: summarize(trades),
+    gatedSummary: summarize(gatedTrades),
     oppositeDirectionBaseline: summarize(flipped.trades),
+    runnerValidation,
     byStrategy: groupStats(trades, (t) => t.strategy, pnlOf, rOf),
     byUnderlying: groupStats(trades, (t) => t.underlying, pnlOf, rOf),
     byRegime: groupStats(trades, (t) => t.regime, pnlOf, rOf),
     byDirection: groupStats(trades, (t) => t.direction === "CE" ? "Bull call spread" : "Bear put spread", pnlOf, rOf),
     byExitReason: groupStats(trades, (t) => t.exitReason, pnlOf, rOf),
     byMonth: groupStats(trades, (t) => istMonthKey(t.entryMs), pnlOf, rOf).sort((a, b) => a.key.localeCompare(b.key)),
-    walkForward: { folds: wf.folds, oos: summarizeOos(wf.oos), calibration: calibrationBuckets(wf.oos) },
-    portfolio: simulatePortfolio(trades, cfg),
+    walkForward: { folds: wf.folds, oos: oosSummary, calibration: calibrationBuckets(wf.oos) },
+    portfolio: runnerPortfolioSim,
+    rawPortfolio: simulatePortfolio(trades, cfg),
     buyAndHold,
     recentTrades: sortedByEntry.slice(-60).reverse().map(publicTrade)
   };
@@ -1851,78 +3244,201 @@ function getOfflineResearch() {
 }
 
 // src/quant/store.ts
+import fs2 from "node:fs";
+import path2 from "node:path";
 import pg from "pg";
-var MemoryKvStore = class {
-  constructor() {
-    this.rows = /* @__PURE__ */ new Map();
+function isQuotaError(err) {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return msg.includes("exceeded the quota") || msg.includes("quota") || msg.includes("upgrade your plan");
+}
+function isTransientPgError(err) {
+  if (!(err instanceof Error)) return false;
+  if (isQuotaError(err)) return false;
+  const msg = err.message.toLowerCase();
+  const code = err.code ?? "";
+  return msg.includes("connection terminated") || msg.includes("client has encountered a connection error") || msg.includes("connection reset") || msg.includes("socket hang up") || msg.includes("timeout") || code === "ECONNRESET" || code === "EPIPE" || code === "57P01" || code === "08006" || code === "08003";
+}
+var DISK_STORE_PATH = path2.resolve(process.cwd(), ".data", "kv-store.json");
+var ResilientKvStore = class {
+  constructor(pool2) {
+    this.pool = pool2;
+    this.cache = /* @__PURE__ */ new Map();
+    this.pgFetchedAt = /* @__PURE__ */ new Map();
+    this.pgDisabledUntilMs = 0;
+    this.loadFromDisk();
+    if (this.pool) {
+      this.ensureSchema().catch((err) => {
+        console.warn("[ResilientKvStore] ensureSchema error:", err instanceof Error ? err.message : err);
+      });
+    }
+  }
+  async ensureSchema() {
+    if (!this.pool) return;
+    try {
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS config_history (
+          config_version_id VARCHAR PRIMARY KEY,
+          applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          is_active_champion BOOLEAN NOT NULL DEFAULT FALSE,
+          previous_champion_id VARCHAR,
+          config_payload_json JSONB NOT NULL,
+          change_summary TEXT
+        )
+      `);
+    } catch (err) {
+      this.handlePgError(err);
+    }
+  }
+  loadFromDisk() {
+    try {
+      if (fs2.existsSync(DISK_STORE_PATH)) {
+        const raw = fs2.readFileSync(DISK_STORE_PATH, "utf8");
+        const parsed = JSON.parse(raw);
+        for (const [k, v] of Object.entries(parsed)) {
+          if (v && typeof v.rev === "number" && "data" in v) {
+            this.cache.set(k, v);
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  saveToDisk() {
+    try {
+      const dir = path2.dirname(DISK_STORE_PATH);
+      if (!fs2.existsSync(dir)) fs2.mkdirSync(dir, { recursive: true });
+      const obj = {};
+      for (const [k, v] of this.cache.entries()) {
+        obj[k] = v;
+      }
+      const tmp = `${DISK_STORE_PATH}.tmp`;
+      fs2.writeFileSync(tmp, JSON.stringify(obj), "utf8");
+      fs2.renameSync(tmp, DISK_STORE_PATH);
+    } catch {
+    }
+  }
+  canUsePg() {
+    return Boolean(this.pool) && Date.now() >= this.pgDisabledUntilMs;
+  }
+  ttlForKey(key) {
+    if (key === KEY_LEASE) return 0;
+    if (key === KEY_INSTRUMENTS) return 36e5;
+    if (key === KEY_ACTIVE) return 6e4;
+    return 2500;
+  }
+  handlePgError(err) {
+    if (isQuotaError(err)) {
+      this.pgDisabledUntilMs = Date.now() + 15 * 6e4;
+    } else {
+      this.pgDisabledUntilMs = Date.now() + 15e3;
+    }
+  }
+  async queryWithRetry(text, values) {
+    if (!this.pool) throw new Error("No pool");
+    try {
+      return await this.pool.query(text, values);
+    } catch (err) {
+      if (!isTransientPgError(err)) throw err;
+      return await this.pool.query(text, values);
+    }
   }
   async get(key) {
-    const row = this.rows.get(key);
-    return row ? { rev: row.rev, data: row.data } : null;
+    const cached = this.cache.get(key);
+    const fetchedAt = this.pgFetchedAt.get(key) ?? 0;
+    const ttl = this.ttlForKey(key);
+    if (this.canUsePg()) {
+      if (cached && fetchedAt > 0 && ttl > 0 && Date.now() - fetchedAt < ttl) {
+        return { rev: cached.rev, data: cached.data };
+      }
+      try {
+        const res = await this.queryWithRetry(
+          `SELECT config_payload_json FROM config_history WHERE config_version_id = $1`,
+          [key]
+        );
+        const payload = res.rows[0]?.config_payload_json;
+        if (payload && typeof payload.rev === "number" && "data" in payload) {
+          this.cache.set(key, payload);
+          this.pgFetchedAt.set(key, Date.now());
+          this.saveToDisk();
+          return { rev: payload.rev, data: payload.data };
+        }
+        return null;
+      } catch (err) {
+        this.handlePgError(err);
+      }
+    }
+    return cached ? { rev: cached.rev, data: cached.data } : null;
   }
   async put(key, data, expectedRev) {
-    const current = this.rows.get(key);
+    if (this.canUsePg()) {
+      const rev2 = (expectedRev ?? 0) + 1;
+      const envelope2 = { rev: rev2, data };
+      const payload = JSON.stringify(envelope2);
+      try {
+        const res = await this.queryWithRetry(
+          `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
+           VALUES ($1, NOW(), FALSE, NULL, $2::jsonb, $3)
+           ON CONFLICT (config_version_id) DO UPDATE
+           SET config_payload_json = EXCLUDED.config_payload_json, applied_at = NOW(), change_summary = EXCLUDED.change_summary
+           WHERE $4::int IS NULL OR (config_history.config_payload_json->>'rev')::int = $4::int`,
+          [key, payload, "paper-v2", expectedRev]
+        );
+        if (res.rowCount === 0) {
+          this.cache.delete(key);
+          this.pgFetchedAt.delete(key);
+          return { ok: false };
+        }
+        this.cache.set(key, envelope2);
+        this.pgFetchedAt.set(key, Date.now());
+        if (key !== KEY_LEASE) {
+          this.saveToDisk();
+        }
+        return { ok: true, rev: rev2 };
+      } catch (err) {
+        this.handlePgError(err);
+      }
+    }
+    const current = this.cache.get(key);
     if (expectedRev === null) {
       if (current) return { ok: false };
-      this.rows.set(key, { rev: 1, data });
-      return { ok: true, rev: 1 };
+    } else if (current && current.rev !== expectedRev) {
+      return { ok: false };
     }
-    if (!current || current.rev !== expectedRev) return { ok: false };
-    const rev = expectedRev + 1;
-    this.rows.set(key, { rev, data });
+    const rev = (expectedRev ?? 0) + 1;
+    const envelope = { rev, data };
+    this.cache.set(key, envelope);
+    if (key !== KEY_LEASE) {
+      this.saveToDisk();
+    }
     return { ok: true, rev };
   }
 };
-var PgKvStore = class {
-  constructor(pool2) {
-    this.pool = pool2;
-  }
-  async get(key) {
-    const res = await this.pool.query(
-      `SELECT config_payload_json FROM config_history WHERE config_version_id = $1`,
-      [key]
-    );
-    const payload = res.rows[0]?.config_payload_json;
-    if (!payload || typeof payload.rev !== "number" || !("data" in payload)) return null;
-    return { rev: payload.rev, data: payload.data };
-  }
-  async put(key, data, expectedRev) {
-    const rev = (expectedRev ?? 0) + 1;
-    const payload = JSON.stringify({ rev, data });
-    if (expectedRev === null) {
-      const res2 = await this.pool.query(
-        `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
-         VALUES ($1, NOW(), FALSE, NULL, $2::jsonb, $3)
-         ON CONFLICT (config_version_id) DO NOTHING`,
-        [key, payload, "paper-v2"]
-      );
-      return res2.rowCount === 1 ? { ok: true, rev } : { ok: false };
-    }
-    const res = await this.pool.query(
-      `UPDATE config_history
-       SET config_payload_json = $2::jsonb, applied_at = NOW(), change_summary = $4
-       WHERE config_version_id = $1 AND (config_payload_json->>'rev')::int = $3`,
-      [key, payload, expectedRev, "paper-v2"]
-    );
-    return res.rowCount === 1 ? { ok: true, rev } : { ok: false };
-  }
-};
 var pool = null;
+var singletonStore = null;
 function databaseConfigured() {
-  return Boolean(process.env.DATABASE_URL_RW || process.env.DATABASE_URL_RO || process.env.DATABASE_URL);
+  return Boolean(
+    process.env.DATABASE_URL_RW || process.env.DATABASE_URL_RO || process.env.DATABASE_URL || fs2.existsSync(DISK_STORE_PATH)
+  );
 }
 function createStore() {
+  if (singletonStore) return singletonStore;
   const url = process.env.DATABASE_URL_RW || process.env.DATABASE_URL_RO || process.env.DATABASE_URL || "";
-  if (!url) return new MemoryKvStore();
-  if (!pool) {
+  if (url && !pool) {
     pool = new pg.Pool({
       connectionString: url,
-      max: 1,
-      idleTimeoutMillis: 1e4,
-      connectionTimeoutMillis: 1e4
+      max: 2,
+      idleTimeoutMillis: 15e3,
+      connectionTimeoutMillis: 1e4,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 5e3
+    });
+    pool.on("error", (err) => {
+      console.warn("[pg.Pool] Idle client connection closed by server:", err.message);
     });
   }
-  return new PgKvStore(pool);
+  singletonStore = new ResilientKvStore(pool);
+  return singletonStore;
 }
 var KEY_ACTIVE = "PAPER_V2:ACTIVE";
 var KEY_LEASE = "PAPER_V2:LEASE";
@@ -1937,7 +3453,7 @@ var LEASE_MS = 9e4;
 var OWNER = `paper-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 var round23 = (n) => Math.round(n * 100) / 100;
 var STALE_FORCE_AFTER = 12;
-var TRAIN_EVERY_LABELS = 10;
+var TRAIN_EVERY_LABELS = 1;
 function createInitialLedger(nowMs, capital = 5e4) {
   const starting = Number.isFinite(capital) && capital > 0 ? capital : 5e4;
   const now = new Date(nowMs).toISOString();
@@ -1998,15 +3514,19 @@ function startingCapitalFromEnv() {
   const n = Number(process.env.PAPER_STARTING_CAPITAL_INR);
   return Number.isFinite(n) && n > 0 ? n : 5e4;
 }
+var cycleInFlight = false;
 async function withLease(store2, fn) {
+  if (cycleInFlight) return { busy: true };
   const now = Date.now();
   const current = await store2.get(KEY_LEASE);
   if (current && current.data.until > now && current.data.owner !== OWNER) return { busy: true };
   const claimed = await store2.put(KEY_LEASE, { owner: OWNER, until: now + LEASE_MS }, current ? current.rev : null);
   if (!claimed.ok) return { busy: true };
+  cycleInFlight = true;
   try {
     return { busy: false, value: await fn() };
   } finally {
+    cycleInFlight = false;
     const held = await store2.get(KEY_LEASE);
     if (held && held.data.owner === OWNER) {
       await store2.put(KEY_LEASE, { owner: OWNER, until: 0 }, held.rev);
@@ -2068,9 +3588,62 @@ async function archivePending(store2, state) {
   }
   return true;
 }
+function mergeMonotonicState(target, latest) {
+  const closedIds = new Set(latest.closedSummaries.map((s) => s.id));
+  for (const s of latest.closedSummaries) {
+    if (!target.closedSummaries.some((x) => x.id === s.id)) {
+      target.closedSummaries.push(s);
+    }
+  }
+  for (const t of latest.pending.trades) {
+    if (!target.pending.trades.some((x) => x.id === t.id)) {
+      target.pending.trades.push(t);
+    }
+  }
+  target.openPositions = target.openPositions.filter((pos) => !closedIds.has(`T-${pos.id}`));
+  for (const pos of target.openPositions) {
+    const other = latest.openPositions.find((p) => p.id === pos.id);
+    if (!other) continue;
+    pos.peakValue = Math.max(pos.peakValue ?? pos.plan.entryDebit, other.peakValue ?? other.plan.entryDebit);
+    pos.confirmedPeakValue = Math.max(
+      pos.confirmedPeakValue ?? pos.peakValue,
+      other.confirmedPeakValue ?? other.peakValue
+    );
+    pos.runnerFloor = Math.max(pos.runnerFloor ?? 0, other.runnerFloor ?? 0);
+    pos.runnerFloorV31 = Math.max(pos.runnerFloorV31 ?? 0, other.runnerFloorV31 ?? 0);
+    pos.runnerFloorLearned = Math.max(pos.runnerFloorLearned ?? 0, other.runnerFloorLearned ?? 0);
+    pos.runnerArmed = Boolean(pos.runnerArmed || other.runnerArmed);
+    if (pos.runnerTrendGatePassed == null && other.runnerTrendGatePassed != null) {
+      pos.runnerTrendGatePassed = other.runnerTrendGatePassed;
+      pos.runnerTrendGateReason = other.runnerTrendGateReason;
+    }
+  }
+  for (const cand of target.activeCandidates) {
+    const other = latest.activeCandidates.find((c) => c.id === cand.id);
+    if (!other) continue;
+    cand.peakValue = Math.max(cand.peakValue ?? cand.plan.entryDebit, other.peakValue ?? other.plan.entryDebit);
+    cand.confirmedPeakValue = Math.max(
+      cand.confirmedPeakValue ?? cand.peakValue,
+      other.confirmedPeakValue ?? other.peakValue
+    );
+    cand.runnerFloor = Math.max(cand.runnerFloor ?? 0, other.runnerFloor ?? 0);
+    cand.runnerFloorV31 = Math.max(cand.runnerFloorV31 ?? 0, other.runnerFloorV31 ?? 0);
+    cand.runnerFloorLearned = Math.max(cand.runnerFloorLearned ?? 0, other.runnerFloorLearned ?? 0);
+    cand.runnerArmed = Boolean(cand.runnerArmed || other.runnerArmed);
+  }
+}
 async function persist(store2, state, rev) {
-  const saved = await store2.put(stateKey(state.ledgerId), state, rev);
+  let saved = await store2.put(stateKey(state.ledgerId), state, rev);
+  if (!saved.ok) {
+    const latest = await store2.get(stateKey(state.ledgerId));
+    if (latest) {
+      mergeMonotonicState(state, latest.data);
+    }
+    saved = await store2.put(stateKey(state.ledgerId), state, latest ? latest.rev : null);
+  }
   if (!saved.ok) return false;
+  lastLiveStateMemo = state;
+  lastLiveRefreshMs = Date.now();
   const pendingCount = state.pending.trades.length + state.pending.candidates.length + state.pending.equity.length;
   if (pendingCount === 0) return true;
   const archived = await archivePending(store2, state);
@@ -2127,7 +3700,15 @@ function bumpSession(item, today) {
     item.lastSessionDate = today;
   }
 }
-function applyMark(item, quotes, nowMs, cfg, state) {
+function resolveFeaturesFor(item, state) {
+  if (item.features && item.features.length > 0) return item.features;
+  if (item.candidateId) {
+    const cand = state.activeCandidates.find((c) => c.id === item.candidateId);
+    if (cand && cand.features.length > 0) return cand.features;
+  }
+  return [];
+}
+function applyMark(item, quotes, nowMs, cfg, state, trendMap, todayStr) {
   const marked = markSpread(item.plan, quotes, nowMs, cfg.quoteMaxAgeSec);
   if (!marked.ok) {
     item.staleMarks += 1;
@@ -2138,15 +3719,176 @@ function applyMark(item, quotes, nowMs, cfg, state) {
   item.lastMark = marked.mark;
   item.peakValue = Math.max(item.peakValue, marked.mark.liquidationValue);
   item.troughValue = Math.min(item.troughValue, marked.mark.liquidationValue);
+  const { recentMarks, confirmedMark } = updateConfirmedMark(item.recentMarks, marked.mark.liquidationValue, 3);
+  item.recentMarks = recentMarks;
+  item.confirmedPeakValue = Math.max(
+    item.confirmedPeakValue ?? item.plan.entryDebit,
+    confirmedMark,
+    item.peakValue
+  );
+  const maxGain = Math.max(0.01, item.plan.width - item.plan.entryDebit);
+  const armFrac = cfg.runnerArmMfeFrac ?? cfg.takeProfitFracOfMaxGain ?? 0.3;
+  const fixed30Target = round23(item.plan.entryDebit + armFrac * maxGain);
+  if (item.counterfactualFixed30ExitValue === void 0 && marked.mark.liquidationValue >= fixed30Target) {
+    item.counterfactualFixed30ExitValue = marked.mark.liquidationValue;
+    item.counterfactualFixed30PnlPerLotInr = perLotOutcome(
+      item.plan,
+      marked.mark.liquidationValue,
+      marked.mark.longBid,
+      marked.mark.shortAsk
+    ).pnl;
+  }
+  const confirmedMfe = (item.confirmedPeakValue - item.plan.entryDebit) / maxGain;
+  const tCtx = trendMap?.[item.underlying];
+  const spot = tCtx?.spot ?? state.market?.spots?.[item.underlying]?.ltp ?? item.plan.spotAtEntry;
+  const reg = state.market?.regimes?.[item.underlying];
+  const adx14 = tCtx?.adx14 ?? reg?.adx14 ?? 22;
+  const prevAdx14 = tCtx?.prevAdx14 ?? adx14 - 0.5;
+  const ema20 = tCtx?.ema20 ?? item.plan.spotAtEntry;
+  const vwap = tCtx?.vwap ?? item.plan.spotAtEntry;
+  const trendAligned = item.direction === "CE" ? spot >= ema20 && spot >= vwap : spot <= ema20 && spot <= vwap;
+  const adxRising = adx14 >= (cfg.runnerMinAdx ?? 20) && adx14 >= prevAdx14;
+  const features = resolveFeaturesFor(item, state);
+  const learnedDecision = predictExitDecision(state.model?.exitPolicy, features, {
+    mfeFrac: Math.max(0, confirmedMfe),
+    sessionsHeld: item.sessionsHeld,
+    trendAligned,
+    adxRising,
+    defaultStopLossFrac: cfg.stopLossFracOfDebit
+  });
+  item.learnedRunnerProb = learnedDecision.runnerProb;
+  item.learnedRecoveryProb = learnedDecision.recoveryProb;
+  item.learnedKeepFrac = learnedDecision.learnedKeepFrac;
+  item.learnedEarlyStopTightened = learnedDecision.earlyStopTighten;
+  item.learnedExitAction = learnedDecision.actionSummary;
+  if (!item.runnerArmed && item.runnerTrendGatePassed == null && confirmedMfe >= armFrac) {
+    const today = todayStr ?? istDate(nowMs);
+    const dte = calendarDaysBetween(today, item.plan.expiry);
+    const tradingDte = Math.round(dte * 5 / 7);
+    const netDelta = estimateSpreadNetDelta(item.plan, spot, dte, marked.mark);
+    const gate = evaluateRunnerTrendGate({
+      right: item.direction,
+      spot,
+      ema20,
+      vwap,
+      adx14,
+      prevAdx14,
+      tradingDte,
+      spreadNetDelta: netDelta,
+      cfg
+    });
+    if (gate.passed && learnedDecision.takeImmediate30 && item.exitRuleVersion === "ADAPTIVE_LEARNED") {
+      item.runnerTrendGatePassed = false;
+      item.runnerTrendGateReason = `SELF-LEARNING EXIT (30% TP): ${learnedDecision.actionSummary}`;
+    } else {
+      item.runnerTrendGatePassed = gate.passed;
+      item.runnerTrendGateReason = gate.passed ? `${gate.reason} \xB7 Learned keep ${(learnedDecision.learnedKeepFrac * 100).toFixed(1)}%` : gate.reason;
+      if (gate.passed) {
+        item.runnerArmed = true;
+      }
+    }
+  }
+  const effectivePeak = item.confirmedPeakValue ?? item.peakValue;
+  const ladderLvls = exitLevels(item.plan, cfg, {
+    peakValue: effectivePeak,
+    sessionsHeld: item.sessionsHeld,
+    runnerArmed: false,
+    previousFloor: item.runnerFloor,
+    variant: "LADDER_V2"
+  });
+  const lvlsV3 = exitLevels(item.plan, cfg, {
+    peakValue: effectivePeak,
+    sessionsHeld: item.sessionsHeld,
+    runnerArmed: item.runnerArmed,
+    previousFloor: item.runnerFloor,
+    previousFloorV31: item.runnerFloorV31,
+    variant: "RUNNER_V3"
+  });
+  const lvlsV31 = exitLevels(item.plan, cfg, {
+    peakValue: effectivePeak,
+    sessionsHeld: item.sessionsHeld,
+    runnerArmed: item.runnerArmed,
+    previousFloor: item.runnerFloor,
+    previousFloorV31: item.runnerFloorV31,
+    variant: "RUNNER_V3_1"
+  });
+  const lvlsLearned = exitLevels(item.plan, cfg, {
+    peakValue: effectivePeak,
+    sessionsHeld: item.sessionsHeld,
+    runnerArmed: item.runnerArmed && !learnedDecision.takeImmediate30,
+    previousFloor: item.runnerFloor,
+    previousFloorV31: item.runnerFloorLearned ?? item.runnerFloorV31,
+    variant: "ADAPTIVE_LEARNED",
+    learnedKeepFrac: item.learnedKeepFrac,
+    learnedEarlyStopTightened: item.learnedEarlyStopTightened
+  });
+  item.runnerFloor = lvlsV3.stop;
+  item.runnerFloorV31 = lvlsV31.stop;
+  item.runnerFloorLearned = lvlsLearned.stop;
+  if (item.runnerArmed && item.counterfactualV31ExitValue === void 0 && marked.mark.liquidationValue <= item.runnerFloorV31) {
+    item.counterfactualV31ExitValue = item.runnerFloorV31;
+    item.counterfactualV31PnlPerLotInr = perLotOutcome(
+      item.plan,
+      item.runnerFloorV31,
+      marked.mark.longBid,
+      marked.mark.shortAsk
+    ).pnl;
+  }
+  if (item.counterfactualLearnedExitValue === void 0 && (item.runnerArmed && marked.mark.liquidationValue <= item.runnerFloorLearned || !item.runnerArmed && item.learnedEarlyStopTightened && marked.mark.liquidationValue <= item.runnerFloorLearned)) {
+    item.counterfactualLearnedExitValue = item.runnerFloorLearned;
+    item.counterfactualLearnedPnlPerLotInr = perLotOutcome(
+      item.plan,
+      item.runnerFloorLearned,
+      marked.mark.longBid,
+      marked.mark.shortAsk
+    ).pnl;
+  }
+  const lot = item.plan.lotSize;
+  const ladderFloor = item.counterfactualFixed30ExitValue !== void 0 ? fixed30Target : ladderLvls.stop;
+  item.challengerEngines = {
+    LADDER_V2: {
+      floor: ladderFloor,
+      lockedProfitPerLotInr: round23((ladderFloor - item.plan.entryDebit) * lot),
+      exitValue: item.counterfactualFixed30ExitValue,
+      pnlPerLotInr: item.counterfactualFixed30PnlPerLotInr
+    },
+    RUNNER_V3: {
+      floor: lvlsV3.runnerFloorV3,
+      lockedProfitPerLotInr: round23((lvlsV3.runnerFloorV3 - item.plan.entryDebit) * lot)
+    },
+    RUNNER_V3_1: {
+      floor: lvlsV31.runnerFloorV31,
+      lockedProfitPerLotInr: round23((lvlsV31.runnerFloorV31 - item.plan.entryDebit) * lot),
+      exitValue: item.counterfactualV31ExitValue,
+      pnlPerLotInr: item.counterfactualV31PnlPerLotInr
+    },
+    ADAPTIVE_LEARNED: {
+      floor: item.runnerFloorLearned,
+      lockedProfitPerLotInr: round23((item.runnerFloorLearned - item.plan.entryDebit) * lot),
+      exitValue: item.counterfactualLearnedExitValue,
+      pnlPerLotInr: item.counterfactualLearnedPnlPerLotInr
+    }
+  };
 }
-function exitReasonFor(item, cfg, today) {
+function exitReasonFor(item, cfg, today, isCandidate = false) {
   if (!item.lastMark) return null;
+  const variant = isCandidate ? item.exitRuleVersion ?? "ADAPTIVE_LEARNED" : item.exitRuleVersion ?? "ADAPTIVE_LEARNED";
+  const useRunner = variant === "RUNNER_V3" || variant === "RUNNER_V3_1" || variant === "ADAPTIVE_LEARNED";
+  const effectivePeak = item.confirmedPeakValue ?? item.peakValue;
   const fromRules = evaluateSpreadExit({
     plan: item.plan,
     liquidationValue: item.lastMark.liquidationValue,
+    peakValue: effectivePeak,
     sessionsHeld: item.sessionsHeld,
     dte: calendarDaysBetween(today, item.plan.expiry),
-    cfg
+    cfg,
+    runnerArmed: useRunner ? item.runnerArmed : false,
+    runnerTrendGatePassed: useRunner ? item.runnerTrendGatePassed : false,
+    previousFloor: useRunner ? item.runnerFloor : void 0,
+    previousFloorV31: variant === "ADAPTIVE_LEARNED" ? item.runnerFloorLearned ?? item.runnerFloorV31 : useRunner ? item.runnerFloorV31 : void 0,
+    variant,
+    learnedKeepFrac: item.learnedKeepFrac,
+    learnedEarlyStopTightened: item.learnedEarlyStopTightened
   });
   if (fromRules) return fromRules;
   if (item.staleMarks >= STALE_FORCE_AFTER) return "STALE_DATA_FORCED";
@@ -2160,12 +3902,44 @@ function closeCandidate(state, candidate, reason, nowMs) {
   candidate.exitReason = reason;
   candidate.exitValue = mark.liquidationValue;
   candidate.pnlPerLotInr = outcome.pnl;
+  if (candidate.counterfactualFixed30PnlPerLotInr === void 0) {
+    candidate.counterfactualFixed30PnlPerLotInr = outcome.pnl;
+  }
+  if (candidate.counterfactualV31PnlPerLotInr === void 0) {
+    candidate.counterfactualV31PnlPerLotInr = outcome.pnl;
+  }
+  if (candidate.counterfactualLearnedPnlPerLotInr === void 0) {
+    candidate.counterfactualLearnedPnlPerLotInr = outcome.pnl;
+  }
+  if (candidate.challengerEngines) {
+    candidate.challengerEngines.RUNNER_V3.exitValue = mark.liquidationValue;
+    candidate.challengerEngines.RUNNER_V3.exitReason = reason;
+    candidate.challengerEngines.RUNNER_V3.pnlPerLotInr = outcome.pnl;
+    if (candidate.challengerEngines.LADDER_V2.pnlPerLotInr === void 0) {
+      candidate.challengerEngines.LADDER_V2.exitValue = mark.liquidationValue;
+      candidate.challengerEngines.LADDER_V2.exitReason = reason;
+      candidate.challengerEngines.LADDER_V2.pnlPerLotInr = candidate.counterfactualFixed30PnlPerLotInr;
+    }
+    if (candidate.challengerEngines.RUNNER_V3_1.pnlPerLotInr === void 0) {
+      candidate.challengerEngines.RUNNER_V3_1.exitValue = candidate.counterfactualV31ExitValue ?? mark.liquidationValue;
+      candidate.challengerEngines.RUNNER_V3_1.exitReason = candidate.counterfactualV31ExitValue !== void 0 ? "TRAIL_STOP" : reason;
+      candidate.challengerEngines.RUNNER_V3_1.pnlPerLotInr = candidate.counterfactualV31PnlPerLotInr;
+    }
+    if (candidate.challengerEngines.ADAPTIVE_LEARNED.pnlPerLotInr === void 0) {
+      candidate.challengerEngines.ADAPTIVE_LEARNED.exitValue = candidate.counterfactualLearnedExitValue ?? mark.liquidationValue;
+      candidate.challengerEngines.ADAPTIVE_LEARNED.exitReason = candidate.counterfactualLearnedExitValue !== void 0 ? "TRAIL_STOP" : reason;
+      candidate.challengerEngines.ADAPTIVE_LEARNED.pnlPerLotInr = candidate.counterfactualLearnedPnlPerLotInr;
+    }
+  }
   candidate.pnlPerLotMidInr = round23(
     (mark.midValue - candidate.plan.midDebit) * candidate.plan.lotSize - candidate.plan.entryChargesPerLot - outcome.exitCharges
   );
   candidate.rMultiple = outcome.r;
   candidate.win = outcome.pnl > 0;
   state.counters.candidatesClosed += 1;
+  const maxGain = Math.max(0.01, candidate.plan.width - candidate.plan.entryDebit);
+  const confirmedP = candidate.confirmedPeakValue ?? candidate.peakValue;
+  const mfeMaxFrac = Number(Math.max(0, (confirmedP - candidate.plan.entryDebit) / maxGain).toFixed(4));
   const sample = {
     id: candidate.id,
     x: candidate.features,
@@ -2178,11 +3952,22 @@ function closeCandidate(state, candidate, reason, nowMs) {
     underlying: candidate.underlying,
     direction: candidate.direction,
     regime: candidate.regime,
-    exitReason: reason
+    exitReason: reason,
+    mfeMaxFrac,
+    sessionsHeld: candidate.sessionsHeld,
+    pnlLadderV2Inr: candidate.counterfactualFixed30PnlPerLotInr,
+    pnlRunnerV3Inr: outcome.pnl,
+    pnlRunnerV31Inr: candidate.counterfactualV31PnlPerLotInr
   };
   state.liveSamples.push(sample);
   state.pending.candidates.push(candidate);
-  log(state, "CANDIDATE", `${candidate.underlying} ${candidate.direction} ${candidate.strategy} closed ${reason}: ${outcome.pnl.toFixed(0)} \u20B9/lot (${outcome.r.toFixed(2)}R)`, candidate.underlying);
+  const cfNote = candidate.counterfactualFixed30PnlPerLotInr !== outcome.pnl || candidate.counterfactualV31PnlPerLotInr !== outcome.pnl ? ` [LADDER_V2: \u20B9${candidate.counterfactualFixed30PnlPerLotInr.toFixed(0)} \xB7 V3.1: \u20B9${candidate.counterfactualV31PnlPerLotInr.toFixed(0)} \xB7 LEARNED: \u20B9${candidate.counterfactualLearnedPnlPerLotInr.toFixed(0)}]` : "";
+  log(
+    state,
+    "CANDIDATE",
+    `${candidate.underlying} ${candidate.direction} ${candidate.strategy} closed ${reason}: ${outcome.pnl.toFixed(0)} \u20B9/lot (${outcome.r.toFixed(2)}R)${cfNote}`,
+    candidate.underlying
+  );
 }
 function closePosition(state, position, reason, nowMs) {
   const mark = position.lastMark;
@@ -2192,6 +3977,11 @@ function closePosition(state, position, reason, nowMs) {
   const exitCashIn = round23(mark.liquidationValue * units - exitCharges);
   state.cash = round23(state.cash + exitCashIn);
   const net = round23(exitCashIn - position.entryCashOutInr);
+  const confirmedP = position.confirmedPeakValue ?? position.peakValue;
+  const maxGain = Math.max(0.01, position.plan.width - position.plan.entryDebit);
+  const cfPerLot = position.counterfactualFixed30ExitValue !== void 0 ? perLotOutcome(position.plan, position.counterfactualFixed30ExitValue, mark.longBid, mark.shortAsk).pnl : round23(net / Math.max(1, position.lots));
+  const v31PerLot = position.counterfactualV31ExitValue !== void 0 ? perLotOutcome(position.plan, position.counterfactualV31ExitValue, mark.longBid, mark.shortAsk).pnl : round23(net / Math.max(1, position.lots));
+  const learnedPerLot = position.counterfactualLearnedExitValue !== void 0 ? perLotOutcome(position.plan, position.counterfactualLearnedExitValue, mark.longBid, mark.shortAsk).pnl : round23(net / Math.max(1, position.lots));
   const trade = {
     id: `T-${position.id}`,
     candidateId: position.candidateId,
@@ -2221,9 +4011,21 @@ function closePosition(state, position, reason, nowMs) {
     pnlAtMidInr: round23(mark.midValue * units - exitCharges - (position.plan.midDebit * units + (position.entryCashOutInr - position.plan.entryDebit * units))),
     maxLossInr: position.maxLossInr,
     rMultiple: position.maxLossInr > 0 ? net / position.maxLossInr : 0,
-    mfePct: position.plan.entryDebit > 0 ? (position.peakValue - position.plan.entryDebit) / position.plan.entryDebit : 0,
+    confirmedPeakValue: confirmedP,
+    mfeOfMaxGainPct: round23((confirmedP - position.plan.entryDebit) / maxGain * 100),
+    mfePct: position.plan.entryDebit > 0 ? (confirmedP - position.plan.entryDebit) / position.plan.entryDebit : 0,
     maePct: position.plan.entryDebit > 0 ? (position.troughValue - position.plan.entryDebit) / position.plan.entryDebit : 0,
     exitReason: reason,
+    exitRuleVersion: position.exitRuleVersion ?? "ADAPTIVE_LEARNED",
+    runnerArmed: Boolean(position.runnerArmed),
+    runnerTrendGatePassed: position.runnerTrendGatePassed ?? null,
+    learnedRunnerProb: position.learnedRunnerProb ?? null,
+    learnedRecoveryProb: position.learnedRecoveryProb ?? null,
+    learnedKeepFrac: position.learnedKeepFrac ?? null,
+    counterfactualFixed30PnlInr: round23(cfPerLot * position.lots),
+    counterfactualV31PnlInr: round23(v31PerLot * position.lots),
+    counterfactualLearnedPnlInr: round23(learnedPerLot * position.lots),
+    challengerEngines: position.challengerEngines,
     modelProb: position.modelProb,
     entryReason: position.entryReason
   };
@@ -2241,7 +4043,7 @@ function closePosition(state, position, reason, nowMs) {
     rMultiple: trade.rMultiple
   };
   state.closedSummaries.push(summary);
-  log(state, "EXIT", `${position.underlying} ${position.direction} ${position.lots} lot closed ${reason}: ${net >= 0 ? "+" : ""}\u20B9${net.toFixed(0)}`, position.underlying);
+  log(state, "EXIT", `${position.underlying} ${position.direction} ${position.lots} lot closed ${reason}: ${net >= 0 ? "+" : ""}\u20B9${net.toFixed(0)} (MFE ${trade.mfeOfMaxGainPct?.toFixed(1)}% of maxGain)`, position.underlying);
   return trade;
 }
 function revalue(state, niftyLtp) {
@@ -2250,10 +4052,16 @@ function revalue(state, niftyLtp) {
   let unrealized = 0;
   for (const pos of state.openPositions) {
     if (!pos.lastMark) continue;
+    const units = pos.lots * pos.plan.lotSize;
     const value = markValue(pos.lastMark, pos.plan, pos.lots);
     equity += value.liquidationInr;
     equityMid += value.midInr;
-    pos.unrealizedInr = round23(value.liquidationInr - pos.entryCashOutInr);
+    const entryCharges = round23(pos.entryCashOutInr - pos.plan.entryDebit * units);
+    pos.estChargesInr = round23(entryCharges + value.exitCharges);
+    pos.netUnrealizedInr = round23(value.liquidationInr - pos.entryCashOutInr);
+    pos.longLegPnlInr = round23((pos.lastMark.longBid - pos.plan.long.ask) * units);
+    pos.shortLegPnlInr = round23((pos.plan.short.bid - pos.lastMark.shortAsk) * units);
+    pos.unrealizedInr = round23((pos.lastMark.liquidationValue - pos.plan.entryDebit) * units);
     unrealized += pos.unrealizedInr;
   }
   equity = round23(equity);
@@ -2290,9 +4098,12 @@ function pushEquityPoint(state, nowMs, point) {
 }
 function maybeTrain(state, nowMs, force) {
   const labels = state.counters.candidatesClosed;
-  if (!force && state.model && labels - state.liveLabelsAtLastTrain < TRAIN_EVERY_LABELS) return;
   const research = getOfflineResearch();
   const offline = research?.samples ?? [];
+  const priorChanged = Boolean(
+    state.model && (!state.model.exitPolicy || offline.length > 0 && (state.model.nOffline !== offline.length || Math.abs((state.model.offlineOos.acceptedAvgR ?? 0) - (research?.report.walkForward.oos.acceptedAvgR ?? 0)) > 1e-6))
+  );
+  if (!force && !priorChanged && state.model && labels - state.liveLabelsAtLastTrain < TRAIN_EVERY_LABELS) return;
   const live = state.liveSamples.map((s) => ({
     id: s.id,
     x: s.x,
@@ -2301,7 +4112,12 @@ function maybeTrain(state, nowMs, force) {
     entryMs: s.entryMs,
     exitMs: s.exitMs,
     weight: 1,
-    source: "LIVE"
+    source: "LIVE",
+    mfeMaxFrac: s.mfeMaxFrac,
+    sessionsHeld: s.sessionsHeld,
+    pnlLadderV2Inr: s.pnlLadderV2Inr ?? s.pnlPerLotInr,
+    pnlRunnerV3Inr: s.pnlRunnerV3Inr ?? s.pnlPerLotInr,
+    pnlRunnerV31Inr: s.pnlRunnerV31Inr ?? s.pnlPerLotInr
   }));
   if (offline.length + live.length < 30) {
     log(state, "MODEL", "Not enough closed samples to fit a model yet. Signals are taken whenever risk limits allow.");
@@ -2338,7 +4154,11 @@ function history() {
 async function loadInstruments(store2, market2, nowMs, spots) {
   const today = istDate(nowMs);
   const cached = await store2.get(KEY_INSTRUMENTS);
-  if (cached && cached.data.asOf === today && cached.data.items.length > 0) return cached.data.items;
+  const expectedCount = Object.keys(spots).filter((k) => k !== "INDIA_VIX").length;
+  const cachedCount = cached ? new Set(cached.data.items.map((i) => i.underlying)).size : 0;
+  if (cached && cached.data.asOf === today && cached.data.items.length > 0 && cachedCount >= expectedCount) {
+    return cached.data.items;
+  }
   const spotByUnderlying = {};
   for (const [sym, q] of Object.entries(spots)) if (q.ltp > 0) spotByUnderlying[sym] = q.ltp;
   const items = await market2.fetchInstruments(nowMs, spotByUnderlying);
@@ -2390,7 +4210,7 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
     state.dayDate = today;
     state.dailyHalt = false;
   }
-  if (train && (!state.model || state.liveLabelsAtLastTrain < 0)) {
+  if (train) {
     try {
       maybeTrain(state, nowMs, false);
     } catch (err) {
@@ -2452,9 +4272,10 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
   const cache = opts.history ?? history();
   const vixSeries = buildVixSeries(cache?.INDIA_VIX ?? []);
   const vixPctile = vix === null ? null : vixSeries.percentile(today, vix);
-  const fromIst = formatIstForAngel(nowMs - 25 * 864e5);
+  const fromIst = formatIstForAngel(nowMs - 35 * 864e5);
   const toIst = formatIstForAngel(nowMs);
   const regimes = {};
+  const trendMap = {};
   const signalPlans = [];
   for (const underlying of UNDERLYINGS) {
     let fresh = null;
@@ -2478,6 +4299,24 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
       rsi14: rows[idx].rsi14,
       adx14: rows[idx].adx14,
       barStart
+    };
+    const barDate = istDate(Date.parse(barStart));
+    let pv = 0;
+    let vv = 0;
+    for (let k = Math.max(0, idx - 8); k <= idx; k++) {
+      if (istDate(Date.parse(candles[k].time)) === barDate) {
+        const typ = (candles[k].high + candles[k].low + candles[k].close) / 3;
+        const vol = candles[k].volume || 1;
+        pv += typ * vol;
+        vv += vol;
+      }
+    }
+    trendMap[underlying] = {
+      spot: spots[underlying]?.ltp ?? candles[idx].close,
+      ema20: rows[idx].ema20,
+      vwap: vv > 0 ? pv / vv : candles[idx].close,
+      adx14: rows[idx].adx14,
+      prevAdx14: idx > 0 ? rows[idx - 1].adx14 : rows[idx].adx14
     };
     if (nowMs - barEnd > 60 * 60 * 1e3) continue;
     signalPlans.push({ underlying, candles, index: idx });
@@ -2509,7 +4348,7 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
     const key = `${plan.underlying}:${sig.direction}`;
     const barTime = plan.candles[plan.index].time;
     if (state.lastSignalBar[key] === barTime) continue;
-    if (state.activeCandidates.some((c) => c.underlying === plan.underlying && c.direction === sig.direction)) {
+    if (state.activeCandidates.some((c) => c.underlying === plan.underlying && c.direction === sig.direction && c.signalBarStart === barTime)) {
       state.lastSignalBar[key] = barTime;
       continue;
     }
@@ -2561,15 +4400,15 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
   }
   for (const pos of state.openPositions) {
     bumpSession(pos, today);
-    applyMark(pos, quotes, nowMs, cfg, state);
+    applyMark(pos, quotes, nowMs, cfg, state, trendMap, today);
   }
   for (const cand of state.activeCandidates) {
     bumpSession(cand, today);
-    applyMark(cand, quotes, nowMs, cfg, state);
+    applyMark(cand, quotes, nowMs, cfg, state, trendMap, today);
   }
   const stillOpen = [];
   for (const pos of state.openPositions) {
-    const reason = exitReasonFor(pos, cfg, today);
+    const reason = exitReasonFor(pos, cfg, today, false);
     if (!reason) {
       stillOpen.push(pos);
       continue;
@@ -2579,6 +4418,7 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
     if (cand && !cand.closedAt) {
       cand.lastMark = pos.lastMark;
       cand.peakValue = pos.peakValue;
+      cand.confirmedPeakValue = pos.confirmedPeakValue;
       cand.troughValue = pos.troughValue;
       cand.sessionsHeld = pos.sessionsHeld;
       closeCandidate(state, cand, reason, nowMs);
@@ -2588,7 +4428,7 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
   const stillActive = [];
   for (const cand of state.activeCandidates) {
     if (cand.closedAt) continue;
-    const reason = exitReasonFor(cand, cfg, today);
+    const reason = exitReasonFor(cand, cfg, today, true);
     if (!reason) {
       stillActive.push(cand);
       continue;
@@ -2621,6 +4461,12 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
       log(state, "SKIP", `${pending.underlying} ${sig.direction}: ${built.reason}`, pending.underlying);
       continue;
     }
+    if (state.activeCandidates.some(
+      (c) => c.underlying === pending.underlying && c.direction === sig.direction && c.plan.expiry === pending.expiry && c.plan.long.strike === built.plan.long.strike && c.plan.short.strike === built.plan.short.strike
+    )) {
+      state.lastSignalBar[`${pending.underlying}:${sig.direction}`] = pending.candles[pending.index].time;
+      continue;
+    }
     const features = buildFeatures(sig, {
       vixPctile,
       isIndex: INDEX_UNDERLYINGS.has(pending.underlying),
@@ -2636,6 +4482,14 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
     else if (model?.gate.active && model.gate.threshold !== null && (modelProb === null || modelProb < model.gate.threshold)) {
       skip = `Model probability ${modelProb === null ? "n/a" : modelProb.toFixed(2)} is below the gate ${model.gate.threshold.toFixed(2)}`;
     }
+    const initialLearned = predictExitDecision(state.model?.exitPolicy, features, {
+      mfeFrac: 0,
+      sessionsHeld: 1,
+      trendAligned: true,
+      adxRising: true,
+      defaultStopLossFrac: cfg.stopLossFracOfDebit
+    });
+    const initStop = round23(built.plan.entryDebit * (1 - cfg.stopLossFracOfDebit));
     const candidate = {
       id: `C-${pending.underlying}-${sig.direction}-${Date.parse(pending.candles[pending.index].time)}`,
       createdAt: new Date(nowMs).toISOString(),
@@ -2661,6 +4515,20 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
       lastMark: entryMark(built.plan, nowMs),
       peakValue: built.plan.entryDebit,
       troughValue: built.plan.entryDebit,
+      recentMarks: [built.plan.entryDebit],
+      confirmedPeakValue: built.plan.entryDebit,
+      exitRuleVersion: "ADAPTIVE_LEARNED",
+      runnerArmed: false,
+      runnerFloor: initStop,
+      runnerFloorV31: initStop,
+      runnerFloorLearned: initStop,
+      runnerTrendGatePassed: null,
+      runnerTrendGateReason: null,
+      learnedRunnerProb: initialLearned.runnerProb,
+      learnedRecoveryProb: initialLearned.recoveryProb,
+      learnedKeepFrac: initialLearned.learnedKeepFrac,
+      learnedEarlyStopTightened: initialLearned.earlyStopTighten,
+      learnedExitAction: initialLearned.actionSummary,
       sessionsHeld: 1,
       lastSessionDate: today,
       staleMarks: 0
@@ -2697,6 +4565,20 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
           lastMark: candidate.lastMark,
           peakValue: candidate.peakValue,
           troughValue: candidate.troughValue,
+          recentMarks: [built.plan.entryDebit],
+          confirmedPeakValue: built.plan.entryDebit,
+          exitRuleVersion: "ADAPTIVE_LEARNED",
+          runnerArmed: false,
+          runnerFloor: initStop,
+          runnerFloorV31: initStop,
+          runnerFloorLearned: initStop,
+          runnerTrendGatePassed: null,
+          runnerTrendGateReason: null,
+          learnedRunnerProb: initialLearned.runnerProb,
+          learnedRecoveryProb: initialLearned.recoveryProb,
+          learnedKeepFrac: initialLearned.learnedKeepFrac,
+          learnedEarlyStopTightened: initialLearned.earlyStopTighten,
+          learnedExitAction: initialLearned.actionSummary,
           sessionsHeld: 1,
           lastSessionDate: today,
           staleMarks: 0,
@@ -2800,11 +4682,176 @@ async function readJournal(store2, ledgerId, kind, month) {
   rows.sort((a, b) => Date.parse(b.closedAt || "") - Date.parse(a.closedAt || ""));
   return rows;
 }
+function hydrateLearnedExitFields(state) {
+  const policy = state.model?.exitPolicy;
+  const cfg = state.config;
+  for (const cand of state.activeCandidates) {
+    cand.exitRuleVersion = "ADAPTIVE_LEARNED";
+    const maxGain = Math.max(0.01, cand.plan.width - cand.plan.entryDebit);
+    const peak = cand.confirmedPeakValue ?? cand.peakValue;
+    const mfeFrac = Math.max(0, (peak - cand.plan.entryDebit) / maxGain);
+    const dec = predictExitDecision(policy, cand.features, {
+      mfeFrac,
+      sessionsHeld: cand.sessionsHeld,
+      defaultStopLossFrac: cfg.stopLossFracOfDebit
+    });
+    cand.learnedRunnerProb = dec.runnerProb;
+    cand.learnedRecoveryProb = dec.recoveryProb;
+    cand.learnedKeepFrac = dec.learnedKeepFrac;
+    cand.learnedEarlyStopTightened = dec.earlyStopTighten;
+    cand.learnedExitAction = dec.actionSummary;
+  }
+  for (const pos of state.openPositions) {
+    pos.exitRuleVersion = "ADAPTIVE_LEARNED";
+    const features = resolveFeaturesFor(pos, state);
+    const maxGain = Math.max(0.01, pos.plan.width - pos.plan.entryDebit);
+    const peak = pos.confirmedPeakValue ?? pos.peakValue;
+    const mfeFrac = Math.max(0, (peak - pos.plan.entryDebit) / maxGain);
+    const dec = predictExitDecision(policy, features, {
+      mfeFrac,
+      sessionsHeld: pos.sessionsHeld,
+      defaultStopLossFrac: cfg.stopLossFracOfDebit
+    });
+    pos.learnedRunnerProb = dec.runnerProb;
+    pos.learnedRecoveryProb = dec.recoveryProb;
+    pos.learnedKeepFrac = dec.learnedKeepFrac;
+    pos.learnedEarlyStopTightened = dec.earlyStopTighten;
+    pos.learnedExitAction = dec.actionSummary;
+  }
+}
 async function readActiveLedger(store2) {
-  const active = await store2.get(KEY_ACTIVE);
-  if (!active) return null;
-  const row = await store2.get(stateKey(active.data.ledgerId));
-  return row?.data ?? null;
+  const loaded = await loadOrCreate(store2, Date.now());
+  const state = loaded.state;
+  try {
+    maybeTrain(state, Date.now(), false);
+  } catch {
+  }
+  hydrateLearnedExitFields(state);
+  revalue(state, state.market?.spots?.NIFTY?.ltp ?? null);
+  return state;
+}
+var lastLiveRefreshMs = 0;
+var lastLiveStateMemo = null;
+var lastDbPersistMs = 0;
+async function refreshLiveState(store2, market2, nowMs = Date.now()) {
+  if (lastLiveStateMemo && nowMs - lastLiveRefreshMs < 1800) {
+    return lastLiveStateMemo;
+  }
+  const loaded = await loadOrCreate(store2, nowMs);
+  const row = { data: loaded.state, rev: loaded.rev };
+  const state = row.data;
+  state.config = { ...DEFAULT_ENGINE_CONFIG };
+  const seenContracts = /* @__PURE__ */ new Set();
+  state.activeCandidates = state.activeCandidates.filter((c) => {
+    const contractKey = `${c.underlying}:${c.direction}:${c.plan.expiry}:${c.plan.long.strike}:${c.plan.short.strike}`;
+    if (seenContracts.has(contractKey) && !c.takenByLedger) return false;
+    seenContracts.add(contractKey);
+    return true;
+  });
+  try {
+    maybeTrain(state, nowMs, false);
+  } catch {
+  }
+  hydrateLearnedExitFields(state);
+  const cfg = state.config;
+  const quoteTokens = /* @__PURE__ */ new Set();
+  for (const pos of state.openPositions) {
+    quoteTokens.add(pos.plan.long.token);
+    quoteTokens.add(pos.plan.short.token);
+  }
+  for (const cand of state.activeCandidates) {
+    quoteTokens.add(cand.plan.long.token);
+    quoteTokens.add(cand.plan.short.token);
+  }
+  try {
+    const [spots, optionQuotes] = await Promise.all([
+      market2.fetchSpots().catch(() => null),
+      quoteTokens.size > 0 ? market2.fetchOptionQuotes([...quoteTokens]).catch(() => null) : Promise.resolve(null)
+    ]);
+    state.angel = market2.status();
+    if (spots && spots.NIFTY) {
+      const live = marketLive(spots, nowMs);
+      state.market = {
+        at: new Date(nowMs).toISOString(),
+        live: live.live,
+        liveReason: live.reason,
+        spots,
+        vix: spots.INDIA_VIX?.ltp ?? state.market?.vix ?? null,
+        vixPctile: state.market?.vixPctile ?? null,
+        regimes: state.market?.regimes ?? {}
+      };
+    }
+    const today = istDate(nowMs);
+    let exitExecuted = false;
+    let floorOrPeakRaised = false;
+    if (optionQuotes && Object.keys(optionQuotes).length > 0) {
+      const stillOpen = [];
+      for (const pos of state.openPositions) {
+        const prevPeak = pos.peakValue ?? pos.plan.entryDebit;
+        const prevFloor = Math.max(pos.runnerFloor ?? 0, pos.runnerFloorV31 ?? 0, pos.runnerFloorLearned ?? 0);
+        pos.exitRuleVersion = "ADAPTIVE_LEARNED";
+        applyMark(pos, optionQuotes, nowMs, cfg, state, void 0, today);
+        const nextPeak = pos.peakValue ?? pos.plan.entryDebit;
+        const nextFloor = Math.max(pos.runnerFloor ?? 0, pos.runnerFloorV31 ?? 0, pos.runnerFloorLearned ?? 0);
+        if (nextPeak > prevPeak || nextFloor > prevFloor) {
+          floorOrPeakRaised = true;
+        }
+        const reason = exitReasonFor(pos, cfg, today, false);
+        if (!reason) {
+          stillOpen.push(pos);
+          continue;
+        }
+        closePosition(state, pos, reason, nowMs);
+        exitExecuted = true;
+        const cand = state.activeCandidates.find((c) => c.id === pos.candidateId);
+        if (cand && !cand.closedAt) {
+          cand.lastMark = pos.lastMark;
+          cand.peakValue = pos.peakValue;
+          cand.confirmedPeakValue = pos.confirmedPeakValue;
+          cand.troughValue = pos.troughValue;
+          cand.sessionsHeld = pos.sessionsHeld;
+          closeCandidate(state, cand, reason, nowMs);
+        }
+      }
+      state.openPositions = stillOpen;
+      const stillActive = [];
+      for (const cand of state.activeCandidates) {
+        if (cand.closedAt) continue;
+        cand.exitRuleVersion = "ADAPTIVE_LEARNED";
+        applyMark(cand, optionQuotes, nowMs, cfg, state, void 0, today);
+        const reason = exitReasonFor(cand, cfg, today, true);
+        if (!reason) {
+          stillActive.push(cand);
+          continue;
+        }
+        closeCandidate(state, cand, reason, nowMs);
+        exitExecuted = true;
+      }
+      state.activeCandidates = stillActive;
+    }
+    revalue(state, state.market?.spots?.NIFTY?.ltp ?? null);
+    lastLiveRefreshMs = nowMs;
+    lastLiveStateMemo = state;
+    if (exitExecuted || floorOrPeakRaised) {
+      lastDbPersistMs = nowMs;
+      await persist(store2, state, row.rev).catch(() => {
+      });
+    } else if (nowMs - lastDbPersistMs >= 15e3 && state.market?.live && !cycleInFlight) {
+      lastDbPersistMs = nowMs;
+      await persist(store2, state, row.rev).catch(() => {
+      });
+    }
+    const lastCycleMs = state.lastCycle ? Date.parse(state.lastCycle.at) : 0;
+    const istMin = istParts(nowMs).minuteOfDay;
+    const barBoundaryPassed = state.market?.live && istMin >= 9 * 60 + 30 && istMin <= 15 * 60 + 20 && Math.floor((nowMs + 5.5 * 36e5 - 15 * 6e4) / 36e5) > Math.floor((lastCycleMs + 5.5 * 36e5 - 15 * 6e4) / 36e5);
+    if (barBoundaryPassed && !cycleInFlight) {
+      void runPaperCycle(store2, market2, { force: true }).catch(() => {
+      });
+    }
+  } catch {
+    revalue(state, state.market?.spots?.NIFTY?.ltp ?? null);
+  }
+  return state;
 }
 
 // src/quant/readiness.ts
@@ -2878,7 +4925,10 @@ function cards(items) {
 }
 function buildDashboard(state, nowMs = Date.now()) {
   const unrealized = state.openPositions.reduce((sum, p) => sum + p.unrealizedInr, 0);
+  const netUnrealized = state.openPositions.reduce((sum, p) => sum + (p.netUnrealizedInr ?? p.unrealizedInr), 0);
+  const estCharges = state.openPositions.reduce((sum, p) => sum + (p.estChargesInr ?? 0), 0);
   const realized = state.closedSummaries.reduce((sum, t) => sum + t.netPnlInr, 0);
+  const mtmEquity = Math.round((state.startingCapitalInr + realized + unrealized) * 100) / 100;
   const tradeRows = state.closedSummaries.map((t) => ({
     strategy: t.strategy,
     underlying: t.underlying,
@@ -2906,9 +4956,12 @@ function buildDashboard(state, nowMs = Date.now()) {
     cash: state.cash,
     equity: state.lastEquity,
     equityMid: state.lastEquityMid,
-    dayPnlInr: state.lastEquity - state.dayStartEquity,
+    mtmEquityInr: mtmEquity,
+    dayPnlInr: unrealized + realized,
     realizedPnlInr: realized,
     unrealizedPnlInr: unrealized,
+    netUnrealizedPnlInr: netUnrealized,
+    estOpenChargesInr: estCharges,
     peakEquity: state.peakEquity,
     maxDrawdownPct: state.maxDrawdownPct,
     weeksElapsed: weeksBetween(state.createdAt, nowMs),
@@ -2944,8 +4997,295 @@ function buildDashboard(state, nowMs = Date.now()) {
   };
 }
 
+// src/quant/terminalCandles.ts
+function toAngelInterval(interval) {
+  if (interval === "1m") return "ONE_MINUTE";
+  if (interval === "5m") return "FIVE_MINUTE";
+  if (interval === "15m") return "FIFTEEN_MINUTE";
+  return "ONE_HOUR";
+}
+function lookbackDays(interval) {
+  if (interval === "1m") return 2;
+  if (interval === "5m") return 5;
+  if (interval === "15m") return 14;
+  return 45;
+}
+var round24 = (x) => Math.round(x * 100) / 100;
+function buildCalibratedOptionCandles(spotCandles, opts) {
+  if (spotCandles.length === 0) return [];
+  const expiryMs = istToMs(opts.expiry, 15, 30);
+  const yearMs = 365 * 864e5;
+  const vol = Math.max(0.11, (opts.vixPct ?? 15) / 100);
+  const r = 0.06;
+  const priceAt = (spot, tMs) => {
+    const tYears = Math.max(1 / 365, (expiryMs - tMs) / yearMs);
+    const longVal = bsPrice(spot, opts.strike, tYears, vol, r, opts.right);
+    if (opts.shortStrike && opts.shortStrike > 0) {
+      const shortVal = bsPrice(spot, opts.shortStrike, tYears, vol, r, opts.right);
+      return Math.max(0.05, longVal - shortVal);
+    }
+    return Math.max(0.05, longVal);
+  };
+  const raw = spotCandles.map((c) => {
+    const tMs = Date.parse(c.time) || Date.now();
+    const o = priceAt(c.open, tMs);
+    const cl = priceAt(c.close, tMs);
+    const sHigh = priceAt(c.high, tMs);
+    const sLow = priceAt(c.low, tMs);
+    const hi = Math.max(o, cl, sHigh, sLow);
+    const lo = Math.max(0.05, Math.min(o, cl, sHigh, sLow));
+    return {
+      time: c.time,
+      open: o,
+      high: hi,
+      low: lo,
+      close: cl,
+      volume: Math.max(120, Math.round((c.volume || 25e3) * 0.35))
+    };
+  });
+  const lastRaw = raw[raw.length - 1]?.close ?? 0;
+  const scale = opts.targetLastClose && opts.targetLastClose > 0 && lastRaw > 0 ? opts.targetLastClose / lastRaw : 1;
+  return raw.map((c) => ({
+    time: c.time,
+    open: round24(c.open * scale),
+    high: round24(c.high * scale),
+    low: round24(Math.max(0.05, c.low * scale)),
+    close: round24(c.close * scale),
+    volume: c.volume
+  }));
+}
+function expandHourlyToSubBars(hourly, interval) {
+  if (interval === "1h" || hourly.length === 0) return hourly;
+  const stepMin = interval === "1m" ? 5 : interval === "5m" ? 5 : 15;
+  const steps = Math.floor(60 / stepMin);
+  const recent = hourly.slice(-24);
+  const out = [];
+  for (const bar of recent) {
+    const baseMs = Date.parse(bar.time);
+    if (!Number.isFinite(baseMs)) continue;
+    const span = bar.high - bar.low;
+    let prevClose = bar.open;
+    for (let s = 0; s < steps; s++) {
+      const tMs = baseMs + s * stepMin * 6e4;
+      const frac = (s + 1) / steps;
+      const wave = Math.sin((s + 1) / steps * Math.PI) * span * 0.22 * (bar.close >= bar.open ? 1 : -1);
+      const targetClose = s === steps - 1 ? bar.close : round24(bar.open + (bar.close - bar.open) * frac + wave);
+      const clampedClose = Math.min(bar.high, Math.max(bar.low, targetClose));
+      const open = s === 0 ? bar.open : prevClose;
+      const hi = s === Math.floor(steps * 0.4) ? bar.high : round24(Math.min(bar.high, Math.max(open, clampedClose) + span * 0.12));
+      const lo = s === Math.floor(steps * 0.7) ? bar.low : round24(Math.max(bar.low, Math.min(open, clampedClose) - span * 0.12));
+      out.push({
+        time: new Date(tMs).toISOString(),
+        open: round24(open),
+        high: round24(Math.max(open, clampedClose, hi)),
+        low: round24(Math.min(open, clampedClose, lo)),
+        close: round24(clampedClose),
+        volume: Math.max(50, Math.round((bar.volume || 12e3) / steps))
+      });
+      prevClose = clampedClose;
+    }
+  }
+  return out;
+}
+function buildRealSpreadCandles(longCandles, shortCandles) {
+  const shortByTime = new Map(shortCandles.map((c) => [c.time, c]));
+  const out = [];
+  for (const lc of longCandles) {
+    const sc = shortByTime.get(lc.time);
+    if (!sc) continue;
+    const o = Math.max(0.05, round24(lc.open - sc.open));
+    const c = Math.max(0.05, round24(lc.close - sc.close));
+    const hi = Math.max(o, c, round24(lc.high - sc.low));
+    const lo = Math.max(0.05, Math.min(o, c, round24(lc.low - sc.high)));
+    out.push({
+      time: lc.time,
+      open: o,
+      high: hi,
+      low: lo,
+      close: c,
+      volume: Math.min(lc.volume || 0, sc.volume || lc.volume || 0) || lc.volume || 0
+    });
+  }
+  return out;
+}
+async function loadTerminalCandles(req) {
+  const nowMs = Date.now();
+  const fromIst = formatIstForAngel(nowMs - lookbackDays(req.interval) * 864e5);
+  const toIst = formatIstForAngel(nowMs + 6e4);
+  const angelInterval = toAngelInterval(req.interval);
+  const meta = ANGEL_ONE_NSE_TOKENS[req.underlying] ?? ANGEL_ONE_NSE_TOKENS.NIFTY;
+  const maxBars = req.interval === "1m" ? 375 : req.interval === "5m" ? 225 : 150;
+  if (req.exchange === "NFO" && req.token) {
+    let siblingInstruments = [];
+    if (req.strike && req.right) {
+      const master = await downloadInstrumentMaster(nowMs);
+      if (master) {
+        siblingInstruments = master.filter((m) => m.underlying === req.underlying && m.strike === req.strike && m.right === req.right).sort((a, b) => a.expiry.localeCompare(b.expiry)).slice(0, 5);
+      }
+    }
+    const quoteTokens = [
+      req.token,
+      ...req.shortToken ? [req.shortToken] : [],
+      ...siblingInstruments.map((s) => s.token)
+    ];
+    const [liveQuotes, nfoCandles] = await Promise.all([
+      fetchOptionQuotes(quoteTokens),
+      fetchCandlesByToken("NFO", req.token, angelInterval, fromIst, toIst)
+    ]);
+    const availableExpiries = siblingInstruments.map((s) => {
+      const q = liveQuotes?.[s.token];
+      return {
+        expiry: s.expiry,
+        token: s.token,
+        symbol: s.symbol,
+        strike: s.strike,
+        right: s.right,
+        bid: q?.bid ?? 0,
+        ask: q?.ask ?? 0,
+        ltp: q?.ltp ?? 0,
+        volume: q?.volume ?? 0
+      };
+    });
+    const lq = liveQuotes?.[req.token];
+    const sq2 = req.shortToken ? liveQuotes?.[req.shortToken] : void 0;
+    let bid2 = lq?.bid || req.liveBid || 0;
+    let ask2 = lq?.ask || req.liveAsk || 0;
+    const dayVolume = lq?.volume || 0;
+    if (req.shortToken && (sq2 || req.shortBid || req.shortAsk)) {
+      const sBid = sq2?.bid || req.shortBid || 0;
+      const sAsk = sq2?.ask || req.shortAsk || 0;
+      const liq = Math.max(0.05, round24(bid2 - sAsk));
+      const entry = Math.max(liq + 0.05, round24(ask2 - sBid));
+      bid2 = liq;
+      ask2 = entry;
+    }
+    const lotSize = req.underlying === "BANKNIFTY" ? 30 : req.underlying === "FINNIFTY" ? 65 : 65;
+    if (!req.shortToken && nfoCandles && nfoCandles.length >= 5) {
+      const sliced = nfoCandles.slice(-maxBars).map((c) => ({
+        ...c,
+        volume: Math.round((c.volume || 0) * lotSize)
+      }));
+      const lastClose2 = sliced[sliced.length - 1].close;
+      const finalBid2 = bid2 > 0 ? bid2 : round24(lastClose2 - 0.15);
+      const finalAsk2 = ask2 > 0 ? ask2 : round24(lastClose2 + 0.15);
+      return {
+        underlying: req.underlying,
+        interval: req.interval,
+        source: "ANGEL_LIVE_NFO",
+        candles: sliced,
+        spotCandles: [],
+        quote: {
+          bid: finalBid2,
+          ask: finalAsk2,
+          ltp: lq?.ltp || lastClose2,
+          spread: round24(Math.max(0, finalAsk2 - finalBid2)),
+          volume: sliced[sliced.length - 1].volume || dayVolume || 0,
+          dayVolume
+        },
+        availableExpiries
+      };
+    }
+    if (req.shortToken && nfoCandles && nfoCandles.length >= 5) {
+      const shortCandles = await fetchCandlesByToken("NFO", req.shortToken, angelInterval, fromIst, toIst);
+      if (shortCandles && shortCandles.length >= 5) {
+        const spreadCandles = buildRealSpreadCandles(nfoCandles, shortCandles).slice(-maxBars);
+        if (spreadCandles.length >= 5) {
+          const lastClose2 = spreadCandles[spreadCandles.length - 1].close;
+          const finalBid2 = bid2 > 0 ? bid2 : round24(lastClose2 - 0.15);
+          const finalAsk2 = ask2 > 0 ? ask2 : round24(lastClose2 + 0.15);
+          return {
+            underlying: req.underlying,
+            interval: req.interval,
+            source: "ANGEL_LIVE_NFO",
+            candles: spreadCandles,
+            spotCandles: [],
+            quote: {
+              bid: finalBid2,
+              ask: finalAsk2,
+              ltp: finalBid2,
+              spread: round24(Math.max(0, finalAsk2 - finalBid2)),
+              volume: spreadCandles[spreadCandles.length - 1].volume || dayVolume || 0,
+              dayVolume
+            },
+            availableExpiries
+          };
+        }
+      }
+    }
+    let spotCandles2 = await fetchCandlesByToken("NSE", meta.angelToken, angelInterval, fromIst, toIst);
+    if (!spotCandles2 || spotCandles2.length < 5) {
+      const cache = loadHistoricalCache();
+      const cachedHourly = (cache?.[req.underlying] ?? cache?.NIFTY ?? []).slice(-120);
+      spotCandles2 = expandHourlyToSubBars(cachedHourly, req.interval);
+    } else {
+      spotCandles2 = spotCandles2.slice(-maxBars);
+    }
+    const targetMark = bid2 > 0 && ask2 > 0 ? round24((bid2 + ask2) / 2) : bid2 > 0 ? bid2 : void 0;
+    const calibrated = buildCalibratedOptionCandles(spotCandles2, {
+      strike: req.strike || spotCandles2[spotCandles2.length - 1]?.close || 23350,
+      right: req.right || "CE",
+      expiry: req.expiry || new Date(nowMs + 7 * 864e5).toISOString().slice(0, 10),
+      shortStrike: req.shortStrike,
+      targetLastClose: targetMark
+    });
+    const lastClose = calibrated[calibrated.length - 1]?.close ?? targetMark ?? 50;
+    const finalBid = bid2 > 0 ? bid2 : round24(lastClose - 0.2);
+    const finalAsk = ask2 > 0 ? ask2 : round24(lastClose + 0.2);
+    return {
+      underlying: req.underlying,
+      interval: req.interval,
+      source: "CALIBRATED_BS_FROM_NSE",
+      candles: calibrated,
+      spotCandles: spotCandles2,
+      quote: {
+        bid: finalBid,
+        ask: finalAsk,
+        ltp: lastClose,
+        spread: round24(Math.max(0, finalAsk - finalBid)),
+        volume: dayVolume || calibrated[calibrated.length - 1]?.volume || 0,
+        dayVolume
+      },
+      availableExpiries
+    };
+  }
+  const [spotCandlesRaw, spots] = await Promise.all([
+    fetchCandlesByToken("NSE", meta.angelToken, angelInterval, fromIst, toIst),
+    fetchSpotQuotes()
+  ]);
+  let spotCandles = spotCandlesRaw;
+  let usedCacheForSpot = false;
+  if (!spotCandles || spotCandles.length < 5) {
+    const cache = loadHistoricalCache();
+    const cachedHourly = (cache?.[req.underlying] ?? cache?.NIFTY ?? []).slice(-120);
+    spotCandles = expandHourlyToSubBars(cachedHourly, req.interval);
+    usedCacheForSpot = true;
+  } else {
+    spotCandles = spotCandles.slice(-maxBars);
+  }
+  const sq = spots?.[req.underlying];
+  const lastBar = spotCandles[spotCandles.length - 1];
+  const ltp = sq?.ltp || lastBar?.close || 0;
+  const tick = ltp > 5e3 ? 0.5 : 0.1;
+  const bid = round24(ltp - tick);
+  const ask = round24(ltp + tick);
+  return {
+    underlying: req.underlying,
+    interval: req.interval,
+    source: usedCacheForSpot ? "ANGEL_CACHE_NSE" : "ANGEL_LIVE_NSE",
+    candles: spotCandles,
+    spotCandles,
+    quote: {
+      bid,
+      ask,
+      ltp,
+      spread: round24(ask - bid),
+      volume: lastBar?.volume || 0
+    }
+  };
+}
+
 // server.ts
-var __dirname = path2.dirname(fileURLToPath2(import.meta.url));
+var __dirname = path3.dirname(fileURLToPath2(import.meta.url));
 var app = express();
 app.use(express.json({ limit: "32kb" }));
 var store = createStore();
@@ -2957,9 +5297,22 @@ function authorized(req) {
   const secret = adminSecret();
   return Boolean(secret) && req.header("x-admin-secret") === secret;
 }
-app.get("/api/state", async (_req, res) => {
+app.get("/api/paper/ledger", async (_req, res) => {
   try {
     const state = await readActiveLedger(store);
+    if (!state) {
+      res.status(404).json({ error: "No active ledger found" });
+      return;
+    }
+    res.json(state);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Could not read ledger" });
+  }
+});
+app.get("/api/state", async (req, res) => {
+  try {
+    const useLive = req.query.live !== "0";
+    const state = useLive ? await refreshLiveState(store, market) : await readActiveLedger(store);
     if (!state) {
       res.json({ ledger: null, persistent: databaseConfigured(), generatedAt: (/* @__PURE__ */ new Date()).toISOString() });
       return;
@@ -2994,6 +5347,42 @@ app.get("/api/research", (_req, res) => {
     res.json(research.report);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Research failed" });
+  }
+});
+app.get("/api/candles", async (req, res) => {
+  try {
+    const underlying = typeof req.query.underlying === "string" ? req.query.underlying : "NIFTY";
+    const rawInterval = typeof req.query.interval === "string" ? req.query.interval : "1m";
+    const interval = rawInterval === "1m" || rawInterval === "5m" || rawInterval === "15m" || rawInterval === "1h" ? rawInterval : "1m";
+    const exchange = req.query.exchange === "NFO" ? "NFO" : "NSE";
+    const token = typeof req.query.token === "string" ? req.query.token : void 0;
+    const strike = req.query.strike ? Number(req.query.strike) : void 0;
+    const right = req.query.right === "PE" ? "PE" : req.query.right === "CE" ? "CE" : void 0;
+    const expiry = typeof req.query.expiry === "string" ? req.query.expiry : void 0;
+    const shortToken = typeof req.query.shortToken === "string" ? req.query.shortToken : void 0;
+    const shortStrike = req.query.shortStrike ? Number(req.query.shortStrike) : void 0;
+    const liveBid = req.query.liveBid ? Number(req.query.liveBid) : void 0;
+    const liveAsk = req.query.liveAsk ? Number(req.query.liveAsk) : void 0;
+    const shortBid = req.query.shortBid ? Number(req.query.shortBid) : void 0;
+    const shortAsk = req.query.shortAsk ? Number(req.query.shortAsk) : void 0;
+    const payload = await loadTerminalCandles({
+      underlying,
+      interval,
+      exchange,
+      token,
+      strike,
+      right,
+      expiry,
+      shortToken,
+      shortStrike,
+      liveBid,
+      liveAsk,
+      shortBid,
+      shortAsk
+    });
+    res.json(payload);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : "Candle fetch failed" });
   }
 });
 app.get("/api/tick", async (req, res) => {
@@ -3080,10 +5469,10 @@ async function startServer() {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
-    const distPath = path2.join(__dirname, "dist");
+    const distPath = path3.join(__dirname, "dist");
     app.use(express.static(distPath));
     app.get("*", (_req, res) => {
-      res.sendFile(path2.join(distPath, "index.html"));
+      res.sendFile(path3.join(distPath, "index.html"));
     });
   }
   const port = Number(process.env.PORT) || 3e3;

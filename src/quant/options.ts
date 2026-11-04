@@ -543,10 +543,17 @@ export function exitLevels(
     opts?.learnedKeepFrac
   );
 
+  const prev =
+    variant === 'ADAPTIVE_LEARNED'
+      ? Math.max(opts?.previousFloorLearned ?? 0, opts?.previousFloorV31 ?? 0, opts?.previousFloor ?? 0, initialStop)
+      : variant === 'RUNNER_V3_1'
+        ? Math.max(opts?.previousFloorV31 ?? 0, opts?.previousFloor ?? 0, initialStop)
+        : Math.max(opts?.previousFloor ?? 0, initialStop);
+
   let target = fixed30Target;
-  let stop = initialStop;
-  let stage: DynamicExitStage = 'INITIAL';
-  let ratcheted = false;
+  let stop = round2(prev);
+  let stage: DynamicExitStage = stop > plan.entryDebit ? 'BREAKEVEN_LOCK' : 'INITIAL';
+  let ratcheted = stop > initialStop;
 
   if (runnerArmed) {
     // Stage 4: Exit Engine v3 / v3.1 / Adaptive Learned Runner Mode up to 75% ceiling
@@ -563,40 +570,34 @@ export function exitLevels(
       const minCushion = 0.5 * opts.atrEquivalent;
       rawFloor = Math.min(rawFloor, round2(peakValue - minCushion));
     }
-    const prev =
-      variant === 'ADAPTIVE_LEARNED'
-        ? (opts?.previousFloorLearned ?? opts?.previousFloorV31 ?? opts?.previousFloor ?? initialStop)
-        : variant === 'RUNNER_V3_1'
-          ? (opts?.previousFloorV31 ?? opts?.previousFloor ?? initialStop)
-          : (opts?.previousFloor ?? initialStop);
     stop = round2(Math.max(prev, rawFloor));
     stage = 'RUNNER_MODE';
     ratcheted = stop > initialStop;
   } else if (mfeFrac >= 0.22) {
     // Stage 3: High-Water-Mark Profit-Lock Trail (73%–99% of target reached, e.g. 22% -> 29.5% of maxGain)
     const lockedMaxGainFrac = Math.min(mfeFrac * 0.7, 0.1 + (mfeFrac - 0.22) * 1.3);
-    stop = round2(Math.max(opts?.previousFloor ?? initialStop, plan.entryDebit + lockedMaxGainFrac * maxGain));
+    stop = round2(Math.max(prev, plan.entryDebit + lockedMaxGainFrac * maxGain));
     stage = 'PROFIT_TRAIL';
     ratcheted = stop > initialStop;
   } else if (mfeFrac >= 0.16) {
     // Stage 2: Break-Even + Brokerage/STT Cost-Recovery Floor (16% -> 22% of maxGain)
     const lockedMaxGainFrac = 0.05 + ((mfeFrac - 0.16) / 0.06) * 0.05;
-    stop = round2(Math.max(opts?.previousFloor ?? initialStop, plan.entryDebit + lockedMaxGainFrac * maxGain));
+    stop = round2(Math.max(prev, plan.entryDebit + lockedMaxGainFrac * maxGain));
     stage = 'BREAKEVEN_LOCK';
     ratcheted = stop > initialStop;
   } else if (mfeFrac >= 0.11) {
     // Stage 1b: Risk-Halving Ratchet (11% -> 16% of maxGain cuts max stop loss in half from -72% to -32%)
-    stop = round2(Math.max(opts?.previousFloor ?? initialStop, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.45)));
+    stop = round2(Math.max(prev, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.45)));
     stage = 'TIME_DECAY';
     ratcheted = stop > initialStop;
   } else if (variant === 'ADAPTIVE_LEARNED' && opts?.learnedEarlyStopTightened && mfeFrac < 0.1) {
     // Self-Learning Early Loss Cut: tightens stop from -72% to -38% when recovery probability drops in stagnant sessions
-    stop = round2(Math.max(opts?.previousFloor ?? initialStop, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.53)));
+    stop = round2(Math.max(prev, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.53)));
     stage = 'TIME_DECAY';
     ratcheted = stop > initialStop;
   } else if (sessionsHeld >= 6 && mfeFrac < 0.1) {
     // Stage 1c: Time-Decay Stop Tightening for stagnant spreads after 6 sessions
-    stop = round2(Math.max(opts?.previousFloor ?? initialStop, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.72)));
+    stop = round2(Math.max(prev, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.72)));
     stage = 'TIME_DECAY';
     ratcheted = stop > initialStop;
   }

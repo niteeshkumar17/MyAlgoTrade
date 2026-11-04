@@ -74,10 +74,34 @@ const DISK_STORE_PATH = path.resolve(process.cwd(), '.data', 'kv-store.json');
 
 export class ResilientKvStore implements KvStore {
   private cache = new Map<string, Envelope<unknown>>();
+  private pgFetchedAt = new Map<string, number>();
   private pgDisabledUntilMs = 0;
 
   constructor(private pool: pg.Pool | null) {
     this.loadFromDisk();
+    if (this.pool) {
+      this.ensureSchema().catch((err) => {
+        console.warn('[ResilientKvStore] ensureSchema error:', err instanceof Error ? err.message : err);
+      });
+    }
+  }
+
+  private async ensureSchema() {
+    if (!this.pool) return;
+    try {
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS config_history (
+          config_version_id VARCHAR PRIMARY KEY,
+          applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          is_active_champion BOOLEAN NOT NULL DEFAULT FALSE,
+          previous_champion_id VARCHAR,
+          config_payload_json JSONB NOT NULL,
+          change_summary TEXT
+        )
+      `);
+    } catch (err) {
+      this.handlePgError(err);
+    }
   }
 
   private loadFromDisk() {
@@ -116,6 +140,13 @@ export class ResilientKvStore implements KvStore {
     return Boolean(this.pool) && Date.now() >= this.pgDisabledUntilMs;
   }
 
+  private ttlForKey(key: string): number {
+    if (key === KEY_LEASE) return 0;
+    if (key === KEY_INSTRUMENTS) return 3_600_000; // 1 hour for 898KB instrument master
+    if (key === KEY_ACTIVE) return 60_000; // 60s for active ledger pointer
+    return 2_500; // 2.5s for live state & journals
+  }
+
   private handlePgError(err: unknown) {
     if (isQuotaError(err)) {
       // Pause Neon queries for 15 minutes when free-tier quota is exceeded
@@ -138,10 +169,13 @@ export class ResilientKvStore implements KvStore {
 
   async get<T>(key: string): Promise<KvRow<T> | null> {
     const cached = this.cache.get(key);
-    if (cached && key !== KEY_LEASE) {
-      return { rev: cached.rev, data: cached.data as T };
-    }
+    const fetchedAt = this.pgFetchedAt.get(key) ?? 0;
+    const ttl = this.ttlForKey(key);
+
     if (this.canUsePg()) {
+      if (cached && fetchedAt > 0 && ttl > 0 && Date.now() - fetchedAt < ttl) {
+        return { rev: cached.rev, data: cached.data as T };
+      }
       try {
         const res = await this.queryWithRetry(
           `SELECT config_payload_json FROM config_history WHERE config_version_id = $1`,
@@ -150,10 +184,11 @@ export class ResilientKvStore implements KvStore {
         const payload = res.rows[0]?.config_payload_json as Envelope<T> | undefined;
         if (payload && typeof payload.rev === 'number' && 'data' in payload) {
           this.cache.set(key, payload);
+          this.pgFetchedAt.set(key, Date.now());
           this.saveToDisk();
           return { rev: payload.rev, data: payload.data };
         }
-        return cached ? { rev: cached.rev, data: cached.data as T } : null;
+        return null;
       } catch (err) {
         this.handlePgError(err);
       }
@@ -162,6 +197,35 @@ export class ResilientKvStore implements KvStore {
   }
 
   async put<T>(key: string, data: T, expectedRev: number | null): Promise<{ ok: true; rev: number } | { ok: false }> {
+    if (this.canUsePg()) {
+      const rev = (expectedRev ?? 0) + 1;
+      const envelope: Envelope<T> = { rev, data };
+      const payload = JSON.stringify(envelope);
+      try {
+        const res = await this.queryWithRetry(
+          `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
+           VALUES ($1, NOW(), FALSE, NULL, $2::jsonb, $3)
+           ON CONFLICT (config_version_id) DO UPDATE
+           SET config_payload_json = EXCLUDED.config_payload_json, applied_at = NOW(), change_summary = EXCLUDED.change_summary
+           WHERE $4::int IS NULL OR (config_history.config_payload_json->>'rev')::int = $4::int`,
+          [key, payload, 'paper-v2', expectedRev]
+        );
+        if (res.rowCount === 0) {
+          this.cache.delete(key);
+          this.pgFetchedAt.delete(key);
+          return { ok: false };
+        }
+        this.cache.set(key, envelope);
+        this.pgFetchedAt.set(key, Date.now());
+        if (key !== KEY_LEASE) {
+          this.saveToDisk();
+        }
+        return { ok: true, rev };
+      } catch (err) {
+        this.handlePgError(err);
+      }
+    }
+
     const current = this.cache.get(key);
     if (expectedRev === null) {
       if (current) return { ok: false };
@@ -173,21 +237,6 @@ export class ResilientKvStore implements KvStore {
     this.cache.set(key, envelope);
     if (key !== KEY_LEASE) {
       this.saveToDisk();
-    }
-
-    if (this.canUsePg()) {
-      const payload = JSON.stringify(envelope);
-      try {
-        await this.queryWithRetry(
-          `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
-           VALUES ($1, NOW(), FALSE, NULL, $2::jsonb, $3)
-           ON CONFLICT (config_version_id) DO UPDATE
-           SET config_payload_json = EXCLUDED.config_payload_json, applied_at = NOW(), change_summary = EXCLUDED.change_summary`,
-          [key, payload, 'paper-v2']
-        );
-      } catch (err) {
-        this.handlePgError(err);
-      }
     }
     return { ok: true, rev };
   }

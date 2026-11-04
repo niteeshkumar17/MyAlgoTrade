@@ -34,6 +34,19 @@ function authorized(req: express.Request): boolean {
   return Boolean(secret) && req.header('x-admin-secret') === secret;
 }
 
+app.get('/api/paper/ledger', async (_req, res) => {
+  try {
+    const state = await readActiveLedger(store);
+    if (!state) {
+      res.status(404).json({ error: 'No active ledger found' });
+      return;
+    }
+    res.json(state);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Could not read ledger' });
+  }
+});
+
 app.get('/api/state', async (req, res) => {
   try {
     const useLive = req.query.live !== '0';

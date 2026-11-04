@@ -215,10 +215,58 @@ async function archivePending(store: KvStore, state: LedgerState): Promise<boole
   return true;
 }
 
+function mergeMonotonicState(target: LedgerState, latest: LedgerState) {
+  const closedIds = new Set(latest.closedSummaries.map((s) => s.id));
+  for (const s of latest.closedSummaries) {
+    if (!target.closedSummaries.some((x) => x.id === s.id)) {
+      target.closedSummaries.push(s);
+    }
+  }
+  for (const t of latest.pending.trades) {
+    if (!target.pending.trades.some((x) => x.id === t.id)) {
+      target.pending.trades.push(t);
+    }
+  }
+  target.openPositions = target.openPositions.filter((pos) => !closedIds.has(`T-${pos.id}`));
+  for (const pos of target.openPositions) {
+    const other = latest.openPositions.find((p) => p.id === pos.id);
+    if (!other) continue;
+    pos.peakValue = Math.max(pos.peakValue ?? pos.plan.entryDebit, other.peakValue ?? other.plan.entryDebit);
+    pos.confirmedPeakValue = Math.max(
+      pos.confirmedPeakValue ?? pos.peakValue,
+      other.confirmedPeakValue ?? other.peakValue
+    );
+    pos.runnerFloor = Math.max(pos.runnerFloor ?? 0, other.runnerFloor ?? 0);
+    pos.runnerFloorV31 = Math.max(pos.runnerFloorV31 ?? 0, other.runnerFloorV31 ?? 0);
+    pos.runnerFloorLearned = Math.max(pos.runnerFloorLearned ?? 0, other.runnerFloorLearned ?? 0);
+    pos.runnerArmed = Boolean(pos.runnerArmed || other.runnerArmed);
+    if (pos.runnerTrendGatePassed == null && other.runnerTrendGatePassed != null) {
+      pos.runnerTrendGatePassed = other.runnerTrendGatePassed;
+      pos.runnerTrendGateReason = other.runnerTrendGateReason;
+    }
+  }
+  for (const cand of target.activeCandidates) {
+    const other = latest.activeCandidates.find((c) => c.id === cand.id);
+    if (!other) continue;
+    cand.peakValue = Math.max(cand.peakValue ?? cand.plan.entryDebit, other.peakValue ?? other.plan.entryDebit);
+    cand.confirmedPeakValue = Math.max(
+      cand.confirmedPeakValue ?? cand.peakValue,
+      other.confirmedPeakValue ?? other.peakValue
+    );
+    cand.runnerFloor = Math.max(cand.runnerFloor ?? 0, other.runnerFloor ?? 0);
+    cand.runnerFloorV31 = Math.max(cand.runnerFloorV31 ?? 0, other.runnerFloorV31 ?? 0);
+    cand.runnerFloorLearned = Math.max(cand.runnerFloorLearned ?? 0, other.runnerFloorLearned ?? 0);
+    cand.runnerArmed = Boolean(cand.runnerArmed || other.runnerArmed);
+  }
+}
+
 async function persist(store: KvStore, state: LedgerState, rev: number): Promise<boolean> {
   let saved = await store.put(stateKey(state.ledgerId), state, rev);
   if (!saved.ok) {
     const latest = await store.get<LedgerState>(stateKey(state.ledgerId));
+    if (latest) {
+      mergeMonotonicState(state, latest.data);
+    }
     saved = await store.put(stateKey(state.ledgerId), state, latest ? latest.rev : null);
   }
   if (!saved.ok) return false;
@@ -360,10 +408,14 @@ function applyMark(
   item.peakValue = Math.max(item.peakValue, marked.mark.liquidationValue);
   item.troughValue = Math.min(item.troughValue, marked.mark.liquidationValue);
 
-  // Rule 1: Update confirmedPeakValue (P) only from median of last 3 valid marks so one glitchy tick never raises P
+  // Rule 1: Update confirmedPeakValue (P) from validated order-book mark (already filtered for <=8% spread width and freshness)
   const { recentMarks, confirmedMark } = updateConfirmedMark(item.recentMarks, marked.mark.liquidationValue, 3);
   item.recentMarks = recentMarks;
-  item.confirmedPeakValue = Math.max(item.confirmedPeakValue ?? item.plan.entryDebit, confirmedMark);
+  item.confirmedPeakValue = Math.max(
+    item.confirmedPeakValue ?? item.plan.entryDebit,
+    confirmedMark,
+    item.peakValue
+  );
 
   const maxGain = Math.max(0.01, item.plan.width - item.plan.entryDebit);
   const armFrac = cfg.runnerArmMfeFrac ?? cfg.takeProfitFracOfMaxGain ?? 0.3;
@@ -1583,26 +1635,69 @@ export async function refreshLiveState(
     }
 
     const today = istDate(nowMs);
-    let immediateExitHit = false;
+    let exitExecuted = false;
+    let floorOrPeakRaised = false;
     if (optionQuotes && Object.keys(optionQuotes).length > 0) {
+      const stillOpen: PaperPosition[] = [];
       for (const pos of state.openPositions) {
+        const prevPeak = pos.peakValue ?? pos.plan.entryDebit;
+        const prevFloor = Math.max(pos.runnerFloor ?? 0, pos.runnerFloorV31 ?? 0, pos.runnerFloorLearned ?? 0);
         pos.exitRuleVersion = 'ADAPTIVE_LEARNED';
         applyMark(pos, optionQuotes, nowMs, cfg, state, undefined, today);
-        if (exitReasonFor(pos, cfg, today, false)) immediateExitHit = true;
+        const nextPeak = pos.peakValue ?? pos.plan.entryDebit;
+        const nextFloor = Math.max(pos.runnerFloor ?? 0, pos.runnerFloorV31 ?? 0, pos.runnerFloorLearned ?? 0);
+        if (nextPeak > prevPeak || nextFloor > prevFloor) {
+          floorOrPeakRaised = true;
+        }
+        const reason = exitReasonFor(pos, cfg, today, false);
+        if (!reason) {
+          stillOpen.push(pos);
+          continue;
+        }
+        closePosition(state, pos, reason, nowMs);
+        exitExecuted = true;
+        const cand = state.activeCandidates.find((c) => c.id === pos.candidateId);
+        if (cand && !cand.closedAt) {
+          cand.lastMark = pos.lastMark;
+          cand.peakValue = pos.peakValue;
+          cand.confirmedPeakValue = pos.confirmedPeakValue;
+          cand.troughValue = pos.troughValue;
+          cand.sessionsHeld = pos.sessionsHeld;
+          closeCandidate(state, cand, reason, nowMs);
+        }
       }
+      state.openPositions = stillOpen;
+
+      const stillActive: Candidate[] = [];
       for (const cand of state.activeCandidates) {
+        if (cand.closedAt) continue;
         cand.exitRuleVersion = 'ADAPTIVE_LEARNED';
         applyMark(cand, optionQuotes, nowMs, cfg, state, undefined, today);
-        if (exitReasonFor(cand, cfg, today, true)) immediateExitHit = true;
+        const reason = exitReasonFor(cand, cfg, today, true);
+        if (!reason) {
+          stillActive.push(cand);
+          continue;
+        }
+        closeCandidate(state, cand, reason, nowMs);
+        exitExecuted = true;
       }
+      state.activeCandidates = stillActive;
     }
 
     revalue(state, state.market?.spots?.NIFTY?.ltp ?? null);
     lastLiveRefreshMs = nowMs;
     lastLiveStateMemo = state;
 
-    // Trigger an immediate cycle if a real-time 3s mark hit TAKE_PROFIT/STOP_LOSS
-    // or if a new :15 hourly bar completed since the last cycle
+    // Persist immediately if an exit executed or if any position's peak/floor ratcheted up
+    if (exitExecuted || floorOrPeakRaised) {
+      lastDbPersistMs = nowMs;
+      await persist(store, state, row.rev).catch(() => {});
+    } else if (nowMs - lastDbPersistMs >= 15_000 && state.market?.live && !cycleInFlight) {
+      lastDbPersistMs = nowMs;
+      await persist(store, state, row.rev).catch(() => {});
+    }
+
+    // Trigger a new hourly signal scan cycle if a new :15 hourly bar completed since the last cycle
     const lastCycleMs = state.lastCycle ? Date.parse(state.lastCycle.at) : 0;
     const istMin = istParts(nowMs).minuteOfDay;
     const barBoundaryPassed =
@@ -1612,11 +1707,8 @@ export async function refreshLiveState(
       Math.floor((nowMs + 5.5 * 3600_000 - 15 * 60_000) / 3600_000) >
         Math.floor((lastCycleMs + 5.5 * 3600_000 - 15 * 60_000) / 3600_000);
 
-    if ((immediateExitHit || barBoundaryPassed) && !cycleInFlight) {
+    if (barBoundaryPassed && !cycleInFlight) {
       void runPaperCycle(store, market, { force: true }).catch(() => {});
-    } else if (nowMs - lastDbPersistMs >= 15_000 && state.market?.live && !cycleInFlight) {
-      lastDbPersistMs = nowMs;
-      void store.put(stateKey(state.ledgerId), state, row.rev).catch(() => {});
     }
   } catch {
     revalue(state, state.market?.spots?.NIFTY?.ltp ?? null);
