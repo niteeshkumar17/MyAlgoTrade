@@ -1008,11 +1008,16 @@ function solveLinear(a, b) {
   return m.map((row, i) => row[n] / row[i]);
 }
 function fitLogistic(samples, lambda = 4, maxIter = 30, minSamples = 30) {
-  if (samples.length < minSamples) return null;
-  const positives = samples.filter((s) => s.y === 1).length;
-  if (positives === 0 || positives === samples.length) return null;
-  const d = samples[0].x.length;
-  const totalW = samples.reduce((a, s) => a + s.weight, 0);
+  const d = samples[0]?.x?.length ?? 0;
+  if (d === 0) return null;
+  const valid = samples.filter(
+    (s) => s && Array.isArray(s.x) && s.x.length === d && s.x.every((v) => Number.isFinite(v)) && Number.isFinite(s.weight) && s.weight > 0
+  );
+  if (valid.length < minSamples) return null;
+  const positives = valid.filter((s) => s.y === 1).length;
+  if (positives === 0 || positives === valid.length) return null;
+  const totalW = valid.reduce((a, s) => a + s.weight, 0);
+  samples = valid;
   const means = new Array(d).fill(0);
   for (const s of samples) for (let j = 0; j < d; j++) means[j] += s.weight * s.x[j] / totalW;
   const stds = new Array(d).fill(0);
@@ -1108,17 +1113,18 @@ function walkForward(samples, boundaries, opts) {
   return { oos, folds };
 }
 function summarizeOos(oos) {
-  if (oos.length === 0) {
+  const valid = oos.filter((o) => Number.isFinite(o.p) && Number.isFinite(o.r));
+  if (valid.length === 0) {
     return { n: 0, auc: null, avgR: null, threshold: null, acceptedN: 0, acceptedAvgR: null };
   }
-  const sortedP = oos.map((o) => o.p).sort((a, b) => a - b);
+  const sortedP = valid.map((o) => o.p).sort((a, b) => a - b);
   const threshold = sortedP[Math.floor(sortedP.length / 2)];
-  const accepted = oos.filter((o) => o.p >= threshold);
+  const accepted = valid.filter((o) => o.p >= threshold);
   const avg = (xs) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
   return {
-    n: oos.length,
-    auc: aucScore(oos.map((o) => o.p), oos.map((o) => o.y)),
-    avgR: avg(oos.map((o) => o.r)),
+    n: valid.length,
+    auc: aucScore(valid.map((o) => o.p), valid.map((o) => o.y)),
+    avgR: avg(valid.map((o) => o.r)),
     threshold,
     acceptedN: accepted.length,
     acceptedAvgR: avg(accepted.map((o) => o.r))
@@ -1187,6 +1193,7 @@ function decideGate(offline, live) {
 function suspendedStrategies(samples, minSamples = 40) {
   const grouped = /* @__PURE__ */ new Map();
   for (const s of samples) {
+    if (!Number.isFinite(s.r)) continue;
     const arr = grouped.get(s.strategy);
     if (arr) arr.push(s.r);
     else grouped.set(s.strategy, [s.r]);
@@ -1256,13 +1263,15 @@ function trainExitPolicySnapshot(offline, live, nowMs, entryFit) {
   let earlyStopsSaved = 0;
   let countWithPnl = 0;
   for (const s of all) {
+    if (!Number.isFinite(s.r)) continue;
     const pRunner = predictProb(runnerFit, s.x);
     const pRec = predictProb(recoveryFit, s.x);
-    const ladderPnl = s.pnlLadderV2Inr ?? s.r * 5e3;
-    const v3Pnl = s.pnlRunnerV3Inr ?? s.r * 5e3;
-    const v31Pnl = s.pnlRunnerV31Inr ?? v3Pnl;
-    const mfe = s.mfeMaxFrac ?? (s.y === 1 ? 0.35 : 0.05);
-    const sess = s.sessionsHeld ?? 3;
+    const basePnl = s.r * 5e3;
+    const ladderPnl = Number.isFinite(s.pnlLadderV2Inr) ? s.pnlLadderV2Inr : basePnl;
+    const v3Pnl = Number.isFinite(s.pnlRunnerV3Inr) ? s.pnlRunnerV3Inr : basePnl;
+    const v31Pnl = Number.isFinite(s.pnlRunnerV31Inr) ? s.pnlRunnerV31Inr : v3Pnl;
+    const mfe = Number.isFinite(s.mfeMaxFrac) ? s.mfeMaxFrac : s.y === 1 ? 0.35 : 0.05;
+    const sess = Number.isFinite(s.sessionsHeld) ? s.sessionsHeld : 3;
     let learnedPnl = v31Pnl;
     if (mfe >= 0.3) {
       if (pRunner < 0.24) {
@@ -1285,10 +1294,13 @@ function trainExitPolicySnapshot(offline, live, nowMs, entryFit) {
   const oosExpectancyInr = Math.round(sumLearned / nEval * 100) / 100;
   const oosLiftOverLadderInr = Math.round((sumLearned - sumLadder) / nEval * 100) / 100;
   const oosLiftOverV31Inr = Math.round((sumLearned - sumV31) / nEval * 100) / 100;
-  const topRunnerDrivers = FEATURE_NAMES.map((feature, idx) => ({
-    feature,
-    weight: Number((runnerFit.weights[idx] ?? 0).toFixed(3))
-  })).sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight)).slice(0, 5);
+  const topRunnerDrivers = FEATURE_NAMES.map((feature, idx) => {
+    const rawW = runnerFit.weights[idx];
+    return {
+      feature,
+      weight: Number.isFinite(rawW) ? Number(rawW.toFixed(3)) : 0
+    };
+  }).sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight)).slice(0, 5);
   const stamp = new Date(nowMs).toISOString().slice(0, 16).replace(/[-:T]/g, "");
   return {
     version: `exit-v3.1-learned-${stamp}-${offline.length}o-${live.length}l`,
@@ -1386,9 +1398,12 @@ function predictExitDecision(policy, features, opts) {
   };
 }
 function trainModelSnapshot(offline, live, nowMs, offlineOosCache) {
-  const adaptiveOfflineW = Number(Math.max(0.1, OFFLINE_SAMPLE_WEIGHT / (1 + live.length / 40)).toFixed(3));
+  const validLive = live.filter(
+    (s) => s && Array.isArray(s.x) && s.x.length === FEATURE_NAMES.length && s.x.every((v) => Number.isFinite(v)) && Number.isFinite(s.r) && (s.y === 0 || s.y === 1)
+  );
+  const adaptiveOfflineW = Number(Math.max(0.1, OFFLINE_SAMPLE_WEIGHT / (1 + validLive.length / 40)).toFixed(3));
   const weightedOffline = offline.map((s) => ({ ...s, weight: adaptiveOfflineW }));
-  const liveSamples = live.map((s) => ({ ...s, weight: LIVE_SAMPLE_WEIGHT }));
+  const liveSamples = validLive.map((s) => ({ ...s, weight: LIVE_SAMPLE_WEIGHT }));
   const all = [...weightedOffline, ...liveSamples];
   const fit = fitLogistic(all, MODEL_LAMBDA);
   if (!fit) return null;
@@ -1402,10 +1417,10 @@ function trainModelSnapshot(offline, live, nowMs, offlineOosCache) {
   const liveOos = summarizeOos(liveWf.oos);
   const gate = decideGate(offlineOos, liveOos);
   const calibration = calibrationBuckets(gate.source === "LIVE" ? liveWf.oos : offlineOosPreds);
-  const exitPolicy = trainExitPolicySnapshot(offline, live, nowMs, fit);
+  const exitPolicy = trainExitPolicySnapshot(offline, validLive, nowMs, fit);
   const stamp = new Date(nowMs).toISOString().slice(0, 16).replace(/[-:T]/g, "");
   return {
-    version: `lr-${stamp}-${offline.length}o-${live.length}l`,
+    version: `lr-${stamp}-${offline.length}o-${validLive.length}l`,
     trainedAt: new Date(nowMs).toISOString(),
     featureNames: [...FEATURE_NAMES],
     means: fit.means,
@@ -1414,7 +1429,7 @@ function trainModelSnapshot(offline, live, nowMs, offlineOosCache) {
     bias: fit.bias,
     lambda: fit.lambda,
     nOffline: offline.length,
-    nLive: live.length,
+    nLive: validLive.length,
     offlineWeight: adaptiveOfflineW,
     offlineOos,
     liveOos,
@@ -3589,15 +3604,24 @@ async function archivePending(store2, state) {
   return true;
 }
 function mergeMonotonicState(target, latest) {
-  const closedIds = new Set(latest.closedSummaries.map((s) => s.id));
+  const closedIds = new Set(
+    latest.closedSummaries.filter((s) => s.exitReason !== "STALE_DATA_FORCED").map((s) => s.id)
+  );
   for (const s of latest.closedSummaries) {
+    if (s.exitReason === "STALE_DATA_FORCED") continue;
     if (!target.closedSummaries.some((x) => x.id === s.id)) {
       target.closedSummaries.push(s);
     }
   }
   for (const t of latest.pending.trades) {
+    if (t.exitReason === "STALE_DATA_FORCED") continue;
     if (!target.pending.trades.some((x) => x.id === t.id)) {
       target.pending.trades.push(t);
+    }
+  }
+  for (const ls of latest.liveSamples ?? []) {
+    if (ls && ls.id && ls.exitReason !== "STALE_DATA_FORCED" && Number.isFinite(ls.r) && Number.isFinite(ls.pnlPerLotInr) && !target.liveSamples.some((x) => x.id === ls.id)) {
+      target.liveSamples.push(ls);
     }
   }
   target.openPositions = target.openPositions.filter((pos) => !closedIds.has(`T-${pos.id}`));
@@ -3686,13 +3710,31 @@ function markValue(mark, plan, lots) {
     exitCharges
   };
 }
+function resolveEntryChargesPerLot(plan) {
+  if (Number.isFinite(plan.entryChargesPerLot) && plan.entryChargesPerLot >= 0) {
+    return plan.entryChargesPerLot;
+  }
+  const units = plan.lotSize;
+  return round23(legCharges("BUY", plan.long.ask, units) + legCharges("SELL", plan.short.bid, units));
+}
+function resolveMaxLossPerLot(plan, entryCharges) {
+  if (Number.isFinite(plan.maxLossPerLot) && plan.maxLossPerLot > 0) {
+    return plan.maxLossPerLot;
+  }
+  const units = plan.lotSize;
+  const worstExit = Number.isFinite(plan.exitChargesWorstPerLot) ? plan.exitChargesWorstPerLot : round23(legCharges("SELL", 0, units) + legCharges("BUY", 0, units));
+  return round23(plan.entryDebit * units + entryCharges + worstExit);
+}
 function perLotOutcome(plan, exitValue, longBid, shortAsk) {
   const units = plan.lotSize;
-  const entryCash = plan.entryDebit * units + plan.entryChargesPerLot;
+  const entryCharges = resolveEntryChargesPerLot(plan);
+  const maxLoss = resolveMaxLossPerLot(plan, entryCharges);
+  const entryCash = plan.entryDebit * units + entryCharges;
   const exitCharges = exitChargesFor(longBid, shortAsk, units);
   const exitCash = exitValue * units - exitCharges;
   const pnl = round23(exitCash - entryCash);
-  return { pnl, r: plan.maxLossPerLot > 0 ? pnl / plan.maxLossPerLot : 0, exitCharges };
+  const r = maxLoss > 0 ? Number((pnl / maxLoss).toFixed(6)) : 0;
+  return { pnl, r, exitCharges, entryCharges };
 }
 function bumpSession(item, today) {
   if (item.lastSessionDate !== today) {
@@ -3708,11 +3750,13 @@ function resolveFeaturesFor(item, state) {
   }
   return [];
 }
-function applyMark(item, quotes, nowMs, cfg, state, trendMap, todayStr) {
+function applyMark(item, quotes, nowMs, cfg, state, trendMap, todayStr, isFastRefresh = false) {
   const marked = markSpread(item.plan, quotes, nowMs, cfg.quoteMaxAgeSec);
   if (!marked.ok) {
-    item.staleMarks += 1;
-    state.counters.staleMarks += 1;
+    if (!isFastRefresh) {
+      item.staleMarks += 1;
+      state.counters.staleMarks += 1;
+    }
     return;
   }
   item.staleMarks = 0;
@@ -3891,7 +3935,7 @@ function exitReasonFor(item, cfg, today, isCandidate = false) {
     learnedEarlyStopTightened: item.learnedEarlyStopTightened
   });
   if (fromRules) return fromRules;
-  if (item.staleMarks >= STALE_FORCE_AFTER) return "STALE_DATA_FORCED";
+  if (isCandidate && item.staleMarks >= STALE_FORCE_AFTER) return "STALE_DATA_FORCED";
   return null;
 }
 function closeCandidate(state, candidate, reason, nowMs) {
@@ -3931,8 +3975,9 @@ function closeCandidate(state, candidate, reason, nowMs) {
       candidate.challengerEngines.ADAPTIVE_LEARNED.pnlPerLotInr = candidate.counterfactualLearnedPnlPerLotInr;
     }
   }
+  const midDebit = Number.isFinite(candidate.plan.midDebit) ? candidate.plan.midDebit : candidate.plan.entryDebit;
   candidate.pnlPerLotMidInr = round23(
-    (mark.midValue - candidate.plan.midDebit) * candidate.plan.lotSize - candidate.plan.entryChargesPerLot - outcome.exitCharges
+    (mark.midValue - midDebit) * candidate.plan.lotSize - outcome.entryCharges - outcome.exitCharges
   );
   candidate.rMultiple = outcome.r;
   candidate.win = outcome.pnl > 0;
@@ -3940,26 +3985,28 @@ function closeCandidate(state, candidate, reason, nowMs) {
   const maxGain = Math.max(0.01, candidate.plan.width - candidate.plan.entryDebit);
   const confirmedP = candidate.confirmedPeakValue ?? candidate.peakValue;
   const mfeMaxFrac = Number(Math.max(0, (confirmedP - candidate.plan.entryDebit) / maxGain).toFixed(4));
-  const sample = {
-    id: candidate.id,
-    x: candidate.features,
-    y: outcome.pnl > 0 ? 1 : 0,
-    r: outcome.r,
-    pnlPerLotInr: outcome.pnl,
-    entryMs: Date.parse(candidate.createdAt),
-    exitMs: nowMs,
-    strategy: candidate.strategy,
-    underlying: candidate.underlying,
-    direction: candidate.direction,
-    regime: candidate.regime,
-    exitReason: reason,
-    mfeMaxFrac,
-    sessionsHeld: candidate.sessionsHeld,
-    pnlLadderV2Inr: candidate.counterfactualFixed30PnlPerLotInr,
-    pnlRunnerV3Inr: outcome.pnl,
-    pnlRunnerV31Inr: candidate.counterfactualV31PnlPerLotInr
-  };
-  state.liveSamples.push(sample);
+  if (reason !== "STALE_DATA_FORCED" && Number.isFinite(outcome.pnl) && Number.isFinite(outcome.r) && Array.isArray(candidate.features) && candidate.features.length > 0 && !state.liveSamples.some((s) => s.id === candidate.id)) {
+    const sample = {
+      id: candidate.id,
+      x: candidate.features,
+      y: outcome.pnl > 0 ? 1 : 0,
+      r: outcome.r,
+      pnlPerLotInr: outcome.pnl,
+      entryMs: Date.parse(candidate.createdAt),
+      exitMs: nowMs,
+      strategy: candidate.strategy,
+      underlying: candidate.underlying,
+      direction: candidate.direction,
+      regime: candidate.regime,
+      exitReason: reason,
+      mfeMaxFrac,
+      sessionsHeld: candidate.sessionsHeld,
+      pnlLadderV2Inr: candidate.counterfactualFixed30PnlPerLotInr,
+      pnlRunnerV3Inr: outcome.pnl,
+      pnlRunnerV31Inr: candidate.counterfactualV31PnlPerLotInr
+    };
+    state.liveSamples.push(sample);
+  }
   state.pending.candidates.push(candidate);
   const cfNote = candidate.counterfactualFixed30PnlPerLotInr !== outcome.pnl || candidate.counterfactualV31PnlPerLotInr !== outcome.pnl ? ` [LADDER_V2: \u20B9${candidate.counterfactualFixed30PnlPerLotInr.toFixed(0)} \xB7 V3.1: \u20B9${candidate.counterfactualV31PnlPerLotInr.toFixed(0)} \xB7 LEARNED: \u20B9${candidate.counterfactualLearnedPnlPerLotInr.toFixed(0)}]` : "";
   log(
@@ -4043,13 +4090,38 @@ function closePosition(state, position, reason, nowMs) {
     rMultiple: trade.rMultiple
   };
   state.closedSummaries.push(summary);
+  const posFeatures = resolveFeaturesFor(position, state);
+  const hasActiveCand = state.activeCandidates.some((c) => c.id === position.candidateId && !c.closedAt);
+  if (!hasActiveCand && reason !== "STALE_DATA_FORCED" && posFeatures.length > 0 && !state.liveSamples.some((s) => s.id === position.candidateId)) {
+    const perLotNet = round23(net / Math.max(1, position.lots));
+    const mfeMaxFrac = Number(Math.max(0, (confirmedP - position.plan.entryDebit) / maxGain).toFixed(4));
+    state.liveSamples.push({
+      id: position.candidateId,
+      x: posFeatures,
+      y: perLotNet > 0 ? 1 : 0,
+      r: trade.rMultiple,
+      pnlPerLotInr: perLotNet,
+      entryMs: Date.parse(position.openedAt),
+      exitMs: nowMs,
+      strategy: position.strategy,
+      underlying: position.underlying,
+      direction: position.direction,
+      regime: position.regime,
+      exitReason: reason,
+      mfeMaxFrac,
+      sessionsHeld: position.sessionsHeld,
+      pnlLadderV2Inr: cfPerLot,
+      pnlRunnerV3Inr: perLotNet,
+      pnlRunnerV31Inr: v31PerLot
+    });
+  }
   log(state, "EXIT", `${position.underlying} ${position.direction} ${position.lots} lot closed ${reason}: ${net >= 0 ? "+" : ""}\u20B9${net.toFixed(0)} (MFE ${trade.mfeOfMaxGainPct?.toFixed(1)}% of maxGain)`, position.underlying);
   return trade;
 }
 function revalue(state, niftyLtp) {
   const seenClosed = /* @__PURE__ */ new Set();
   state.closedSummaries = state.closedSummaries.filter((s) => {
-    if (!s || !s.id || seenClosed.has(s.id)) return false;
+    if (!s || !s.id || s.exitReason === "STALE_DATA_FORCED" || seenClosed.has(s.id)) return false;
     seenClosed.add(s.id);
     return true;
   });
@@ -4105,12 +4177,24 @@ function pushEquityPoint(state, nowMs, point) {
   state.pending.equity.push(full);
   state.lastEquityPointAt = full.t;
 }
+function sanitizeLiveSamples(state) {
+  const seen = /* @__PURE__ */ new Set();
+  state.liveSamples = (state.liveSamples ?? []).filter((s) => {
+    if (!s || !s.id || seen.has(s.id)) return false;
+    if (s.exitReason === "STALE_DATA_FORCED") return false;
+    if (!Number.isFinite(s.r) || !Number.isFinite(s.pnlPerLotInr)) return false;
+    if (!Array.isArray(s.x) || s.x.length !== FEATURE_NAMES.length || s.x.some((v) => !Number.isFinite(v))) return false;
+    seen.add(s.id);
+    return true;
+  });
+}
 function maybeTrain(state, nowMs, force) {
+  sanitizeLiveSamples(state);
   const labels = state.counters.candidatesClosed;
   const research = getOfflineResearch();
   const offline = research?.samples ?? [];
   const priorChanged = Boolean(
-    state.model && (!state.model.exitPolicy || offline.length > 0 && (state.model.nOffline !== offline.length || Math.abs((state.model.offlineOos.acceptedAvgR ?? 0) - (research?.report.walkForward.oos.acceptedAvgR ?? 0)) > 1e-6))
+    state.model && (!state.model.exitPolicy || state.model.liveOos.avgR === null || state.model.exitPolicy.oosExpectancyInr === null || offline.length > 0 && (state.model.nOffline !== offline.length || Math.abs((state.model.offlineOos.acceptedAvgR ?? 0) - (research?.report.walkForward.oos.acceptedAvgR ?? 0)) > 1e-6))
   );
   if (!force && !priorChanged && state.model && labels - state.liveLabelsAtLastTrain < TRAIN_EVERY_LABELS) return;
   const live = state.liveSamples.map((s) => ({
@@ -4124,9 +4208,9 @@ function maybeTrain(state, nowMs, force) {
     source: "LIVE",
     mfeMaxFrac: s.mfeMaxFrac,
     sessionsHeld: s.sessionsHeld,
-    pnlLadderV2Inr: s.pnlLadderV2Inr ?? s.pnlPerLotInr,
-    pnlRunnerV3Inr: s.pnlRunnerV3Inr ?? s.pnlPerLotInr,
-    pnlRunnerV31Inr: s.pnlRunnerV31Inr ?? s.pnlPerLotInr
+    pnlLadderV2Inr: Number.isFinite(s.pnlLadderV2Inr) ? s.pnlLadderV2Inr : s.pnlPerLotInr,
+    pnlRunnerV3Inr: Number.isFinite(s.pnlRunnerV3Inr) ? s.pnlRunnerV3Inr : s.pnlPerLotInr,
+    pnlRunnerV31Inr: Number.isFinite(s.pnlRunnerV31Inr) ? s.pnlRunnerV31Inr : s.pnlPerLotInr
   }));
   if (offline.length + live.length < 30) {
     log(state, "MODEL", "Not enough closed samples to fit a model yet. Signals are taken whenever risk limits allow.");
@@ -4575,6 +4659,7 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
           regime: candidate.regime,
           lots: decision.lots,
           plan: built.plan,
+          features: candidate.features,
           entryCashOutInr: decision.cashOutInr,
           maxLossInr: decision.maxLossInr,
           marginBlockedInr: decision.marginInr,
@@ -4695,8 +4780,19 @@ async function readJournal(store2, ledgerId, kind, month) {
     if (month && Number.isFinite(when) && istMonthKey(when) !== month) continue;
     if (!seen.has(item.id)) rows.push(item);
   }
-  rows.sort((a, b) => Date.parse(b.closedAt || "") - Date.parse(a.closedAt || ""));
-  return rows;
+  const validRows = rows.filter((r) => {
+    if (!r || typeof r !== "object") return false;
+    const rec = r;
+    if (rec.exitReason === "STALE_DATA_FORCED") return false;
+    if (kind === "candidates") {
+      return Boolean(rec.plan && rec.plan.long && rec.plan.short && Number.isFinite(rec.plan.entryDebit));
+    }
+    return true;
+  });
+  validRows.sort(
+    (a, b) => Date.parse(b.closedAt || "") - Date.parse(a.closedAt || "")
+  );
+  return validRows;
 }
 function hydrateLearnedExitFields(state) {
   const policy = state.model?.exitPolicy;
@@ -4757,10 +4853,11 @@ async function refreshLiveState(store2, market2, nowMs = Date.now()) {
   const row = { data: loaded.state, rev: loaded.rev };
   const state = row.data;
   state.config = { ...DEFAULT_ENGINE_CONFIG };
+  const openCandIds = new Set(state.openPositions.map((p) => p.candidateId));
   const seenContracts = /* @__PURE__ */ new Set();
   state.activeCandidates = state.activeCandidates.filter((c) => {
     const contractKey = `${c.underlying}:${c.direction}:${c.plan.expiry}:${c.plan.long.strike}:${c.plan.short.strike}`;
-    if (seenContracts.has(contractKey) && !c.takenByLedger) return false;
+    if (seenContracts.has(contractKey) && !c.takenByLedger && !openCandIds.has(c.id)) return false;
     seenContracts.add(contractKey);
     return true;
   });
@@ -4800,13 +4897,14 @@ async function refreshLiveState(store2, market2, nowMs = Date.now()) {
     const today = istDate(nowMs);
     let exitExecuted = false;
     let floorOrPeakRaised = false;
-    if (optionQuotes && Object.keys(optionQuotes).length > 0) {
+    const sessionLive = Boolean(state.market?.live && isWithinSessionHours(nowMs));
+    if (sessionLive && optionQuotes && Object.keys(optionQuotes).length > 0) {
       const stillOpen = [];
       for (const pos of state.openPositions) {
         const prevPeak = pos.peakValue ?? pos.plan.entryDebit;
         const prevFloor = Math.max(pos.runnerFloor ?? 0, pos.runnerFloorV31 ?? 0, pos.runnerFloorLearned ?? 0);
         pos.exitRuleVersion = "ADAPTIVE_LEARNED";
-        applyMark(pos, optionQuotes, nowMs, cfg, state, void 0, today);
+        applyMark(pos, optionQuotes, nowMs, cfg, state, void 0, today, true);
         const nextPeak = pos.peakValue ?? pos.plan.entryDebit;
         const nextFloor = Math.max(pos.runnerFloor ?? 0, pos.runnerFloorV31 ?? 0, pos.runnerFloorLearned ?? 0);
         if (nextPeak > prevPeak || nextFloor > prevFloor) {
@@ -4834,7 +4932,7 @@ async function refreshLiveState(store2, market2, nowMs = Date.now()) {
       for (const cand of state.activeCandidates) {
         if (cand.closedAt) continue;
         cand.exitRuleVersion = "ADAPTIVE_LEARNED";
-        applyMark(cand, optionQuotes, nowMs, cfg, state, void 0, today);
+        applyMark(cand, optionQuotes, nowMs, cfg, state, void 0, today, true);
         const reason = exitReasonFor(cand, cfg, today, true);
         if (!reason) {
           stillActive.push(cand);
@@ -4940,12 +5038,15 @@ function cards(items) {
   };
 }
 function buildDashboard(state, nowMs = Date.now()) {
-  const unrealized = state.openPositions.reduce((sum, p) => sum + p.unrealizedInr, 0);
-  const netUnrealized = state.openPositions.reduce((sum, p) => sum + (p.netUnrealizedInr ?? p.unrealizedInr), 0);
-  const estCharges = state.openPositions.reduce((sum, p) => sum + (p.estChargesInr ?? 0), 0);
-  const realized = state.closedSummaries.reduce((sum, t) => sum + t.netPnlInr, 0);
+  const unrealized = state.openPositions.reduce((sum, p) => sum + (Number.isFinite(p.unrealizedInr) ? p.unrealizedInr : 0), 0);
+  const netUnrealized = state.openPositions.reduce(
+    (sum, p) => sum + (Number.isFinite(p.netUnrealizedInr ?? p.unrealizedInr) ? p.netUnrealizedInr ?? p.unrealizedInr : 0),
+    0
+  );
+  const estCharges = state.openPositions.reduce((sum, p) => sum + (Number.isFinite(p.estChargesInr) ? p.estChargesInr ?? 0 : 0), 0);
+  const realized = state.closedSummaries.reduce((sum, t) => sum + (Number.isFinite(t.netPnlInr) ? t.netPnlInr : 0), 0);
   const mtmEquity = Math.round((state.startingCapitalInr + realized + unrealized) * 100) / 100;
-  const tradeRows = state.closedSummaries.map((t) => ({
+  const tradeRows = state.closedSummaries.filter((t) => Number.isFinite(t.netPnlInr) && Number.isFinite(t.rMultiple)).map((t) => ({
     strategy: t.strategy,
     underlying: t.underlying,
     regime: t.regime,
@@ -4954,7 +5055,10 @@ function buildDashboard(state, nowMs = Date.now()) {
     net: t.netPnlInr,
     r: t.rMultiple
   }));
-  const candidateRows = state.liveSamples.map((s) => ({
+  const validLiveSamples = state.liveSamples.filter(
+    (s) => s && s.exitReason !== "STALE_DATA_FORCED" && Number.isFinite(s.pnlPerLotInr) && Number.isFinite(s.r)
+  );
+  const candidateRows = validLiveSamples.map((s) => ({
     strategy: s.strategy,
     underlying: s.underlying,
     regime: s.regime,
@@ -4995,7 +5099,7 @@ function buildDashboard(state, nowMs = Date.now()) {
     recentEquity: state.recentEquity,
     decisionLog: state.decisionLog,
     learningLog: state.learningLog,
-    suspendedStrategies: suspendedStrategies(state.liveSamples),
+    suspendedStrategies: suspendedStrategies(validLiveSamples),
     tradeScorecards: cards(tradeRows),
     candidateScorecards: {
       byStrategy: candidateCards.byStrategy,

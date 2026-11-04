@@ -286,6 +286,7 @@ export interface PaperPosition {
   regime: MarketRegime;
   lots: number;
   plan: SpreadPlan;
+  features?: number[];
   entryCashOutInr: number;
   maxLossInr: number;
   marginBlockedInr: number;

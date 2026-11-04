@@ -17,13 +17,14 @@ import {
   evaluateSpreadExit,
   exitChargesFor,
   exitLevels,
+  legCharges,
   markSpread,
   selectChainLegs,
   updateConfirmedMark,
 } from './options.js';
 import { buildVixSeries, getOfflineResearch, loadHistoricalCache, type HistoricalCache } from './research.js';
 import { DEFAULT_ENGINE_CONFIG, evaluateEntryRisk } from './risk.js';
-import { buildFeatures, classifyRegime, detectSignal } from './signals.js';
+import { buildFeatures, classifyRegime, detectSignal, FEATURE_NAMES } from './signals.js';
 import {
   candidatesKey,
   equityKey,
@@ -216,15 +217,31 @@ async function archivePending(store: KvStore, state: LedgerState): Promise<boole
 }
 
 function mergeMonotonicState(target: LedgerState, latest: LedgerState) {
-  const closedIds = new Set(latest.closedSummaries.map((s) => s.id));
+  const closedIds = new Set(
+    latest.closedSummaries.filter((s) => s.exitReason !== 'STALE_DATA_FORCED').map((s) => s.id)
+  );
   for (const s of latest.closedSummaries) {
+    if (s.exitReason === 'STALE_DATA_FORCED') continue;
     if (!target.closedSummaries.some((x) => x.id === s.id)) {
       target.closedSummaries.push(s);
     }
   }
   for (const t of latest.pending.trades) {
+    if (t.exitReason === 'STALE_DATA_FORCED') continue;
     if (!target.pending.trades.some((x) => x.id === t.id)) {
       target.pending.trades.push(t);
+    }
+  }
+  for (const ls of latest.liveSamples ?? []) {
+    if (
+      ls &&
+      ls.id &&
+      ls.exitReason !== 'STALE_DATA_FORCED' &&
+      Number.isFinite(ls.r) &&
+      Number.isFinite(ls.pnlPerLotInr) &&
+      !target.liveSamples.some((x) => x.id === ls.id)
+    ) {
+      target.liveSamples.push(ls);
     }
   }
   target.openPositions = target.openPositions.filter((pos) => !closedIds.has(`T-${pos.id}`));
@@ -319,13 +336,35 @@ function markValue(mark: SpreadMark, plan: SpreadPlan, lots: number) {
   };
 }
 
+function resolveEntryChargesPerLot(plan: SpreadPlan): number {
+  if (Number.isFinite(plan.entryChargesPerLot) && plan.entryChargesPerLot >= 0) {
+    return plan.entryChargesPerLot;
+  }
+  const units = plan.lotSize;
+  return round2(legCharges('BUY', plan.long.ask, units) + legCharges('SELL', plan.short.bid, units));
+}
+
+function resolveMaxLossPerLot(plan: SpreadPlan, entryCharges: number): number {
+  if (Number.isFinite(plan.maxLossPerLot) && plan.maxLossPerLot > 0) {
+    return plan.maxLossPerLot;
+  }
+  const units = plan.lotSize;
+  const worstExit = Number.isFinite(plan.exitChargesWorstPerLot)
+    ? plan.exitChargesWorstPerLot
+    : round2(legCharges('SELL', 0, units) + legCharges('BUY', 0, units));
+  return round2(plan.entryDebit * units + entryCharges + worstExit);
+}
+
 function perLotOutcome(plan: SpreadPlan, exitValue: number, longBid: number, shortAsk: number) {
   const units = plan.lotSize;
-  const entryCash = plan.entryDebit * units + plan.entryChargesPerLot;
+  const entryCharges = resolveEntryChargesPerLot(plan);
+  const maxLoss = resolveMaxLossPerLot(plan, entryCharges);
+  const entryCash = plan.entryDebit * units + entryCharges;
   const exitCharges = exitChargesFor(longBid, shortAsk, units);
   const exitCash = exitValue * units - exitCharges;
   const pnl = round2(exitCash - entryCash);
-  return { pnl, r: plan.maxLossPerLot > 0 ? pnl / plan.maxLossPerLot : 0, exitCharges };
+  const r = maxLoss > 0 ? Number((pnl / maxLoss).toFixed(6)) : 0;
+  return { pnl, r, exitCharges, entryCharges };
 }
 
 interface Tracked {
@@ -395,12 +434,15 @@ function applyMark(
   cfg: EngineConfig,
   state: LedgerState,
   trendMap?: Record<string, UnderlyingTrendContext>,
-  todayStr?: string
+  todayStr?: string,
+  isFastRefresh = false
 ) {
   const marked = markSpread(item.plan, quotes, nowMs, cfg.quoteMaxAgeSec);
   if (!marked.ok) {
-    item.staleMarks += 1;
-    state.counters.staleMarks += 1;
+    if (!isFastRefresh) {
+      item.staleMarks += 1;
+      state.counters.staleMarks += 1;
+    }
     return;
   }
   item.staleMarks = 0;
@@ -616,7 +658,7 @@ function exitReasonFor(item: Tracked, cfg: EngineConfig, today: string, isCandid
     learnedEarlyStopTightened: item.learnedEarlyStopTightened,
   });
   if (fromRules) return fromRules;
-  if (item.staleMarks >= STALE_FORCE_AFTER) return 'STALE_DATA_FORCED';
+  if (isCandidate && item.staleMarks >= STALE_FORCE_AFTER) return 'STALE_DATA_FORCED';
   return null;
 }
 
@@ -660,8 +702,9 @@ function closeCandidate(state: LedgerState, candidate: Candidate, reason: ExitRe
       candidate.challengerEngines.ADAPTIVE_LEARNED.pnlPerLotInr = candidate.counterfactualLearnedPnlPerLotInr;
     }
   }
+  const midDebit = Number.isFinite(candidate.plan.midDebit) ? candidate.plan.midDebit : candidate.plan.entryDebit;
   candidate.pnlPerLotMidInr = round2(
-    (mark.midValue - candidate.plan.midDebit) * candidate.plan.lotSize - candidate.plan.entryChargesPerLot - outcome.exitCharges
+    (mark.midValue - midDebit) * candidate.plan.lotSize - outcome.entryCharges - outcome.exitCharges
   );
   candidate.rMultiple = outcome.r;
   candidate.win = outcome.pnl > 0;
@@ -669,26 +712,35 @@ function closeCandidate(state: LedgerState, candidate: Candidate, reason: ExitRe
   const maxGain = Math.max(0.01, candidate.plan.width - candidate.plan.entryDebit);
   const confirmedP = candidate.confirmedPeakValue ?? candidate.peakValue;
   const mfeMaxFrac = Number(Math.max(0, (confirmedP - candidate.plan.entryDebit) / maxGain).toFixed(4));
-  const sample: LiveSampleRecord = {
-    id: candidate.id,
-    x: candidate.features,
-    y: outcome.pnl > 0 ? 1 : 0,
-    r: outcome.r,
-    pnlPerLotInr: outcome.pnl,
-    entryMs: Date.parse(candidate.createdAt),
-    exitMs: nowMs,
-    strategy: candidate.strategy,
-    underlying: candidate.underlying,
-    direction: candidate.direction,
-    regime: candidate.regime,
-    exitReason: reason,
-    mfeMaxFrac,
-    sessionsHeld: candidate.sessionsHeld,
-    pnlLadderV2Inr: candidate.counterfactualFixed30PnlPerLotInr,
-    pnlRunnerV3Inr: outcome.pnl,
-    pnlRunnerV31Inr: candidate.counterfactualV31PnlPerLotInr,
-  };
-  state.liveSamples.push(sample);
+  if (
+    reason !== 'STALE_DATA_FORCED' &&
+    Number.isFinite(outcome.pnl) &&
+    Number.isFinite(outcome.r) &&
+    Array.isArray(candidate.features) &&
+    candidate.features.length > 0 &&
+    !state.liveSamples.some((s) => s.id === candidate.id)
+  ) {
+    const sample: LiveSampleRecord = {
+      id: candidate.id,
+      x: candidate.features,
+      y: outcome.pnl > 0 ? 1 : 0,
+      r: outcome.r,
+      pnlPerLotInr: outcome.pnl,
+      entryMs: Date.parse(candidate.createdAt),
+      exitMs: nowMs,
+      strategy: candidate.strategy,
+      underlying: candidate.underlying,
+      direction: candidate.direction,
+      regime: candidate.regime,
+      exitReason: reason,
+      mfeMaxFrac,
+      sessionsHeld: candidate.sessionsHeld,
+      pnlLadderV2Inr: candidate.counterfactualFixed30PnlPerLotInr,
+      pnlRunnerV3Inr: outcome.pnl,
+      pnlRunnerV31Inr: candidate.counterfactualV31PnlPerLotInr,
+    };
+    state.liveSamples.push(sample);
+  }
   state.pending.candidates.push(candidate);
   const cfNote =
     candidate.counterfactualFixed30PnlPerLotInr !== outcome.pnl || candidate.counterfactualV31PnlPerLotInr !== outcome.pnl
@@ -785,6 +837,36 @@ function closePosition(state: LedgerState, position: PaperPosition, reason: Exit
     rMultiple: trade.rMultiple,
   };
   state.closedSummaries.push(summary);
+  const posFeatures = resolveFeaturesFor(position, state);
+  const hasActiveCand = state.activeCandidates.some((c) => c.id === position.candidateId && !c.closedAt);
+  if (
+    !hasActiveCand &&
+    reason !== 'STALE_DATA_FORCED' &&
+    posFeatures.length > 0 &&
+    !state.liveSamples.some((s) => s.id === position.candidateId)
+  ) {
+    const perLotNet = round2(net / Math.max(1, position.lots));
+    const mfeMaxFrac = Number(Math.max(0, (confirmedP - position.plan.entryDebit) / maxGain).toFixed(4));
+    state.liveSamples.push({
+      id: position.candidateId,
+      x: posFeatures,
+      y: perLotNet > 0 ? 1 : 0,
+      r: trade.rMultiple,
+      pnlPerLotInr: perLotNet,
+      entryMs: Date.parse(position.openedAt),
+      exitMs: nowMs,
+      strategy: position.strategy,
+      underlying: position.underlying,
+      direction: position.direction,
+      regime: position.regime,
+      exitReason: reason,
+      mfeMaxFrac,
+      sessionsHeld: position.sessionsHeld,
+      pnlLadderV2Inr: cfPerLot,
+      pnlRunnerV3Inr: perLotNet,
+      pnlRunnerV31Inr: v31PerLot,
+    });
+  }
   log(state, 'EXIT', `${position.underlying} ${position.direction} ${position.lots} lot closed ${reason}: ${net >= 0 ? '+' : ''}₹${net.toFixed(0)} (MFE ${trade.mfeOfMaxGainPct?.toFixed(1)}% of maxGain)`, position.underlying);
   return trade;
 }
@@ -792,7 +874,7 @@ function closePosition(state: LedgerState, position: PaperPosition, reason: Exit
 function revalue(state: LedgerState, niftyLtp: number | null) {
   const seenClosed = new Set<string>();
   state.closedSummaries = state.closedSummaries.filter((s) => {
-    if (!s || !s.id || seenClosed.has(s.id)) return false;
+    if (!s || !s.id || s.exitReason === 'STALE_DATA_FORCED' || seenClosed.has(s.id)) return false;
     seenClosed.add(s.id);
     return true;
   });
@@ -854,13 +936,28 @@ function pushEquityPoint(state: LedgerState, nowMs: number, point: Omit<EquityPo
   state.lastEquityPointAt = full.t;
 }
 
+function sanitizeLiveSamples(state: LedgerState) {
+  const seen = new Set<string>();
+  state.liveSamples = (state.liveSamples ?? []).filter((s) => {
+    if (!s || !s.id || seen.has(s.id)) return false;
+    if (s.exitReason === 'STALE_DATA_FORCED') return false;
+    if (!Number.isFinite(s.r) || !Number.isFinite(s.pnlPerLotInr)) return false;
+    if (!Array.isArray(s.x) || s.x.length !== FEATURE_NAMES.length || s.x.some((v) => !Number.isFinite(v))) return false;
+    seen.add(s.id);
+    return true;
+  });
+}
+
 function maybeTrain(state: LedgerState, nowMs: number, force: boolean) {
+  sanitizeLiveSamples(state);
   const labels = state.counters.candidatesClosed;
   const research = getOfflineResearch();
   const offline = research?.samples ?? [];
   const priorChanged = Boolean(
     state.model &&
       (!state.model.exitPolicy ||
+        state.model.liveOos.avgR === null ||
+        state.model.exitPolicy.oosExpectancyInr === null ||
         (offline.length > 0 &&
           (state.model.nOffline !== offline.length ||
             Math.abs((state.model.offlineOos.acceptedAvgR ?? 0) - (research?.report.walkForward.oos.acceptedAvgR ?? 0)) > 1e-6)))
@@ -877,9 +974,9 @@ function maybeTrain(state: LedgerState, nowMs: number, force: boolean) {
     source: 'LIVE',
     mfeMaxFrac: s.mfeMaxFrac,
     sessionsHeld: s.sessionsHeld,
-    pnlLadderV2Inr: s.pnlLadderV2Inr ?? s.pnlPerLotInr,
-    pnlRunnerV3Inr: s.pnlRunnerV3Inr ?? s.pnlPerLotInr,
-    pnlRunnerV31Inr: s.pnlRunnerV31Inr ?? s.pnlPerLotInr,
+    pnlLadderV2Inr: Number.isFinite(s.pnlLadderV2Inr) ? s.pnlLadderV2Inr : s.pnlPerLotInr,
+    pnlRunnerV3Inr: Number.isFinite(s.pnlRunnerV3Inr) ? s.pnlRunnerV3Inr : s.pnlPerLotInr,
+    pnlRunnerV31Inr: Number.isFinite(s.pnlRunnerV31Inr) ? s.pnlRunnerV31Inr : s.pnlPerLotInr,
   }));
   if (offline.length + live.length < 30) {
     log(state, 'MODEL', 'Not enough closed samples to fit a model yet. Signals are taken whenever risk limits allow.');
@@ -1391,6 +1488,7 @@ async function runPaperCycleUnlocked(
           regime: candidate.regime,
           lots: decision.lots,
           plan: built.plan,
+          features: candidate.features,
           entryCashOutInr: decision.cashOutInr,
           maxLossInr: decision.maxLossInr,
           marginBlockedInr: decision.marginInr,
@@ -1533,8 +1631,19 @@ export async function readJournal(
     if (month && Number.isFinite(when) && istMonthKey(when) !== month) continue;
     if (!seen.has(item.id)) rows.push(item);
   }
-  rows.sort((a, b) => Date.parse((b as { closedAt?: string }).closedAt || '') - Date.parse((a as { closedAt?: string }).closedAt || ''));
-  return rows;
+  const validRows = rows.filter((r) => {
+    if (!r || typeof r !== 'object') return false;
+    const rec = r as { exitReason?: string; plan?: { entryDebit?: number; long?: unknown; short?: unknown } };
+    if (rec.exitReason === 'STALE_DATA_FORCED') return false;
+    if (kind === 'candidates') {
+      return Boolean(rec.plan && rec.plan.long && rec.plan.short && Number.isFinite(rec.plan.entryDebit));
+    }
+    return true;
+  });
+  validRows.sort(
+    (a, b) => Date.parse((b as { closedAt?: string }).closedAt || '') - Date.parse((a as { closedAt?: string }).closedAt || '')
+  );
+  return validRows;
 }
 
 function hydrateLearnedExitFields(state: LedgerState) {
@@ -1610,11 +1719,12 @@ export async function refreshLiveState(
 
   const state = row.data;
   state.config = { ...DEFAULT_ENGINE_CONFIG };
-  // Deduplicate any identical active shadow contracts (keep the earliest entry)
+  // Deduplicate any identical active shadow contracts (keep the earliest entry or any referenced by an open position)
+  const openCandIds = new Set(state.openPositions.map((p) => p.candidateId));
   const seenContracts = new Set<string>();
   state.activeCandidates = state.activeCandidates.filter((c) => {
     const contractKey = `${c.underlying}:${c.direction}:${c.plan.expiry}:${c.plan.long.strike}:${c.plan.short.strike}`;
-    if (seenContracts.has(contractKey) && !c.takenByLedger) return false;
+    if (seenContracts.has(contractKey) && !c.takenByLedger && !openCandIds.has(c.id)) return false;
     seenContracts.add(contractKey);
     return true;
   });
@@ -1660,13 +1770,14 @@ export async function refreshLiveState(
     const today = istDate(nowMs);
     let exitExecuted = false;
     let floorOrPeakRaised = false;
-    if (optionQuotes && Object.keys(optionQuotes).length > 0) {
+    const sessionLive = Boolean(state.market?.live && isWithinSessionHours(nowMs));
+    if (sessionLive && optionQuotes && Object.keys(optionQuotes).length > 0) {
       const stillOpen: PaperPosition[] = [];
       for (const pos of state.openPositions) {
         const prevPeak = pos.peakValue ?? pos.plan.entryDebit;
         const prevFloor = Math.max(pos.runnerFloor ?? 0, pos.runnerFloorV31 ?? 0, pos.runnerFloorLearned ?? 0);
         pos.exitRuleVersion = 'ADAPTIVE_LEARNED';
-        applyMark(pos, optionQuotes, nowMs, cfg, state, undefined, today);
+        applyMark(pos, optionQuotes, nowMs, cfg, state, undefined, today, true);
         const nextPeak = pos.peakValue ?? pos.plan.entryDebit;
         const nextFloor = Math.max(pos.runnerFloor ?? 0, pos.runnerFloorV31 ?? 0, pos.runnerFloorLearned ?? 0);
         if (nextPeak > prevPeak || nextFloor > prevFloor) {
@@ -1695,7 +1806,7 @@ export async function refreshLiveState(
       for (const cand of state.activeCandidates) {
         if (cand.closedAt) continue;
         cand.exitRuleVersion = 'ADAPTIVE_LEARNED';
-        applyMark(cand, optionQuotes, nowMs, cfg, state, undefined, today);
+        applyMark(cand, optionQuotes, nowMs, cfg, state, undefined, today, true);
         const reason = exitReasonFor(cand, cfg, today, true);
         if (!reason) {
           stillActive.push(cand);

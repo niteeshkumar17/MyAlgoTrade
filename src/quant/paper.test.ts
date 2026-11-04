@@ -404,4 +404,46 @@ describe('research and readiness', () => {
     assert.ok(dec.runnerProb > 0 && dec.runnerProb < 1);
     assert.ok(dec.learnedKeepFrac >= 0.667 && dec.learnedKeepFrac <= 0.85);
   });
+
+  it('never drops exit floor below previousFloor across BREAKEVEN_LOCK, PROFIT_TRAIL, or RUNNER_MODE', () => {
+    const plan: SpreadPlan = {
+      underlying: 'RELIANCE',
+      right: 'CE',
+      expiry: '2026-11-23',
+      dte: 19,
+      lotSize: 500,
+      spotAtEntry: 1300,
+      long: { token: '125997', symbol: 'RELIANCE23NOV261300CE', strike: 1300, bid: 23.5, ask: 23.75 },
+      short: { token: '144175', symbol: 'RELIANCE23NOV261330CE', strike: 1330, bid: 12.55, ask: 12.75 },
+      width: 30,
+      entryDebit: 11.2,
+      midDebit: 11.15,
+      debitRatio: 0.3733,
+      legSpreadPct: 0.01,
+      entryChargesPerLot: 72.18,
+      exitChargesWorstPerLot: 47.2,
+      maxLossPerLot: 5719.38,
+      maxGainPerLot: 9250,
+    };
+    const l1 = exitLevels(plan, DEFAULT_ENGINE_CONFIG, {
+      peakValue: 15.65,
+      sessionsHeld: 2,
+      runnerArmed: false,
+      variant: 'ADAPTIVE_LEARNED',
+      learnedKeepFrac: 0.8,
+    });
+    assert.equal(l1.stop, 13.49);
+    // Even if a stale instance passes a lower peakValue (14.40), passing previousFloorV31 = 13.49 must preserve 13.49
+    const l2 = exitLevels(plan, DEFAULT_ENGINE_CONFIG, {
+      peakValue: 14.4,
+      sessionsHeld: 2,
+      runnerArmed: false,
+      previousFloor: 13.49,
+      previousFloorV31: 13.49,
+      variant: 'ADAPTIVE_LEARNED',
+      learnedKeepFrac: 0.8,
+    });
+    assert.equal(l2.stop, 13.49);
+  });
 });
+

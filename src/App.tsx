@@ -1657,7 +1657,9 @@ function OrdersAndSignals({
   config: DashboardPayload['config'];
   onOpenTerminal: (t: TerminalTarget) => void;
 }) {
-  const allRows = [...candidates, ...closedCandidates].slice(0, 40);
+  const allRows = [...candidates, ...closedCandidates]
+    .filter((c) => Boolean(c && c.plan && c.plan.long && c.plan.short && Number.isFinite(c.plan.entryDebit)))
+    .slice(0, 40);
   return (
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
@@ -2095,12 +2097,12 @@ function Learning({ dash }: { dash: DashboardPayload }) {
                   <div>
                     <div className="font-semibold text-slate-800">{d.feature}</div>
                     <div className="text-[10px] text-slate-500">
-                      {d.weight >= 0 ? 'Favors ≥60% Runner' : 'Favors Early Stall / Tight Trail'}
+                      {(d.weight ?? 0) >= 0 ? 'Favors ≥60% Runner' : 'Favors Early Stall / Tight Trail'}
                     </div>
                   </div>
-                  <span className={`font-mono font-bold ${pnlColor(d.weight)}`}>
-                    {d.weight >= 0 ? '+' : ''}
-                    {d.weight.toFixed(3)}
+                  <span className={`font-mono font-bold ${pnlColor(d.weight ?? 0)}`}>
+                    {(d.weight ?? 0) >= 0 ? '+' : ''}
+                    {Number(d.weight ?? 0).toFixed(3)}
                   </span>
                 </div>
               ))}
@@ -2217,8 +2219,8 @@ function Learning({ dash }: { dash: DashboardPayload }) {
                 className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2"
               >
                 <span className="text-slate-700">{name}</span>
-                <span className={`font-mono font-semibold tabular-nums ${pnlColor(model.weights[i])}`}>
-                  {model.weights[i]?.toFixed(3)}
+                <span className={`font-mono font-semibold tabular-nums ${pnlColor(model.weights[i] ?? 0)}`}>
+                  {Number(model.weights[i] ?? 0).toFixed(3)}
                 </span>
               </li>
             ))}

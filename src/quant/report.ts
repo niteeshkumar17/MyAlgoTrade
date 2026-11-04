@@ -68,21 +68,29 @@ function cards(
 }
 
 export function buildDashboard(state: LedgerState, nowMs = Date.now()): DashboardPayload {
-  const unrealized = state.openPositions.reduce((sum, p) => sum + p.unrealizedInr, 0);
-  const netUnrealized = state.openPositions.reduce((sum, p) => sum + (p.netUnrealizedInr ?? p.unrealizedInr), 0);
-  const estCharges = state.openPositions.reduce((sum, p) => sum + (p.estChargesInr ?? 0), 0);
-  const realized = state.closedSummaries.reduce((sum, t) => sum + t.netPnlInr, 0);
+  const unrealized = state.openPositions.reduce((sum, p) => sum + (Number.isFinite(p.unrealizedInr) ? p.unrealizedInr : 0), 0);
+  const netUnrealized = state.openPositions.reduce(
+    (sum, p) => sum + (Number.isFinite(p.netUnrealizedInr ?? p.unrealizedInr) ? (p.netUnrealizedInr ?? p.unrealizedInr) : 0),
+    0
+  );
+  const estCharges = state.openPositions.reduce((sum, p) => sum + (Number.isFinite(p.estChargesInr) ? (p.estChargesInr ?? 0) : 0), 0);
+  const realized = state.closedSummaries.reduce((sum, t) => sum + (Number.isFinite(t.netPnlInr) ? t.netPnlInr : 0), 0);
   const mtmEquity = Math.round((state.startingCapitalInr + realized + unrealized) * 100) / 100;
-  const tradeRows = state.closedSummaries.map((t) => ({
-    strategy: t.strategy,
-    underlying: t.underlying,
-    regime: t.regime,
-    direction: t.direction,
-    exitReason: t.exitReason,
-    net: t.netPnlInr,
-    r: t.rMultiple,
-  }));
-  const candidateRows = state.liveSamples.map((s) => ({
+  const tradeRows = state.closedSummaries
+    .filter((t) => Number.isFinite(t.netPnlInr) && Number.isFinite(t.rMultiple))
+    .map((t) => ({
+      strategy: t.strategy,
+      underlying: t.underlying,
+      regime: t.regime,
+      direction: t.direction,
+      exitReason: t.exitReason,
+      net: t.netPnlInr,
+      r: t.rMultiple,
+    }));
+  const validLiveSamples = state.liveSamples.filter(
+    (s) => s && s.exitReason !== 'STALE_DATA_FORCED' && Number.isFinite(s.pnlPerLotInr) && Number.isFinite(s.r)
+  );
+  const candidateRows = validLiveSamples.map((s) => ({
     strategy: s.strategy,
     underlying: s.underlying,
     regime: s.regime,
@@ -123,7 +131,7 @@ export function buildDashboard(state: LedgerState, nowMs = Date.now()): Dashboar
     recentEquity: state.recentEquity,
     decisionLog: state.decisionLog,
     learningLog: state.learningLog,
-    suspendedStrategies: suspendedStrategies(state.liveSamples),
+    suspendedStrategies: suspendedStrategies(validLiveSamples),
     tradeScorecards: cards(tradeRows),
     candidateScorecards: {
       byStrategy: candidateCards.byStrategy,

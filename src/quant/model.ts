@@ -79,11 +79,22 @@ function solveLinear(a: number[][], b: number[]): number[] | null {
 }
 
 export function fitLogistic(samples: Sample[], lambda = 4, maxIter = 30, minSamples = 30): LogisticFit | null {
-  if (samples.length < minSamples) return null;
-  const positives = samples.filter((s) => s.y === 1).length;
-  if (positives === 0 || positives === samples.length) return null;
-  const d = samples[0].x.length;
-  const totalW = samples.reduce((a, s) => a + s.weight, 0);
+  const d = samples[0]?.x?.length ?? 0;
+  if (d === 0) return null;
+  const valid = samples.filter(
+    (s) =>
+      s &&
+      Array.isArray(s.x) &&
+      s.x.length === d &&
+      s.x.every((v) => Number.isFinite(v)) &&
+      Number.isFinite(s.weight) &&
+      s.weight > 0
+  );
+  if (valid.length < minSamples) return null;
+  const positives = valid.filter((s) => s.y === 1).length;
+  if (positives === 0 || positives === valid.length) return null;
+  const totalW = valid.reduce((a, s) => a + s.weight, 0);
+  samples = valid;
 
   const means = new Array<number>(d).fill(0);
   for (const s of samples) for (let j = 0; j < d; j++) means[j] += (s.weight * s.x[j]) / totalW;
@@ -201,17 +212,18 @@ export function walkForward(
 }
 
 export function summarizeOos(oos: OosPrediction[]): OosMetrics {
-  if (oos.length === 0) {
+  const valid = oos.filter((o) => Number.isFinite(o.p) && Number.isFinite(o.r));
+  if (valid.length === 0) {
     return { n: 0, auc: null, avgR: null, threshold: null, acceptedN: 0, acceptedAvgR: null };
   }
-  const sortedP = oos.map((o) => o.p).sort((a, b) => a - b);
+  const sortedP = valid.map((o) => o.p).sort((a, b) => a - b);
   const threshold = sortedP[Math.floor(sortedP.length / 2)];
-  const accepted = oos.filter((o) => o.p >= threshold);
+  const accepted = valid.filter((o) => o.p >= threshold);
   const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
   return {
-    n: oos.length,
-    auc: aucScore(oos.map((o) => o.p), oos.map((o) => o.y)),
-    avgR: avg(oos.map((o) => o.r)),
+    n: valid.length,
+    auc: aucScore(valid.map((o) => o.p), valid.map((o) => o.y)),
+    avgR: avg(valid.map((o) => o.r)),
     threshold,
     acceptedN: accepted.length,
     acceptedAvgR: avg(accepted.map((o) => o.r)),
@@ -293,6 +305,7 @@ export function suspendedStrategies(
 ): StrategyName[] {
   const grouped = new Map<StrategyName, number[]>();
   for (const s of samples) {
+    if (!Number.isFinite(s.r)) continue;
     const arr = grouped.get(s.strategy);
     if (arr) arr.push(s.r);
     else grouped.set(s.strategy, [s.r]);
@@ -403,13 +416,15 @@ export function trainExitPolicySnapshot(
   let earlyStopsSaved = 0;
   let countWithPnl = 0;
   for (const s of all) {
+    if (!Number.isFinite(s.r)) continue;
     const pRunner = predictProb(runnerFit, s.x);
     const pRec = predictProb(recoveryFit, s.x);
-    const ladderPnl = s.pnlLadderV2Inr ?? s.r * 5000;
-    const v3Pnl = s.pnlRunnerV3Inr ?? s.r * 5000;
-    const v31Pnl = s.pnlRunnerV31Inr ?? v3Pnl;
-    const mfe = s.mfeMaxFrac ?? (s.y === 1 ? 0.35 : 0.05);
-    const sess = s.sessionsHeld ?? 3;
+    const basePnl = s.r * 5000;
+    const ladderPnl = Number.isFinite(s.pnlLadderV2Inr) ? (s.pnlLadderV2Inr as number) : basePnl;
+    const v3Pnl = Number.isFinite(s.pnlRunnerV3Inr) ? (s.pnlRunnerV3Inr as number) : basePnl;
+    const v31Pnl = Number.isFinite(s.pnlRunnerV31Inr) ? (s.pnlRunnerV31Inr as number) : v3Pnl;
+    const mfe = Number.isFinite(s.mfeMaxFrac) ? (s.mfeMaxFrac as number) : (s.y === 1 ? 0.35 : 0.05);
+    const sess = Number.isFinite(s.sessionsHeld) ? (s.sessionsHeld as number) : 3;
 
     let learnedPnl = v31Pnl;
     if (mfe >= 0.3) {
@@ -439,10 +454,13 @@ export function trainExitPolicySnapshot(
   const oosLiftOverLadderInr = Math.round(((sumLearned - sumLadder) / nEval) * 100) / 100;
   const oosLiftOverV31Inr = Math.round(((sumLearned - sumV31) / nEval) * 100) / 100;
 
-  const topRunnerDrivers = FEATURE_NAMES.map((feature, idx) => ({
-    feature,
-    weight: Number((runnerFit.weights[idx] ?? 0).toFixed(3)),
-  }))
+  const topRunnerDrivers = FEATURE_NAMES.map((feature, idx) => {
+    const rawW = runnerFit.weights[idx];
+    return {
+      feature,
+      weight: Number.isFinite(rawW) ? Number(rawW.toFixed(3)) : 0,
+    };
+  })
     .sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight))
     .slice(0, 5);
 
@@ -579,9 +597,18 @@ export function trainModelSnapshot(
   nowMs: number,
   offlineOosCache?: { oos: OosPrediction[] }
 ): ModelSnapshot | null {
-  const adaptiveOfflineW = Number(Math.max(0.1, OFFLINE_SAMPLE_WEIGHT / (1 + live.length / 40)).toFixed(3));
+  const validLive = live.filter(
+    (s) =>
+      s &&
+      Array.isArray(s.x) &&
+      s.x.length === FEATURE_NAMES.length &&
+      s.x.every((v) => Number.isFinite(v)) &&
+      Number.isFinite(s.r) &&
+      (s.y === 0 || s.y === 1)
+  );
+  const adaptiveOfflineW = Number(Math.max(0.1, OFFLINE_SAMPLE_WEIGHT / (1 + validLive.length / 40)).toFixed(3));
   const weightedOffline = offline.map((s) => ({ ...s, weight: adaptiveOfflineW }));
-  const liveSamples = live.map((s) => ({ ...s, weight: LIVE_SAMPLE_WEIGHT }));
+  const liveSamples = validLive.map((s) => ({ ...s, weight: LIVE_SAMPLE_WEIGHT }));
   const all = [...weightedOffline, ...liveSamples];
   const fit = fitLogistic(all, MODEL_LAMBDA);
   if (!fit) return null;
@@ -596,11 +623,11 @@ export function trainModelSnapshot(
   const liveOos = summarizeOos(liveWf.oos);
   const gate = decideGate(offlineOos, liveOos);
   const calibration = calibrationBuckets(gate.source === 'LIVE' ? liveWf.oos : offlineOosPreds);
-  const exitPolicy = trainExitPolicySnapshot(offline, live, nowMs, fit);
+  const exitPolicy = trainExitPolicySnapshot(offline, validLive, nowMs, fit);
   const stamp = new Date(nowMs).toISOString().slice(0, 16).replace(/[-:T]/g, '');
 
   return {
-    version: `lr-${stamp}-${offline.length}o-${live.length}l`,
+    version: `lr-${stamp}-${offline.length}o-${validLive.length}l`,
     trainedAt: new Date(nowMs).toISOString(),
     featureNames: [...FEATURE_NAMES],
     means: fit.means,
@@ -609,7 +636,7 @@ export function trainModelSnapshot(
     bias: fit.bias,
     lambda: fit.lambda,
     nOffline: offline.length,
-    nLive: live.length,
+    nLive: validLive.length,
     offlineWeight: adaptiveOfflineW,
     offlineOos,
     liveOos,
