@@ -4,6 +4,8 @@
  * cycles cannot both commit. The in-memory store is used in tests and when no database is configured.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import pg from 'pg';
 
 export interface KvRow<T> {
@@ -43,59 +45,184 @@ export class MemoryKvStore implements KvStore {
   }
 }
 
-export class PgKvStore implements KvStore {
-  constructor(private pool: pg.Pool) {}
+function isQuotaError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return msg.includes('exceeded the quota') || msg.includes('quota') || msg.includes('upgrade your plan');
+}
+
+function isTransientPgError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (isQuotaError(err)) return false;
+  const msg = err.message.toLowerCase();
+  const code = (err as { code?: string }).code ?? '';
+  return (
+    msg.includes('connection terminated') ||
+    msg.includes('client has encountered a connection error') ||
+    msg.includes('connection reset') ||
+    msg.includes('socket hang up') ||
+    msg.includes('timeout') ||
+    code === 'ECONNRESET' ||
+    code === 'EPIPE' ||
+    code === '57P01' ||
+    code === '08006' ||
+    code === '08003'
+  );
+}
+
+const DISK_STORE_PATH = path.resolve(process.cwd(), '.data', 'kv-store.json');
+
+export class ResilientKvStore implements KvStore {
+  private cache = new Map<string, Envelope<unknown>>();
+  private pgDisabledUntilMs = 0;
+
+  constructor(private pool: pg.Pool | null) {
+    this.loadFromDisk();
+  }
+
+  private loadFromDisk() {
+    try {
+      if (fs.existsSync(DISK_STORE_PATH)) {
+        const raw = fs.readFileSync(DISK_STORE_PATH, 'utf8');
+        const parsed = JSON.parse(raw) as Record<string, Envelope<unknown>>;
+        for (const [k, v] of Object.entries(parsed)) {
+          if (v && typeof v.rev === 'number' && 'data' in v) {
+            this.cache.set(k, v);
+          }
+        }
+      }
+    } catch {
+      // ignore corrupt disk cache
+    }
+  }
+
+  private saveToDisk() {
+    try {
+      const dir = path.dirname(DISK_STORE_PATH);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const obj: Record<string, Envelope<unknown>> = {};
+      for (const [k, v] of this.cache.entries()) {
+        obj[k] = v;
+      }
+      const tmp = `${DISK_STORE_PATH}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(obj), 'utf8');
+      fs.renameSync(tmp, DISK_STORE_PATH);
+    } catch {
+      // ignore disk write error on read-only fs
+    }
+  }
+
+  private canUsePg(): boolean {
+    return Boolean(this.pool) && Date.now() >= this.pgDisabledUntilMs;
+  }
+
+  private handlePgError(err: unknown) {
+    if (isQuotaError(err)) {
+      // Pause Neon queries for 15 minutes when free-tier quota is exceeded
+      this.pgDisabledUntilMs = Date.now() + 15 * 60_000;
+    } else {
+      // Pause briefly for 15 seconds on other DB connectivity errors
+      this.pgDisabledUntilMs = Date.now() + 15_000;
+    }
+  }
+
+  private async queryWithRetry(text: string, values: unknown[]): Promise<pg.QueryResult> {
+    if (!this.pool) throw new Error('No pool');
+    try {
+      return await this.pool.query(text, values);
+    } catch (err) {
+      if (!isTransientPgError(err)) throw err;
+      return await this.pool.query(text, values);
+    }
+  }
 
   async get<T>(key: string): Promise<KvRow<T> | null> {
-    const res = await this.pool.query(
-      `SELECT config_payload_json FROM config_history WHERE config_version_id = $1`,
-      [key]
-    );
-    const payload = res.rows[0]?.config_payload_json as Envelope<T> | undefined;
-    if (!payload || typeof payload.rev !== 'number' || !('data' in payload)) return null;
-    return { rev: payload.rev, data: payload.data };
+    const cached = this.cache.get(key);
+    if (cached && key !== KEY_LEASE) {
+      return { rev: cached.rev, data: cached.data as T };
+    }
+    if (this.canUsePg()) {
+      try {
+        const res = await this.queryWithRetry(
+          `SELECT config_payload_json FROM config_history WHERE config_version_id = $1`,
+          [key]
+        );
+        const payload = res.rows[0]?.config_payload_json as Envelope<T> | undefined;
+        if (payload && typeof payload.rev === 'number' && 'data' in payload) {
+          this.cache.set(key, payload);
+          this.saveToDisk();
+          return { rev: payload.rev, data: payload.data };
+        }
+        return cached ? { rev: cached.rev, data: cached.data as T } : null;
+      } catch (err) {
+        this.handlePgError(err);
+      }
+    }
+    return cached ? { rev: cached.rev, data: cached.data as T } : null;
   }
 
   async put<T>(key: string, data: T, expectedRev: number | null): Promise<{ ok: true; rev: number } | { ok: false }> {
-    const rev = (expectedRev ?? 0) + 1;
-    const payload = JSON.stringify({ rev, data });
+    const current = this.cache.get(key);
     if (expectedRev === null) {
-      const res = await this.pool.query(
-        `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
-         VALUES ($1, NOW(), FALSE, NULL, $2::jsonb, $3)
-         ON CONFLICT (config_version_id) DO NOTHING`,
-        [key, payload, 'paper-v2']
-      );
-      return res.rowCount === 1 ? { ok: true, rev } : { ok: false };
+      if (current) return { ok: false };
+    } else if (current && current.rev !== expectedRev) {
+      return { ok: false };
     }
-    const res = await this.pool.query(
-      `UPDATE config_history
-       SET config_payload_json = $2::jsonb, applied_at = NOW(), change_summary = $4
-       WHERE config_version_id = $1 AND (config_payload_json->>'rev')::int = $3`,
-      [key, payload, expectedRev, 'paper-v2']
-    );
-    return res.rowCount === 1 ? { ok: true, rev } : { ok: false };
+    const rev = (expectedRev ?? 0) + 1;
+    const envelope: Envelope<T> = { rev, data };
+    this.cache.set(key, envelope);
+    if (key !== KEY_LEASE) {
+      this.saveToDisk();
+    }
+
+    if (this.canUsePg()) {
+      const payload = JSON.stringify(envelope);
+      try {
+        await this.queryWithRetry(
+          `INSERT INTO config_history (config_version_id, applied_at, is_active_champion, previous_champion_id, config_payload_json, change_summary)
+           VALUES ($1, NOW(), FALSE, NULL, $2::jsonb, $3)
+           ON CONFLICT (config_version_id) DO UPDATE
+           SET config_payload_json = EXCLUDED.config_payload_json, applied_at = NOW(), change_summary = EXCLUDED.change_summary`,
+          [key, payload, 'paper-v2']
+        );
+      } catch (err) {
+        this.handlePgError(err);
+      }
+    }
+    return { ok: true, rev };
   }
 }
 
 let pool: pg.Pool | null = null;
+let singletonStore: ResilientKvStore | null = null;
 
 export function databaseConfigured(): boolean {
-  return Boolean(process.env.DATABASE_URL_RW || process.env.DATABASE_URL_RO || process.env.DATABASE_URL);
+  return Boolean(
+    process.env.DATABASE_URL_RW ||
+      process.env.DATABASE_URL_RO ||
+      process.env.DATABASE_URL ||
+      fs.existsSync(DISK_STORE_PATH)
+  );
 }
 
 export function createStore(): KvStore {
+  if (singletonStore) return singletonStore;
   const url = process.env.DATABASE_URL_RW || process.env.DATABASE_URL_RO || process.env.DATABASE_URL || '';
-  if (!url) return new MemoryKvStore();
-  if (!pool) {
+  if (url && !pool) {
     pool = new pg.Pool({
       connectionString: url,
-      max: 1,
-      idleTimeoutMillis: 10_000,
+      max: 2,
+      idleTimeoutMillis: 15_000,
       connectionTimeoutMillis: 10_000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 5_000,
+    });
+    pool.on('error', (err) => {
+      console.warn('[pg.Pool] Idle client connection closed by server:', err.message);
     });
   }
-  return new PgKvStore(pool);
+  singletonStore = new ResilientKvStore(pool);
+  return singletonStore;
 }
 
 export const KEY_ACTIVE = 'PAPER_V2:ACTIVE';

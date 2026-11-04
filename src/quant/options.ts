@@ -9,6 +9,7 @@
 import type {
   EngineConfig,
   ExitReason,
+  ExitRuleVersion,
   LegQuote,
   OptionRight,
   SpreadMark,
@@ -322,26 +323,380 @@ export function markSpread(
 export type ExitConfig = Pick<
   EngineConfig,
   'exitAtDte' | 'takeProfitFracOfMaxGain' | 'stopLossFracOfDebit' | 'maxHoldSessions'
->;
+> &
+  Partial<
+    Pick<
+      EngineConfig,
+      | 'runnerArmMfeFrac'
+      | 'runnerKeepFrac'
+      | 'runnerCeilingFracOfMaxGain'
+      | 'runnerMinAdx'
+      | 'runnerMinNetDelta'
+      | 'runnerMinTradingDte'
+    >
+  >;
 
-export function exitLevels(plan: Pick<SpreadPlan, 'entryDebit' | 'width'>, cfg: ExitConfig) {
+export type DynamicExitStage =
+  | 'INITIAL'
+  | 'TIME_DECAY'
+  | 'BREAKEVEN_LOCK'
+  | 'PROFIT_TRAIL'
+  | 'RUNNER_MODE';
+
+export interface ExitLevelDetails {
+  target: number;
+  fixed30Target: number;
+  ceilingTarget: number;
+  stop: number;
+  initialStop: number;
+  runnerFloorAtArm: number;
+  runnerFloorAtArmV31: number;
+  runnerFloorAtArmLearned: number;
+  runnerFloorV3: number;
+  runnerFloorV31: number;
+  runnerFloorLearned: number;
+  runnerCushionV3: number;
+  runnerCushionV31: number;
+  keepFracActive: number;
+  peakValue: number;
+  mfeFracOfMaxGain: number;
+  ratcheted: boolean;
+  runnerArmed: boolean;
+  stage: DynamicExitStage;
+}
+
+/**
+ * Computes the fraction of peak profit kept by Runner Mode:
+ * - RUNNER_V3: constant keep = 2/3 (allowed fall = 33.33% of peak profit)
+ * - RUNNER_V3_1: allowed fall tapers linearly from 20% at 30% MFE (keep = 80%) to 33.33% at 60% MFE (keep = 66.67%),
+ *   protecting early stallers (locking +₹282 to +₹376 more per RELIANCE lot between 30% and 45% MFE) and converging with v3 by 60% MFE.
+ */
+export function runnerKeepFracForMfe(
+  mfeFrac: number,
+  variant: ExitRuleVersion = 'RUNNER_V3',
+  baseKeepFrac = 2 / 3,
+  armMfeFrac = 0.3,
+  learnedInitialKeepFrac?: number | null
+): number {
+  if (variant === 'RUNNER_V3_1' || variant === 'ADAPTIVE_LEARNED') {
+    const startKeep =
+      variant === 'ADAPTIVE_LEARNED' && learnedInitialKeepFrac != null
+        ? Math.max(baseKeepFrac, Math.min(0.85, learnedInitialKeepFrac))
+        : 0.8;
+    const startAllowedFall = 1 - startKeep;
+    const convergeMfe = 0.6;
+    const progress = Math.max(0, Math.min(1, (mfeFrac - armMfeFrac) / Math.max(0.01, convergeMfe - armMfeFrac)));
+    const allowedFall = startAllowedFall + progress * (1 - baseKeepFrac - startAllowedFall);
+    return 1 - allowedFall;
+  }
+  return baseKeepFrac;
+}
+
+/**
+ * Updates the sliding mark buffer (up to N=3 quotes) and returns the median confirmed mark.
+ * Ensures a single glitchy tick never artificially raises the confirmed peak P.
+ */
+export function updateConfirmedMark(
+  recentMarks: number[] | undefined,
+  nextMark: number,
+  windowSize = 3
+): { recentMarks: number[]; confirmedMark: number } {
+  const clean = (recentMarks ?? []).filter((m) => Number.isFinite(m) && m >= 0);
+  clean.push(round2(nextMark));
+  while (clean.length > windowSize) clean.shift();
+  const sorted = [...clean].sort((a, b) => a - b);
+  const confirmedMark = sorted[Math.floor(sorted.length / 2)] ?? round2(nextMark);
+  return { recentMarks: clean, confirmedMark };
+}
+
+/** Estimates net spread delta |delta_long - delta_short| for the Runner Trend Gate. */
+export function estimateSpreadNetDelta(
+  plan: Pick<SpreadPlan, 'long' | 'short' | 'right' | 'spotAtEntry' | 'dte'>,
+  spot: number,
+  dte: number,
+  mark?: SpreadMark | null
+): number {
+  if (!(spot > 0)) return 0;
+  const tYears = Math.max(1 / 365, dte / 365);
+  const r = 0.06;
+  const longMid = mark ? (mark.longBid + mark.longAsk) / 2 : (plan.long.bid + plan.long.ask) / 2;
+  const shortMid = mark ? (mark.shortBid + mark.shortAsk) / 2 : (plan.short.bid + plan.short.ask) / 2;
+  const ivLong = impliedVol(longMid, spot, plan.long.strike, tYears, r, plan.right) ?? 0.2;
+  const ivShort = impliedVol(shortMid, spot, plan.short.strike, tYears, r, plan.right) ?? ivLong;
+  const dLong = bsDelta(spot, plan.long.strike, tYears, ivLong, r, plan.right);
+  const dShort = bsDelta(spot, plan.short.strike, tYears, ivShort, r, plan.right);
+  return round2(Math.abs(dLong - dShort));
+}
+
+export interface RunnerTrendGateInput {
+  right: OptionRight;
+  spot: number;
+  ema20: number;
+  vwap: number;
+  adx14: number;
+  prevAdx14: number;
+  tradingDte: number;
+  spreadNetDelta: number;
+  cfg?: ExitConfig;
+}
+
+export interface RunnerTrendGateResult {
+  passed: boolean;
+  reason: string;
+}
+
+/**
+ * Evaluates the Exit Engine v3 Runner Trend Gate at MFE% >= 30%:
+ * 1) ADX(14) >= 20 and rising
+ * 2) Underlying price above VWAP and EMA20 (for CE) or below VWAP and EMA20 (for PE)
+ * 3) trading_days_to_expiry > 7
+ * 4) spread net delta >= 0.20
+ */
+export function evaluateRunnerTrendGate(input: RunnerTrendGateInput): RunnerTrendGateResult {
+  const minAdx = input.cfg?.runnerMinAdx ?? 20;
+  const minDelta = input.cfg?.runnerMinNetDelta ?? 0.2;
+  const minTradingDte = input.cfg?.runnerMinTradingDte ?? 7;
+
+  const adxOk = input.adx14 >= minAdx && input.adx14 > input.prevAdx14;
+  const vwapEmaOk =
+    input.right === 'CE'
+      ? input.spot > input.ema20 && input.spot >= input.vwap
+      : input.spot < input.ema20 && input.spot <= input.vwap;
+  const dteOk = input.tradingDte > minTradingDte;
+  const deltaOk = input.spreadNetDelta >= minDelta;
+
+  const passed = adxOk && vwapEmaOk && dteOk && deltaOk;
+  const parts: string[] = [
+    `ADX ${input.adx14.toFixed(1)} (${adxOk ? 'rising' : 'weak/flat'})`,
+    `Spot vs VWAP/EMA20 ${vwapEmaOk ? 'aligned' : 'below'}`,
+    `${input.tradingDte}d trading DTE`,
+    `Δ ${input.spreadNetDelta.toFixed(2)}`,
+  ];
   return {
-    target: round2(plan.entryDebit + cfg.takeProfitFracOfMaxGain * (plan.width - plan.entryDebit)),
-    stop: round2(plan.entryDebit * (1 - cfg.stopLossFracOfDebit)),
+    passed,
+    reason: `${passed ? 'RUNNER ARMED' : 'GATE FAILED (30% TP)'}: ${parts.join(' · ')}`,
+  };
+}
+
+export function exitLevels(
+  plan: Pick<SpreadPlan, 'entryDebit' | 'width'>,
+  cfg: ExitConfig,
+  opts?: {
+    peakValue?: number;
+    sessionsHeld?: number;
+    runnerArmed?: boolean;
+    previousFloor?: number;
+    previousFloorV31?: number;
+    previousFloorLearned?: number;
+    atrEquivalent?: number;
+    variant?: ExitRuleVersion;
+    learnedKeepFrac?: number | null;
+    learnedEarlyStopTightened?: boolean;
+  }
+): ExitLevelDetails {
+  const maxGain = Math.max(0.01, plan.width - plan.entryDebit);
+  const armMfeFrac = cfg.runnerArmMfeFrac ?? cfg.takeProfitFracOfMaxGain ?? 0.3;
+  const baseKeepFrac = cfg.runnerKeepFrac ?? 2 / 3;
+  const ceilingFrac = cfg.runnerCeilingFracOfMaxGain ?? 0.75;
+  const variant: ExitRuleVersion = opts?.variant ?? 'RUNNER_V3';
+  const learnedInitKeep =
+    opts?.learnedKeepFrac != null ? Math.max(baseKeepFrac, Math.min(0.85, opts.learnedKeepFrac)) : 0.8;
+
+  const fixed30Target = round2(plan.entryDebit + cfg.takeProfitFracOfMaxGain * maxGain);
+  const ceilingTarget = round2(plan.entryDebit + ceilingFrac * maxGain);
+  const initialStop = round2(plan.entryDebit * (1 - cfg.stopLossFracOfDebit));
+  const runnerFloorAtArm = round2(plan.entryDebit + baseKeepFrac * (armMfeFrac * maxGain));
+  const runnerFloorAtArmV31 = round2(plan.entryDebit + 0.8 * (armMfeFrac * maxGain));
+  const runnerFloorAtArmLearned = round2(plan.entryDebit + learnedInitKeep * (armMfeFrac * maxGain));
+
+  const peakValue = round2(Math.max(plan.entryDebit, opts?.peakValue ?? plan.entryDebit));
+  const peakGain = Math.max(0, peakValue - plan.entryDebit);
+  const mfeFrac = peakGain / maxGain;
+  const sessionsHeld = opts?.sessionsHeld ?? 1;
+  const runnerArmed = Boolean(opts?.runnerArmed);
+
+  // Always compute v3 (constant 2/3), v3.1 (tapered 80% -> 66.7%), and learned (tapered learnedInitKeep -> 66.7%) candidate floors
+  const rawFloorV3 = round2(plan.entryDebit + baseKeepFrac * peakGain);
+  const keepV31 = runnerKeepFracForMfe(Math.max(armMfeFrac, mfeFrac), 'RUNNER_V3_1', baseKeepFrac, armMfeFrac);
+  const rawFloorV31 = round2(plan.entryDebit + keepV31 * peakGain);
+  const keepLearned = runnerKeepFracForMfe(
+    Math.max(armMfeFrac, mfeFrac),
+    'ADAPTIVE_LEARNED',
+    baseKeepFrac,
+    armMfeFrac,
+    learnedInitKeep
+  );
+  const rawFloorLearned = round2(plan.entryDebit + keepLearned * peakGain);
+
+  const runnerFloorV3 = round2(Math.max(opts?.previousFloor ?? initialStop, rawFloorV3));
+  const runnerFloorV31 = round2(Math.max(opts?.previousFloorV31 ?? opts?.previousFloor ?? initialStop, rawFloorV31));
+  const runnerFloorLearned = round2(
+    Math.max(opts?.previousFloorLearned ?? opts?.previousFloorV31 ?? opts?.previousFloor ?? initialStop, rawFloorLearned)
+  );
+  const runnerCushionV3 = round2(Math.max(0, peakValue - runnerFloorV3));
+  const runnerCushionV31 = round2(Math.max(0, peakValue - runnerFloorV31));
+  const keepFracActive = runnerKeepFracForMfe(
+    Math.max(armMfeFrac, mfeFrac),
+    variant,
+    baseKeepFrac,
+    armMfeFrac,
+    opts?.learnedKeepFrac
+  );
+
+  let target = fixed30Target;
+  let stop = initialStop;
+  let stage: DynamicExitStage = 'INITIAL';
+  let ratcheted = false;
+
+  if (runnerArmed) {
+    // Stage 4: Exit Engine v3 / v3.1 / Adaptive Learned Runner Mode up to 75% ceiling
+    target = ceilingTarget;
+    const activeKeep = runnerKeepFracForMfe(
+      mfeFrac,
+      variant,
+      baseKeepFrac,
+      armMfeFrac,
+      opts?.learnedKeepFrac
+    );
+    let rawFloor = round2(plan.entryDebit + activeKeep * peakGain);
+    if (opts?.atrEquivalent && opts.atrEquivalent > 0) {
+      const minCushion = 0.5 * opts.atrEquivalent;
+      rawFloor = Math.min(rawFloor, round2(peakValue - minCushion));
+    }
+    const prev =
+      variant === 'ADAPTIVE_LEARNED'
+        ? (opts?.previousFloorLearned ?? opts?.previousFloorV31 ?? opts?.previousFloor ?? initialStop)
+        : variant === 'RUNNER_V3_1'
+          ? (opts?.previousFloorV31 ?? opts?.previousFloor ?? initialStop)
+          : (opts?.previousFloor ?? initialStop);
+    stop = round2(Math.max(prev, rawFloor));
+    stage = 'RUNNER_MODE';
+    ratcheted = stop > initialStop;
+  } else if (mfeFrac >= 0.22) {
+    // Stage 3: High-Water-Mark Profit-Lock Trail (73%–99% of target reached, e.g. 22% -> 29.5% of maxGain)
+    const lockedMaxGainFrac = Math.min(mfeFrac * 0.7, 0.1 + (mfeFrac - 0.22) * 1.3);
+    stop = round2(Math.max(opts?.previousFloor ?? initialStop, plan.entryDebit + lockedMaxGainFrac * maxGain));
+    stage = 'PROFIT_TRAIL';
+    ratcheted = stop > initialStop;
+  } else if (mfeFrac >= 0.16) {
+    // Stage 2: Break-Even + Brokerage/STT Cost-Recovery Floor (16% -> 22% of maxGain)
+    const lockedMaxGainFrac = 0.05 + ((mfeFrac - 0.16) / 0.06) * 0.05;
+    stop = round2(Math.max(opts?.previousFloor ?? initialStop, plan.entryDebit + lockedMaxGainFrac * maxGain));
+    stage = 'BREAKEVEN_LOCK';
+    ratcheted = stop > initialStop;
+  } else if (mfeFrac >= 0.11) {
+    // Stage 1b: Risk-Halving Ratchet (11% -> 16% of maxGain cuts max stop loss in half from -72% to -32%)
+    stop = round2(Math.max(opts?.previousFloor ?? initialStop, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.45)));
+    stage = 'TIME_DECAY';
+    ratcheted = stop > initialStop;
+  } else if (variant === 'ADAPTIVE_LEARNED' && opts?.learnedEarlyStopTightened && mfeFrac < 0.1) {
+    // Self-Learning Early Loss Cut: tightens stop from -72% to -38% when recovery probability drops in stagnant sessions
+    stop = round2(Math.max(opts?.previousFloor ?? initialStop, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.53)));
+    stage = 'TIME_DECAY';
+    ratcheted = stop > initialStop;
+  } else if (sessionsHeld >= 6 && mfeFrac < 0.1) {
+    // Stage 1c: Time-Decay Stop Tightening for stagnant spreads after 6 sessions
+    stop = round2(Math.max(opts?.previousFloor ?? initialStop, plan.entryDebit * (1 - cfg.stopLossFracOfDebit * 0.72)));
+    stage = 'TIME_DECAY';
+    ratcheted = stop > initialStop;
+  }
+
+  return {
+    target,
+    fixed30Target,
+    ceilingTarget,
+    stop,
+    initialStop,
+    runnerFloorAtArm,
+    runnerFloorAtArmV31,
+    runnerFloorAtArmLearned,
+    runnerFloorV3,
+    runnerFloorV31,
+    runnerFloorLearned,
+    runnerCushionV3,
+    runnerCushionV31,
+    keepFracActive,
+    peakValue,
+    mfeFracOfMaxGain: Number(mfeFrac.toFixed(4)),
+    ratcheted,
+    runnerArmed,
+    stage,
   };
 }
 
 export function evaluateSpreadExit(input: {
   plan: Pick<SpreadPlan, 'entryDebit' | 'width'>;
   liquidationValue: number;
+  peakValue?: number;
   sessionsHeld: number;
   dte: number;
   cfg: ExitConfig;
+  runnerArmed?: boolean;
+  runnerTrendGatePassed?: boolean | null;
+  previousFloor?: number;
+  previousFloorV31?: number;
+  atrEquivalent?: number;
+  variant?: ExitRuleVersion;
+  learnedKeepFrac?: number | null;
+  learnedEarlyStopTightened?: boolean;
 }): ExitReason | null {
-  if (input.dte <= input.cfg.exitAtDte) return 'EXPIRY_RISK';
-  const { target, stop } = exitLevels(input.plan, input.cfg);
-  if (input.liquidationValue >= target) return 'TAKE_PROFIT';
-  if (input.liquidationValue <= stop) return 'STOP_LOSS';
+  const tradingDte = Math.round((input.dte * 5) / 7);
+  if (input.dte <= input.cfg.exitAtDte || (input.runnerArmed && tradingDte <= 5)) {
+    return 'EXPIRY_RISK';
+  }
+  const effectivePeak = Math.max(
+    input.plan.entryDebit,
+    input.peakValue ?? input.liquidationValue,
+    input.liquidationValue
+  );
+  const lvls = exitLevels(input.plan, input.cfg, {
+    peakValue: effectivePeak,
+    sessionsHeld: input.sessionsHeld,
+    runnerArmed: input.runnerArmed,
+    previousFloor: input.previousFloor,
+    previousFloorV31: input.previousFloorV31,
+    atrEquivalent: input.atrEquivalent,
+    variant: input.variant,
+    learnedKeepFrac: input.learnedKeepFrac,
+    learnedEarlyStopTightened: input.learnedEarlyStopTightened,
+  });
+
+  if (input.runnerArmed) {
+    // In Runner Mode: exit as TAKE_PROFIT only at the 75% ceiling, or TRAIL_STOP if price hits the runner floor
+    if (input.liquidationValue >= lvls.ceilingTarget) return 'TAKE_PROFIT';
+    if (input.liquidationValue <= lvls.stop) return 'TRAIL_STOP';
+    if (input.sessionsHeld > input.cfg.maxHoldSessions) return 'TIME_STOP';
+    return null;
+  }
+
+  // Not yet armed: check if MFE reached 30% target
+  if (input.liquidationValue >= lvls.fixed30Target || effectivePeak >= lvls.fixed30Target) {
+    if (input.runnerTrendGatePassed === true) {
+      // Trend Gate passed at 30%: transition into Runner Mode instead of selling at 30%
+      const armedLvls = exitLevels(input.plan, input.cfg, {
+        peakValue: effectivePeak,
+        sessionsHeld: input.sessionsHeld,
+        runnerArmed: true,
+        previousFloor: input.previousFloor ?? lvls.stop,
+        previousFloorV31: input.previousFloorV31 ?? lvls.stop,
+        atrEquivalent: input.atrEquivalent,
+        variant: input.variant,
+        learnedKeepFrac: input.learnedKeepFrac,
+        learnedEarlyStopTightened: input.learnedEarlyStopTightened,
+      });
+      if (input.liquidationValue >= armedLvls.ceilingTarget) return 'TAKE_PROFIT';
+      if (input.liquidationValue <= armedLvls.stop) return 'TRAIL_STOP';
+      if (input.sessionsHeld > input.cfg.maxHoldSessions) return 'TIME_STOP';
+      return null;
+    }
+    // Trend Gate failed (or using fixed-30% Ladder v2): take the 30% profit now
+    if (input.liquidationValue >= lvls.fixed30Target) return 'TAKE_PROFIT';
+  }
+
+  if (input.liquidationValue <= lvls.stop) {
+    // Rule 6: TRAIL_STOP for floor hits above initial stop; STOP_LOSS only for initial stop hits
+    return lvls.stop > lvls.initialStop ? 'TRAIL_STOP' : 'STOP_LOSS';
+  }
   if (input.sessionsHeld > input.cfg.maxHoldSessions) return 'TIME_STOP';
   return null;
 }

@@ -130,10 +130,21 @@ export interface SpotQuote {
 
 export type ExitReason =
   | 'TAKE_PROFIT'
+  | 'TRAIL_STOP'
   | 'STOP_LOSS'
   | 'TIME_STOP'
   | 'EXPIRY_RISK'
   | 'STALE_DATA_FORCED';
+
+export type ExitRuleVersion = 'LADDER_V2' | 'RUNNER_V3' | 'RUNNER_V3_1' | 'ADAPTIVE_LEARNED';
+
+export interface ChallengerEngineTradeLog {
+  floor: number;
+  lockedProfitPerLotInr: number;
+  exitValue?: number;
+  exitReason?: ExitReason;
+  pnlPerLotInr?: number;
+}
 
 export interface SpreadLegSnapshot {
   token: string;
@@ -216,6 +227,43 @@ export interface Candidate {
   lastMark: SpreadMark | null;
   peakValue: number;
   troughValue: number;
+  /** Sliding window of last N valid marks used to compute median confirmedPeakValue (P). */
+  recentMarks?: number[];
+  /** Confirmed peak mark P (median of recent marks / bar closes) so one glitchy tick never raises P. */
+  confirmedPeakValue?: number;
+  /** Exit rule version frozen at entry so rules never change on an already open trade. */
+  exitRuleVersion?: ExitRuleVersion;
+  /** True once MFE% >= 30% and the underlying Trend Gate passed. */
+  runnerArmed?: boolean;
+  /** Monotonic Runner Mode v3 floor: max(previousFloor, E + 0.667 * (P - E)). */
+  runnerFloor?: number;
+  /** Monotonic Runner Mode v3.1 floor: allowed fall 20% -> 33.3% from 30% -> 60% MFE. */
+  runnerFloorV31?: number;
+  /** Monotonic Self-Learning Adaptive floor combining RUNNER_V3_1 with learned runner/stagnation probabilities. */
+  runnerFloorLearned?: number;
+  runnerTrendGatePassed?: boolean | null;
+  runnerTrendGateReason?: string | null;
+  /** Self-learning exit model's predicted P(Eventual MFE >= 60% | Reached 30%, features). */
+  learnedRunnerProb?: number | null;
+  /** Self-learning exit model's predicted P(Profitable Recovery | features, sessionsHeld, mfeFrac). */
+  learnedRecoveryProb?: number | null;
+  /** Learned initial keep fraction at 30% MFE (adapts between 0.667 for big runners and 0.82 for staller protection). */
+  learnedKeepFrac?: number | null;
+  /** True when the self-learning exit policy tightens the stop early due to multi-session stagnation/reversal. */
+  learnedEarlyStopTightened?: boolean;
+  /** Human-readable explanation of the self-learning exit policy's current action on this trade. */
+  learnedExitAction?: string | null;
+  /** Counterfactual exit value if the fixed-30% rule had been used instead of Runner Mode (or vice-versa). */
+  counterfactualFixed30ExitValue?: number;
+  counterfactualFixed30PnlPerLotInr?: number;
+  /** Counterfactual exit value and PnL under RUNNER_V3_1 (20% -> 33.3% tapered allowed fall). */
+  counterfactualV31ExitValue?: number;
+  counterfactualV31PnlPerLotInr?: number;
+  /** Counterfactual exit value and PnL under ADAPTIVE_LEARNED. */
+  counterfactualLearnedExitValue?: number;
+  counterfactualLearnedPnlPerLotInr?: number;
+  /** Per-trade Challenger Registry snapshot across LADDER_V2, RUNNER_V3, RUNNER_V3_1, and ADAPTIVE_LEARNED. */
+  challengerEngines?: Record<ExitRuleVersion, ChallengerEngineTradeLog>;
   sessionsHeld: number;
   lastSessionDate: string;
   staleMarks: number;
@@ -244,6 +292,24 @@ export interface PaperPosition {
   lastMark: SpreadMark | null;
   peakValue: number;
   troughValue: number;
+  recentMarks?: number[];
+  confirmedPeakValue?: number;
+  exitRuleVersion?: ExitRuleVersion;
+  runnerArmed?: boolean;
+  runnerFloor?: number;
+  runnerFloorV31?: number;
+  runnerFloorLearned?: number;
+  runnerTrendGatePassed?: boolean | null;
+  runnerTrendGateReason?: string | null;
+  learnedRunnerProb?: number | null;
+  learnedRecoveryProb?: number | null;
+  learnedKeepFrac?: number | null;
+  learnedEarlyStopTightened?: boolean;
+  learnedExitAction?: string | null;
+  counterfactualFixed30ExitValue?: number;
+  counterfactualV31ExitValue?: number;
+  counterfactualLearnedExitValue?: number;
+  challengerEngines?: Record<ExitRuleVersion, ChallengerEngineTradeLog>;
   sessionsHeld: number;
   lastSessionDate: string;
   staleMarks: number;
@@ -290,9 +356,26 @@ export interface ClosedTrade {
   pnlAtMidInr: number;
   maxLossInr: number;
   rMultiple: number;
+  /** Peak confirmed mark P since entry. */
+  confirmedPeakValue?: number;
+  /** MFE% of Max Gain: (P - E) / (W - E). */
+  mfeOfMaxGainPct?: number;
   mfePct: number;
   maePct: number;
   exitReason: ExitReason;
+  exitRuleVersion?: ExitRuleVersion;
+  runnerArmed?: boolean;
+  runnerTrendGatePassed?: boolean | null;
+  learnedRunnerProb?: number | null;
+  learnedRecoveryProb?: number | null;
+  learnedKeepFrac?: number | null;
+  /** What the fixed-30% rule would have returned on this trade (counterfactual). */
+  counterfactualFixed30PnlInr?: number;
+  /** What RUNNER_V3_1 would have returned on this trade (counterfactual). */
+  counterfactualV31PnlInr?: number;
+  /** What ADAPTIVE_LEARNED would have returned on this trade (counterfactual). */
+  counterfactualLearnedPnlInr?: number;
+  challengerEngines?: Record<ExitRuleVersion, ChallengerEngineTradeLog>;
   modelProb: number | null;
   entryReason: string;
 }
@@ -351,6 +434,34 @@ export interface CalibrationBucket {
   winRate: number;
 }
 
+export interface ExitPolicySnapshot {
+  version: string;
+  trainedAt: string;
+  baseEngine: ExitRuleVersion;
+  nOffline: number;
+  nLive: number;
+  nReached30: number;
+  /** Logistic regression head predicting P(Eventual MFE >= 60% | Reached 30%, features). */
+  runnerMeans: number[];
+  runnerStds: number[];
+  runnerWeights: number[];
+  runnerBias: number;
+  runnerOosAuc: number | null;
+  /** Logistic regression head predicting P(Profitable Recovery | features) for early stagnation stop tightening. */
+  recoveryMeans: number[];
+  recoveryStds: number[];
+  recoveryWeights: number[];
+  recoveryBias: number;
+  recoveryOosAuc: number | null;
+  /** Out-of-sample expectancy and lift over fixed engines. */
+  oosExpectancyInr: number;
+  oosLiftOverLadderInr: number;
+  oosLiftOverV31Inr: number;
+  oosEarlyStopsSavedCount: number;
+  topRunnerDrivers: Array<{ feature: string; weight: number }>;
+  summaryNote: string;
+}
+
 export interface ModelSnapshot {
   version: string;
   trainedAt: string;
@@ -367,6 +478,7 @@ export interface ModelSnapshot {
   liveOos: OosMetrics;
   calibration: CalibrationBucket[];
   gate: GateStatus;
+  exitPolicy?: ExitPolicySnapshot;
 }
 
 export interface EngineConfig {
@@ -388,6 +500,18 @@ export interface EngineConfig {
   takeProfitFracOfMaxGain: number;
   stopLossFracOfDebit: number;
   maxHoldSessions: number;
+  /** Runner Mode v3: MFE% of maxGain at which Runner Mode evaluates the Trend Gate (default 0.30). */
+  runnerArmMfeFrac?: number;
+  /** Runner Mode v3: Fraction of peak profit locked by the continuous trail once armed (default 2/3 = 0.6667). */
+  runnerKeepFrac?: number;
+  /** Runner Mode v3: Hard ceiling MFE% of maxGain for Runner Mode exits (default 0.75). */
+  runnerCeilingFracOfMaxGain?: number;
+  /** Runner Mode v3: Minimum ADX(14) required at arming (default 20). */
+  runnerMinAdx?: number;
+  /** Runner Mode v3: Minimum net spread delta required at arming (default 0.20). */
+  runnerMinNetDelta?: number;
+  /** Runner Mode v3: Minimum trading days to expiry required at arming (default 7). */
+  runnerMinTradingDte?: number;
   maxLegSpreadPct: number;
   minLongLegPrice: number;
   maxShortSteps: number;
@@ -428,6 +552,11 @@ export interface LiveSampleRecord {
   direction: OptionRight;
   regime: MarketRegime;
   exitReason: ExitReason;
+  mfeMaxFrac?: number;
+  sessionsHeld?: number;
+  pnlLadderV2Inr?: number;
+  pnlRunnerV3Inr?: number;
+  pnlRunnerV31Inr?: number;
 }
 
 export interface ClosedSummary {

@@ -5,8 +5,8 @@ import { filterScripMaster, generateAngelTotp } from './angelOneSmartApi.js';
 import { hourlyBarEndMs, istToMs, parseAngelExpiry, parseAngelFeedTime } from './clock.js';
 import { computeIndicators } from './indicators.js';
 import type { MarketData } from './marketData.js';
-import { aucScore, fitLogistic, predictProb, walkForward, type Sample } from './model.js';
-import { buildSpreadPlan, evaluateSpreadExit, legCharges } from './options.js';
+import { aucScore, fitLogistic, predictExitDecision, predictProb, trainModelSnapshot, walkForward, type Sample } from './model.js';
+import { buildSpreadPlan, evaluateSpreadExit, exitLevels, legCharges } from './options.js';
 import { readJournal, runPaperCycle } from './paperEngine.js';
 import { computeReadiness } from './readiness.js';
 import { loadHistoricalCache, runOfflineResearch } from './research.js';
@@ -95,7 +95,7 @@ describe('spreads, risk and the model', () => {
     assert.equal(rejected.ok, false);
   });
 
-  it('exits at the take-profit before the time stop', () => {
+  it('exits at the take-profit and ratchets the floor up when peak profit reaches 17% or 29.5% of max gain', () => {
     const reason = evaluateSpreadExit({
       plan: { entryDebit: 20, width: 100 },
       liquidationValue: 70,
@@ -104,6 +104,108 @@ describe('spreads, risk and the model', () => {
       cfg: DEFAULT_ENGINE_CONFIG,
     });
     assert.equal(reason, 'TAKE_PROFIT');
+
+    // RELIANCE 1300/1330 CE example: entry 11.20, width 30, maxGain 18.80
+    const relPlan = { entryDebit: 11.2, width: 30 };
+    // At Peak 14.40 (17.02% of maxGain), Stage 2 BREAKEVEN_LOCK ratchets floor above entryDebit (12.30 vs 3.14 initial)
+    const stage2 = exitLevels(relPlan, DEFAULT_ENGINE_CONFIG, { peakValue: 14.4, sessionsHeld: 1 });
+    assert.equal(stage2.stage, 'BREAKEVEN_LOCK');
+    assert.ok(stage2.stop > relPlan.entryDebit);
+    assert.equal(stage2.stop, 12.3);
+
+    // At 29.5% of maxGain (Peak 16.75), Stage 3 PROFIT_TRAIL locks in ~14.91 (+19.7% of maxGain)
+    const stage3 = exitLevels(relPlan, DEFAULT_ENGINE_CONFIG, { peakValue: 16.75, sessionsHeld: 1 });
+    assert.equal(stage3.stage, 'PROFIT_TRAIL');
+    assert.ok(stage3.stop >= 14.9);
+    // If market reverses from 16.75 down to 14.80, it exits as TRAIL_STOP instead of falling to -72% (3.14)
+    const trailExit = evaluateSpreadExit({
+      plan: relPlan,
+      liquidationValue: 14.8,
+      peakValue: 16.75,
+      sessionsHeld: 1,
+      dte: 20,
+      cfg: DEFAULT_ENGINE_CONFIG,
+    });
+    assert.equal(trailExit, 'TRAIL_STOP');
+
+    // Runner Mode v3 & v3.1 verification on RELIANCE 1300/1330 CE (E=11.20, W=30.00, G=18.80, Lot=500):
+    // 30% MFE (P=16.84): v3 floor=14.96 (+1880), v3.1 floor=15.71 (+2256, +376 more)
+    const runner30 = exitLevels(relPlan, DEFAULT_ENGINE_CONFIG, { peakValue: 16.84, runnerArmed: true, sessionsHeld: 1 });
+    assert.equal(runner30.stage, 'RUNNER_MODE');
+    assert.equal(runner30.runnerFloorV3, 14.96);
+    assert.equal(runner30.runnerFloorV31, 15.71);
+    assert.equal(runner30.runnerCushionV3, 1.88);
+    assert.equal(runner30.runnerCushionV31, 1.13);
+    assert.equal(runner30.ceilingTarget, 25.3);
+
+    // 35% MFE (P=17.78): v3 floor=15.59 (+2195), v3.1 floor=16.32 (+2560, +365 more)
+    const runner35 = exitLevels(relPlan, DEFAULT_ENGINE_CONFIG, {
+      peakValue: 17.78,
+      runnerArmed: true,
+      previousFloor: runner30.runnerFloorV3,
+      previousFloorV31: runner30.runnerFloorV31,
+      sessionsHeld: 1,
+    });
+    assert.equal(runner35.runnerFloorV3, 15.59);
+    assert.equal(runner35.runnerFloorV31, 16.32);
+    assert.equal(runner35.runnerCushionV3, 2.19);
+    assert.equal(runner35.runnerCushionV31, 1.46);
+
+    // 45% MFE (P=19.66): v3 floor=16.84 (+2820), v3.1 floor=17.40 (+3102, +282 more)
+    const runner45 = exitLevels(relPlan, DEFAULT_ENGINE_CONFIG, {
+      peakValue: 19.66,
+      runnerArmed: true,
+      previousFloor: runner35.runnerFloorV3,
+      previousFloorV31: runner35.runnerFloorV31,
+      sessionsHeld: 1,
+    });
+    assert.equal(runner45.runnerFloorV3, 16.84);
+    assert.equal(runner45.runnerFloorV31, 17.4);
+
+    // 60% MFE (P=22.48): v3 floor=18.72 (+3760), v3.1 floor=18.72 (+3760, converged!)
+    const runner60 = exitLevels(relPlan, DEFAULT_ENGINE_CONFIG, {
+      peakValue: 22.48,
+      runnerArmed: true,
+      previousFloor: runner45.runnerFloorV3,
+      previousFloorV31: runner45.runnerFloorV31,
+      sessionsHeld: 1,
+    });
+    assert.equal(runner60.runnerFloorV3, 18.72);
+    assert.equal(runner60.runnerFloorV31, 18.72);
+
+    const ceilingExit = evaluateSpreadExit({
+      plan: relPlan,
+      liquidationValue: 25.3,
+      peakValue: 25.3,
+      runnerArmed: true,
+      previousFloor: runner60.stop,
+      sessionsHeld: 1,
+      dte: 15,
+      cfg: DEFAULT_ENGINE_CONFIG,
+    });
+    assert.equal(ceilingExit, 'TAKE_PROFIT');
+
+    // Self-Learning Exit Policy (ADAPTIVE_LEARNED):
+    // 1. High runner probability -> learnedKeepFrac closer to 0.72, low runner probability -> 0.82
+    const learnedTight = exitLevels(relPlan, DEFAULT_ENGINE_CONFIG, {
+      peakValue: 16.84,
+      runnerArmed: true,
+      variant: 'ADAPTIVE_LEARNED',
+      learnedKeepFrac: 0.82,
+      sessionsHeld: 1,
+    });
+    assert.ok(learnedTight.runnerFloorLearned > runner30.runnerFloorV31);
+    assert.equal(learnedTight.stop, learnedTight.runnerFloorLearned);
+
+    // 2. Early stop tightening (-38% of debit instead of -72%) when learnedEarlyStopTightened=true after >=3 stagnant sessions
+    const tightened = exitLevels(relPlan, DEFAULT_ENGINE_CONFIG, {
+      peakValue: 11.4,
+      sessionsHeld: 3,
+      variant: 'ADAPTIVE_LEARNED',
+      learnedEarlyStopTightened: true,
+    });
+    assert.equal(tightened.stop, 6.93); // 11.20 * (1 - 0.72 * 0.53) = 6.93 vs 3.14 (-72%)
+    assert.equal(tightened.ratcheted, true);
   });
 
   it('rejects a fourth position and a lot that risks more than the per-trade limit', () => {
@@ -261,7 +363,8 @@ describe('research and readiness', () => {
   it('loads the real hourly cache and labels the research as model-priced with positive prior and ML gate lift', () => {
     const cache = loadHistoricalCache();
     assert.ok(cache && cache.NIFTY.length > 1000);
-    const report = runOfflineResearch(cache!).report;
+    const research = runOfflineResearch(cache!);
+    const report = research.report;
     assert.equal(report.kind, 'MODEL_PRICED_BACKTEST');
     assert.ok(report.summary.n > 100);
     assert.equal(typeof report.oppositeDirectionBaseline.avgR, 'number');
@@ -279,5 +382,26 @@ describe('research and readiness', () => {
       '1-year ML-gated portfolio replay should end above starting capital'
     );
     assert.ok(report.disclaimer.includes('Black-Scholes'));
+
+    // Verify Challenger Registry ordering: LADDER_V2 < RUNNER_V3 < RUNNER_V3_1 < ADAPTIVE_LEARNED
+    const reg = report.runnerValidation?.challengerRegistry;
+    assert.ok(reg, 'runnerValidation.challengerRegistry should exist');
+    const v2 = reg!.variants.find((v) => v.engine === 'LADDER_V2')!;
+    const v3 = reg!.variants.find((v) => v.engine === 'RUNNER_V3')!;
+    const v31 = reg!.variants.find((v) => v.engine === 'RUNNER_V3_1')!;
+    const learned = reg!.variants.find((v) => v.engine === 'ADAPTIVE_LEARNED')!;
+    assert.ok(v3.expectancyPerLotInr > v2.expectancyPerLotInr);
+    assert.ok(v31.expectancyPerLotInr > v3.expectancyPerLotInr);
+    assert.ok(learned.expectancyPerLotInr > v31.expectancyPerLotInr);
+    assert.ok(learned.endingEquityInr >= v31.endingEquityInr);
+
+    // Verify self-learning ExitPolicySnapshot trains cleanly and predicts live exit decisions
+    const snap = trainModelSnapshot(research.samples, [], Date.now(), { oos: research.offlineOos });
+    assert.ok(snap?.exitPolicy, 'trainModelSnapshot should produce exitPolicy');
+    assert.equal(snap!.exitPolicy!.baseEngine, 'RUNNER_V3_1');
+    assert.ok(snap!.exitPolicy!.oosLiftOverV31Inr > 0);
+    const dec = predictExitDecision(snap!.exitPolicy, research.samples[0].x, { mfeFrac: 0.17, sessionsHeld: 1 });
+    assert.ok(dec.runnerProb > 0 && dec.runnerProb < 1);
+    assert.ok(dec.learnedKeepFrac >= 0.667 && dec.learnedKeepFrac <= 0.85);
   });
 });

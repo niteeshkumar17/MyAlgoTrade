@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { formatInr } from '../quant/format';
+import { exitLevels } from '../quant/options';
 import type { SiblingExpiryOption, TerminalCandleResponse, TerminalInterval } from '../quant/terminalCandles';
 import type { Candidate, Candle, OptionRight, PaperPosition, SpotQuote } from '../quant/types';
 import { UNDERLYINGS } from '../quant/types';
@@ -122,6 +123,23 @@ export const TerminalChart: React.FC<{
 
   const activePlan = target.position?.plan ?? target.candidate?.plan ?? null;
   const activeMark = target.position?.lastMark ?? target.candidate?.lastMark ?? null;
+  const activePeakValue =
+    target.position?.confirmedPeakValue ??
+    target.position?.peakValue ??
+    target.candidate?.confirmedPeakValue ??
+    target.candidate?.peakValue ??
+    activeMark?.liquidationValue ??
+    activePlan?.entryDebit;
+  const activeSessionsHeld = target.position?.sessionsHeld ?? target.candidate?.sessionsHeld ?? 1;
+  const activeRunnerArmed = Boolean(target.position?.runnerArmed ?? target.candidate?.runnerArmed);
+  const activePrevFloor = target.position?.runnerFloor ?? target.candidate?.runnerFloor;
+  const activePrevFloorV31 = target.position?.runnerFloorV31 ?? target.candidate?.runnerFloorV31;
+  const activePrevFloorLearned = target.position?.runnerFloorLearned ?? target.candidate?.runnerFloorLearned;
+  const activeLearnedKeepFrac = target.position?.learnedKeepFrac ?? target.candidate?.learnedKeepFrac;
+  const activeLearnedEarlyStop = Boolean(
+    target.position?.learnedEarlyStopTightened ?? target.candidate?.learnedEarlyStopTightened
+  );
+  const activeLearnedRunnerProb = target.position?.learnedRunnerProb ?? target.candidate?.learnedRunnerProb;
 
   useEffect(() => {
     let cancelled = false;
@@ -322,8 +340,46 @@ export const TerminalChart: React.FC<{
   const askPrice = liveStreamQuote?.ask ?? data?.quote.ask ?? activeBar?.close ?? 0;
   const spreadVal = Math.max(0, askPrice - bidPrice);
 
+  const activeExitLevels = useMemo(() => {
+    if (!activePlan) return null;
+    const entry = activePlan.entryDebit;
+    return exitLevels(
+      activePlan,
+      {
+        exitAtDte: 1,
+        takeProfitFracOfMaxGain: takeProfitFrac,
+        stopLossFracOfDebit: stopLossFrac,
+        maxHoldSessions: 14,
+      },
+      {
+        peakValue: Math.max(activePeakValue ?? entry, activeMark?.liquidationValue ?? entry),
+        sessionsHeld: activeSessionsHeld,
+        runnerArmed: activeRunnerArmed,
+        previousFloor: activePrevFloor,
+        previousFloorV31: activePrevFloorV31,
+        previousFloorLearned: activePrevFloorLearned,
+        variant: 'ADAPTIVE_LEARNED',
+        learnedKeepFrac: activeLearnedKeepFrac,
+        learnedEarlyStopTightened: activeLearnedEarlyStop,
+      }
+    );
+  }, [
+    activePlan,
+    activePeakValue,
+    activeSessionsHeld,
+    activeRunnerArmed,
+    activePrevFloor,
+    activePrevFloorV31,
+    activePrevFloorLearned,
+    activeLearnedKeepFrac,
+    activeLearnedEarlyStop,
+    activeMark?.liquidationValue,
+    takeProfitFrac,
+    stopLossFrac,
+  ]);
+
   const referenceLevels = useMemo(() => {
-    if (!activePlan || legMode === 'spot' || overrideExpiry) return [];
+    if (!activePlan || !activeExitLevels || legMode === 'spot' || overrideExpiry) return [];
     if (legMode === 'long') {
       return [{ label: 'Entry Ask', price: activePlan.long.ask, color: '#2563EB' }];
     }
@@ -331,14 +387,32 @@ export const TerminalChart: React.FC<{
       return [{ label: 'Entry Bid (Sold)', price: activePlan.short.bid, color: '#7C3AED' }];
     }
     const entry = activePlan.entryDebit;
-    const targetVal = entry + (activePlan.width - entry) * takeProfitFrac;
-    const stopVal = entry * (1 - stopLossFrac);
+    const lvls = activeExitLevels;
+    const stopLabel =
+      lvls.stage === 'RUNNER_MODE'
+        ? `Runner (${Math.round(lvls.keepFracActive * 100)}% Keep)`
+        : lvls.stage === 'PROFIT_TRAIL'
+          ? 'Trail Profit Lock'
+          : lvls.stage === 'BREAKEVEN_LOCK'
+            ? 'Break-Even Lock'
+            : lvls.stage === 'TIME_DECAY'
+              ? activeLearnedEarlyStop
+                ? 'Learned Early Stop (-38%)'
+                : 'Ratchet Floor'
+              : 'Initial Stop';
+    if (lvls.runnerArmed) {
+      return [
+        { label: 'Runner Ceiling (75%)', price: lvls.ceilingTarget, color: '#00B386' },
+        { label: stopLabel, price: lvls.stop, color: '#D97706' },
+        { label: 'Entry Debit', price: entry, color: '#2563EB' },
+      ];
+    }
     return [
-      { label: 'Target', price: targetVal, color: '#00B386' },
+      { label: '30% Target / Arm Gate', price: lvls.fixed30Target, color: '#00B386' },
       { label: 'Entry Debit', price: entry, color: '#2563EB' },
-      { label: 'Stop Loss', price: stopVal, color: '#EB5B3C' },
+      { label: stopLabel, price: lvls.stop, color: lvls.ratcheted ? '#D97706' : '#EB5B3C' },
     ];
-  }, [activePlan, overrideExpiry, legMode, takeProfitFrac, stopLossFrac]);
+  }, [activePlan, activeExitLevels, activeLearnedEarlyStop, overrideExpiry, legMode]);
 
   // SVG Geometry
   const svgW = 1140;
@@ -1180,16 +1254,28 @@ export const TerminalChart: React.FC<{
                 <span className="text-right font-mono font-semibold text-slate-900">
                   ₹{(activeMark?.liquidationValue ?? activePlan.entryDebit).toFixed(2)}
                 </span>
-                <span className="text-slate-500">Target / Stop:</span>
+                <span className="text-slate-500">Target / Ratchet Floor:</span>
                 <span className="text-right font-mono text-slate-800">
-                  <span className="text-[#00B386]">₹{(activePlan.entryDebit + (activePlan.width - activePlan.entryDebit) * takeProfitFrac).toFixed(2)}</span>
+                  <span className="text-[#00B386]">
+                    ₹{(activeExitLevels?.target ?? activePlan.entryDebit + (activePlan.width - activePlan.entryDebit) * takeProfitFrac).toFixed(2)}
+                  </span>
                   {' / '}
-                  <span className="text-[#EB5B3C]">₹{(activePlan.entryDebit * (1 - stopLossFrac)).toFixed(2)}</span>
+                  <span className={activeExitLevels && activeExitLevels.stop > activePlan.entryDebit ? 'font-bold text-[#008F6B]' : 'text-[#EB5B3C]'}>
+                    ₹{(activeExitLevels?.stop ?? activePlan.entryDebit * (1 - stopLossFrac)).toFixed(2)}
+                  </span>
                 </span>
                 <span className="text-slate-500">Max Gain / Loss (1 Lot):</span>
                 <span className="text-right font-mono text-slate-800">
                   +{formatInr(activePlan.maxGainPerLot)} / -{formatInr(activePlan.maxLossPerLot)}
                 </span>
+                {typeof activeLearnedRunnerProb === 'number' ? (
+                  <>
+                    <span className="text-slate-500">Learned Exit (v3.1+):</span>
+                    <span className="text-right font-mono text-[11px] font-semibold text-indigo-700">
+                      Runner {(activeLearnedRunnerProb * 100).toFixed(0)}% · Keep {((activeLearnedKeepFrac ?? 0.8) * 100).toFixed(0)}%
+                    </span>
+                  </>
+                ) : null}
               </div>
             </button>
           </div>

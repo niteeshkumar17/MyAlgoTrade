@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { EquityCurveChart } from './components/EquityCurveChart';
 import { TerminalChart, type TerminalTarget } from './components/TerminalChart';
 import { formatInr, formatIst, formatPct, formatSigned } from './quant/format';
+import { exitLevels } from './quant/options';
 import type { DashboardPayload } from './quant/report';
+import type { RunnerValidationReport } from './quant/research';
 import type { GroupStat } from './quant/stats';
 import type { Candidate, ClosedTrade, PaperPosition, SpotQuote } from './quant/types';
 import { UNDERLYINGS } from './quant/types';
@@ -22,6 +24,7 @@ interface ResearchView {
     };
   };
   oppositeDirectionBaseline: { n: number; avgR: number | null };
+  runnerValidation?: RunnerValidationReport;
   portfolio: {
     startingCapitalInr: number;
     endingEquityInr: number;
@@ -632,6 +635,7 @@ export default function App() {
             candidates={dash.activeCandidates}
             closedCandidates={candidates}
             decisionLog={dash.decisionLog}
+            config={dash.config}
             onOpenTerminal={openInTerminal}
           />
         ) : tab === 'performance' ? (
@@ -1052,6 +1056,29 @@ function Overview({
                     const up = p.unrealizedInr >= 0;
                     const longNow = p.lastMark?.longBid ?? p.plan.long.bid;
                     const shortNow = p.lastMark?.shortAsk ?? p.plan.short.ask;
+                    const lvls = exitLevels(p.plan, dash.config, {
+                      peakValue: Math.max(p.confirmedPeakValue ?? p.peakValue ?? mark, mark),
+                      sessionsHeld: p.sessionsHeld,
+                      runnerArmed: p.runnerArmed,
+                      previousFloor: p.runnerFloor,
+                      previousFloorV31: p.runnerFloorV31,
+                      previousFloorLearned: p.runnerFloorLearned,
+                      variant: p.exitRuleVersion ?? 'ADAPTIVE_LEARNED',
+                      learnedKeepFrac: p.learnedKeepFrac,
+                      learnedEarlyStopTightened: p.learnedEarlyStopTightened,
+                    });
+                    const stageLabel =
+                      lvls.stage === 'RUNNER_MODE'
+                        ? `RUNNER (${Math.round(lvls.keepFracActive * 100)}% KEEP)`
+                        : lvls.stage === 'PROFIT_TRAIL'
+                          ? 'PROFIT TRAIL LOCK'
+                          : lvls.stage === 'BREAKEVEN_LOCK'
+                            ? 'BREAKEVEN + COST LOCK'
+                            : lvls.stage === 'TIME_DECAY'
+                              ? p.learnedEarlyStopTightened
+                                ? 'LEARNED EARLY STOP (-38%)'
+                                : 'RATCHET FLOOR'
+                              : 'INITIAL STOP';
                     return (
                       <div
                         key={p.id}
@@ -1117,9 +1144,55 @@ function Overview({
                           </div>
                         </div>
 
-                        <div className="mt-2.5 flex items-center justify-between border-t border-slate-200/70 pt-2 text-xs">
+                        {/* Dynamic High-Water-Mark Exit Ratchet + Self-Learning Exit Policy Strip */}
+                        <div className="mt-2 space-y-1 rounded-lg border border-slate-200/70 bg-slate-100/60 px-2.5 py-1.5 font-mono text-[10px]">
+                          <div className="flex flex-wrap items-center justify-between gap-1">
+                            <span className="text-slate-600">
+                              Floor <strong className={lvls.stop > p.plan.entryDebit ? 'text-[#008F6B]' : 'text-amber-700'}>₹{lvls.stop.toFixed(2)}</strong>
+                              {lvls.ratcheted ? (
+                                <span className="ml-1 text-slate-400 line-through">₹{lvls.initialStop.toFixed(2)}</span>
+                              ) : null}
+                            </span>
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                                lvls.stop > p.plan.entryDebit
+                                  ? 'bg-emerald-100 text-[#008F6B]'
+                                  : lvls.ratcheted
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-slate-200 text-slate-600'
+                              }`}
+                            >
+                              {stageLabel}
+                            </span>
+                            <span className="text-slate-600">
+                              {lvls.runnerArmed ? 'Ceiling' : '30% Gate'} <strong className="text-[#008F6B]">₹{lvls.target.toFixed(2)}</strong>
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-1 border-t border-slate-200/60 pt-1 text-[9.5px] text-slate-500">
+                            <span>
+                              30% Gate (₹{lvls.fixed30Target.toFixed(2)}):{' '}
+                              <strong className="text-slate-700">v2 ₹{lvls.fixed30Target.toFixed(2)}</strong> ·{' '}
+                              <strong className="text-[#008F6B]">v3 ₹{lvls.runnerFloorAtArm.toFixed(2)}</strong> ·{' '}
+                              <strong className="text-indigo-700">v3.1 ₹{lvls.runnerFloorAtArmV31.toFixed(2)}</strong> ·{' '}
+                              <strong className="text-purple-700">Learned ₹{lvls.runnerFloorAtArmLearned.toFixed(2)}</strong>
+                            </span>
+                            <span>Ceiling ₹{lvls.ceilingTarget.toFixed(2)}</span>
+                          </div>
+                          {typeof p.learnedRunnerProb === 'number' ? (
+                            <div className="flex flex-wrap items-center justify-between gap-1 border-t border-indigo-200/60 pt-1 text-[9.5px] text-indigo-900">
+                              <span>
+                                <strong>Self-Learning Exit (v3.1+):</strong> Runner ≥60% Prob{' '}
+                                <strong>{(p.learnedRunnerProb * 100).toFixed(1)}%</strong> · Recovery Prob{' '}
+                                <strong>{((p.learnedRecoveryProb ?? 0.5) * 100).toFixed(1)}%</strong> · Keep{' '}
+                                <strong>{((p.learnedKeepFrac ?? 0.8) * 100).toFixed(1)}%</strong>
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="mt-2 flex items-center justify-between border-t border-slate-200/70 pt-2 text-xs">
                           <span className="font-mono text-[11px] text-slate-500">
-                            Entry ₹{p.plan.entryDebit.toFixed(2)} → Now ₹{mark.toFixed(2)}
+                            Entry ₹{p.plan.entryDebit.toFixed(2)} → Now ₹{mark.toFixed(2)} (Confirmed P ₹{lvls.peakValue.toFixed(2)})
                           </span>
                           <span className="inline-flex items-center gap-1 font-semibold text-[#00B386]">
                             <span>Terminal</span>
@@ -1365,6 +1438,17 @@ function Book({
 
                   const netAfterCharges = p.netUnrealizedInr ?? p.unrealizedInr;
                   const charges = p.estChargesInr ?? 151.25;
+                  const lvls = exitLevels(p.plan, dash.config, {
+                    peakValue: Math.max(p.confirmedPeakValue ?? p.peakValue ?? nowSpread, nowSpread),
+                    sessionsHeld: p.sessionsHeld,
+                    runnerArmed: p.runnerArmed,
+                    previousFloor: p.runnerFloor,
+                    previousFloorV31: p.runnerFloorV31,
+                    previousFloorLearned: p.runnerFloorLearned,
+                    variant: p.exitRuleVersion ?? 'ADAPTIVE_LEARNED',
+                    learnedKeepFrac: p.learnedKeepFrac,
+                    learnedEarlyStopTightened: p.learnedEarlyStopTightened,
+                  });
 
                   return (
                     <React.Fragment key={p.id}>
@@ -1380,8 +1464,13 @@ function Book({
                           <div className="font-bold text-slate-900">
                             {p.underlying} {formatExpiryLabel(p.plan.expiry)} {p.plan.long.strike}/{p.plan.short.strike} {p.direction}
                           </div>
-                          <div className="text-[11px] text-slate-400">
-                            2-Leg Vertical Debit Spread · Expiry {p.plan.expiry}
+                          <div className="text-[11px] text-slate-500">
+                            Floor <strong className={lvls.stop > p.plan.entryDebit ? 'text-[#008F6B]' : 'text-amber-700'}>₹{lvls.stop.toFixed(2)}</strong> ({lvls.stage.replace('_', ' ')}) · Peak ₹{lvls.peakValue.toFixed(2)} · Target ₹{lvls.target.toFixed(2)}
+                            {typeof p.learnedRunnerProb === 'number' ? (
+                              <span className="ml-1.5 text-indigo-700">
+                                · P(Runner≥60%) {(p.learnedRunnerProb * 100).toFixed(0)}% · Keep {((p.learnedKeepFrac ?? 0.8) * 100).toFixed(0)}%
+                              </span>
+                            ) : null}
                           </div>
                         </td>
                         <td className="py-3.5 pr-3 text-xs text-slate-600">{p.strategy.replace('_', ' ')}</td>
@@ -1559,11 +1648,13 @@ function OrdersAndSignals({
   candidates,
   closedCandidates,
   decisionLog,
+  config,
   onOpenTerminal,
 }: {
   candidates: Candidate[];
   closedCandidates: Candidate[];
   decisionLog: Array<{ t: string; kind: string; message: string }>;
+  config: DashboardPayload['config'];
   onOpenTerminal: (t: TerminalTarget) => void;
 }) {
   const allRows = [...candidates, ...closedCandidates].slice(0, 40);
@@ -1597,6 +1688,17 @@ function OrdersAndSignals({
                 {allRows.map((c) => {
                   const liveLiq = c.lastMark?.liquidationValue ?? c.plan.entryDebit;
                   const liveOneLotPnl = Math.round((liveLiq - c.plan.entryDebit) * c.plan.lotSize);
+                  const lvls = exitLevels(c.plan, config, {
+                    peakValue: Math.max(c.confirmedPeakValue ?? c.peakValue ?? liveLiq, liveLiq),
+                    sessionsHeld: c.sessionsHeld,
+                    runnerArmed: c.runnerArmed,
+                    previousFloor: c.runnerFloor,
+                    previousFloorV31: c.runnerFloorV31,
+                    previousFloorLearned: c.runnerFloorLearned,
+                    variant: c.exitRuleVersion ?? 'ADAPTIVE_LEARNED',
+                    learnedKeepFrac: c.learnedKeepFrac,
+                    learnedEarlyStopTightened: c.learnedEarlyStopTightened,
+                  });
                   return (
                     <tr
                       key={c.id}
@@ -1638,7 +1740,12 @@ function OrdersAndSignals({
                               {formatInr(liveOneLotPnl)}
                             </div>
                             <div className="text-[10px] text-slate-400">
-                              ₹{c.plan.entryDebit.toFixed(2)} → ₹{liveLiq.toFixed(2)} · Tracking Live
+                              ₹{c.plan.entryDebit.toFixed(2)} → ₹{liveLiq.toFixed(2)} · Floor ₹{lvls.stop.toFixed(2)}
+                              {typeof c.learnedRunnerProb === 'number' ? (
+                                <span className="ml-1 text-indigo-600">
+                                  · Keep {((c.learnedKeepFrac ?? 0.8) * 100).toFixed(0)}%
+                                </span>
+                              ) : null}
                             </div>
                           </div>
                         )}
@@ -1744,6 +1851,122 @@ function Performance({ dash, research }: { dash: DashboardPayload; research: Res
                   </span>
                 ) : null}
               </div>
+              {research.runnerValidation ? (
+                <div className="mt-4 space-y-3 rounded-xl border border-indigo-200 bg-indigo-50/40 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-semibold text-indigo-950">
+                        Exit Engine Registry: LADDER_V2 vs. RUNNER_V3 vs. RUNNER_V3_1 (Winner) vs. ADAPTIVE_LEARNED (Self-Learning)
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-slate-600">
+                        {research.runnerValidation.mfeDistributionAt30.reached30Count} of{' '}
+                        {research.runnerValidation.fixed30Summary.n} trades (
+                        {(
+                          (research.runnerValidation.mfeDistributionAt30.reached30Count /
+                            Math.max(1, research.runnerValidation.fixed30Summary.n)) *
+                          100
+                        ).toFixed(1)}
+                        %) reached ≥30% MFE.{' '}
+                        {research.runnerValidation.mfeDistributionAt30.trendGatePassedCount} passed the 4-factor Trend
+                        Gate. Active Engine: <strong>ADAPTIVE_LEARNED</strong> (built on winning <strong>RUNNER_V3_1</strong> taper + online Contextual Exit Policy).
+                      </p>
+                    </div>
+                    <span className="rounded bg-indigo-100 px-2 py-0.5 font-mono text-[10px] font-semibold text-indigo-900">
+                      ACTIVE: ADAPTIVE_LEARNED (RUNNER_V3_1 BASE)
+                    </span>
+                  </div>
+
+                  {research.runnerValidation.challengerRegistry ? (
+                    <>
+                      <div className="overflow-x-auto rounded-lg border border-indigo-200/80 bg-white">
+                        <table className="w-full text-left text-xs">
+                          <thead className="border-b border-slate-200 bg-slate-50/80 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                            <tr>
+                              <th className="px-3 py-2">Registered Engine</th>
+                              <th className="px-3 py-2 text-right">Expectancy</th>
+                              <th className="px-3 py-2 text-right">Avg R (90% CI)</th>
+                              <th className="px-3 py-2 text-right">Capture Ratio</th>
+                              <th className="px-3 py-2 text-right">Armed Runner Shake-Out</th>
+                              <th className="px-3 py-2 text-right">Staller Protected (30–45%)</th>
+                              <th className="px-3 py-2 text-right">Max DD</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
+                            {research.runnerValidation.challengerRegistry.variants.map((v) => (
+                              <tr key={v.engine} className="hover:bg-slate-50/80">
+                                <td className="px-3 py-2 font-sans">
+                                  <div className="font-semibold text-slate-900">{v.label}</div>
+                                  <div className="text-[10px] text-slate-500">{v.ruleSummary}</div>
+                                </td>
+                                <td className={`px-3 py-2 text-right font-bold ${pnlColor(v.expectancyPerLotInr)}`}>
+                                  {formatInr(v.expectancyPerLotInr)}/lot
+                                </td>
+                                <td className="px-3 py-2 text-right text-slate-700">
+                                  {formatSigned(v.avgR, 4)}
+                                  {v.rCi90 ? (
+                                    <div className="text-[9.5px] text-slate-400">
+                                      [{v.rCi90[0].toFixed(3)}, {v.rCi90[1].toFixed(3)}]
+                                    </div>
+                                  ) : null}
+                                </td>
+                                <td className="px-3 py-2 text-right text-slate-700">
+                                  {v.captureRatioMean.toFixed(1)}%
+                                  {v.captureRatioCi90 ? (
+                                    <div className="text-[9.5px] text-slate-400">
+                                      [{v.captureRatioCi90[0].toFixed(1)}%, {v.captureRatioCi90[1].toFixed(1)}%]
+                                    </div>
+                                  ) : null}
+                                </td>
+                                <td className="px-3 py-2 text-right text-slate-700">
+                                  {v.armedRunnerShakeOutCount}/{v.armedRunnerShakeOutTotal} (
+                                  {v.armedRunnerShakeOutRatePct.toFixed(0)}%)
+                                  <div className="text-[9.5px] text-slate-400">
+                                    All ≥60%: {v.runnerShakeOutCount}/{v.runnerShakeOutTotal}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2 text-right text-slate-700">
+                                  {v.stallerProtectedCount}/{v.stallerTotal} ({v.stallerProtectedRatePct.toFixed(1)}%)
+                                  <div className="text-[9.5px] text-[#008F6B]">
+                                    Armed avg: {formatInr(v.stallerArmedMeanPnlInr)}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2 text-right text-slate-700">{v.maxDrawdownPct.toFixed(1)}%</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="grid gap-2 sm:grid-cols-3">
+                        {research.runnerValidation.challengerRegistry.pairedComparisons.map((p) => (
+                          <div key={p.pair} className="rounded-lg border border-indigo-200/70 bg-white px-3 py-2">
+                            <div className="text-[10.5px] font-semibold text-slate-700">{p.pair}</div>
+                            <div className={`mt-0.5 font-mono text-xs font-bold ${pnlColor(p.meanDiffInr)}`}>
+                              Δ {p.meanDiffInr >= 0 ? '+' : ''}
+                              {formatInr(p.meanDiffInr)}/lot ({formatSigned(p.meanDiffR, 4)} R)
+                            </div>
+                            <div className="font-mono text-[10px] text-slate-500">
+                              90% CI:{' '}
+                              {p.diffInrCi90
+                                ? `[${formatInr(p.diffInrCi90[0])}, ${formatInr(p.diffInrCi90[1])}]`
+                                : '—'}
+                            </div>
+                            <div className="mt-0.5 font-mono text-[9.5px] text-slate-500">
+                              t={p.tStat.toFixed(2)} · p={p.rawPValue.toFixed(3)} · Holm p_adj=
+                              {p.holmAdjustedPValue.toFixed(3)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="rounded-lg border border-indigo-200/70 bg-white px-3 py-2 text-[11px] text-slate-700">
+                        <strong className="text-indigo-950">Shake-Out vs. Staller Protection Verdict:</strong>{' '}
+                        {research.runnerValidation.challengerRegistry.shakeOutBreakeven.verdict}
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="mt-4">
                 <ScoreTable title="1-Year Research by Strategy" rows={research.byStrategy} money="₹/lot" />
               </div>
@@ -1803,6 +2026,162 @@ function Learning({ dash }: { dash: DashboardPayload }) {
           <p className="mt-2 text-sm text-slate-400">Model initializes on the first live cycle.</p>
         )}
       </section>
+
+      {model?.exitPolicy ? (
+        <section className="rounded-2xl border border-indigo-200 bg-white p-5 shadow-2xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">
+                Self-Learning Contextual Exit Policy (ADAPTIVE_LEARNED · Base: RUNNER_V3_1)
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {model.exitPolicy.summaryNote}
+              </p>
+            </div>
+            <span className="rounded-full bg-indigo-50 px-3 py-1 font-mono text-xs font-semibold text-indigo-800">
+              {model.exitPolicy.version} · Live Weight 10.0×
+            </span>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-4">
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-3.5">
+              <div className="text-xs font-semibold text-indigo-900">OOS Expectancy (Adaptive Exit)</div>
+              <div className="mt-1 font-mono text-xl font-bold text-[#008F6B] tabular-nums">
+                {formatInr(model.exitPolicy.oosExpectancyInr)}/lot
+              </div>
+              <div className="mt-0.5 font-mono text-[11px] text-slate-600">
+                +{formatInr(model.exitPolicy.oosLiftOverLadderInr)} vs v2 · +{formatInr(model.exitPolicy.oosLiftOverV31Inr)} vs v3.1
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5">
+              <div className="text-xs text-slate-500">Runner Continuation Head (≥60% MFE)</div>
+              <div className="mt-1 font-mono text-xl font-bold text-slate-900 tabular-nums">
+                AUC {model.exitPolicy.runnerOosAuc === null ? '—' : model.exitPolicy.runnerOosAuc.toFixed(3)}
+              </div>
+              <div className="mt-0.5 text-[11px] text-slate-500">
+                Trained on {model.exitPolicy.nReached30} trades reaching ≥30% MFE
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5">
+              <div className="text-xs text-slate-500">Early Stop Tightening Head</div>
+              <div className="mt-1 font-mono text-xl font-bold text-slate-900 tabular-nums">
+                AUC {model.exitPolicy.recoveryOosAuc === null ? '—' : model.exitPolicy.recoveryOosAuc.toFixed(3)}
+              </div>
+              <div className="mt-0.5 text-[11px] text-slate-500">
+                Tightens stop from -72% → -38% on stagnant trades
+              </div>
+            </div>
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-3.5">
+              <div className="text-xs font-semibold text-[#008F6B]">Stagnant Stop Losses Saved</div>
+              <div className="mt-1 font-mono text-xl font-bold text-[#008F6B] tabular-nums">
+                {model.exitPolicy.oosEarlyStopsSavedCount} trades
+              </div>
+              <div className="mt-0.5 text-[11px] text-slate-600">
+                Cut early before full -72% debit stop
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+              Top Learned Drivers of ≥60% Runner Continuation vs. Early Stall
+            </h3>
+            <div className="grid gap-2 sm:grid-cols-3">
+              {model.exitPolicy.topRunnerDrivers.map((d) => (
+                <div
+                  key={d.feature}
+                  className="flex items-center justify-between rounded-lg border border-slate-200/80 bg-slate-50/60 px-3 py-2 text-xs"
+                >
+                  <div>
+                    <div className="font-semibold text-slate-800">{d.feature}</div>
+                    <div className="text-[10px] text-slate-500">
+                      {d.weight >= 0 ? 'Favors ≥60% Runner' : 'Favors Early Stall / Tight Trail'}
+                    </div>
+                  </div>
+                  <span className={`font-mono font-bold ${pnlColor(d.weight)}`}>
+                    {d.weight >= 0 ? '+' : ''}
+                    {d.weight.toFixed(3)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {dash.openPositions.length > 0 || dash.activeCandidates.length > 0 ? (
+            <div className="mt-4">
+              <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                Live Self-Learning Exit Policy Decisions (Open Ledger &amp; Shadow Candidates)
+              </h3>
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-left text-xs">
+                  <thead className="border-b border-slate-200 bg-slate-50 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Contract</th>
+                      <th className="px-3 py-2 text-right">MFE %</th>
+                      <th className="px-3 py-2 text-right">P(Runner ≥60%)</th>
+                      <th className="px-3 py-2 text-right">P(Recovery)</th>
+                      <th className="px-3 py-2 text-right">Learned Keep %</th>
+                      <th className="px-3 py-2">Adaptive Exit Policy Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
+                    {dash.openPositions.map((p) => {
+                      const pPeak = Math.max(p.plan.entryDebit, p.confirmedPeakValue ?? p.peakValue ?? p.plan.entryDebit);
+                      const pMfePct = ((pPeak - p.plan.entryDebit) / Math.max(0.01, p.plan.width - p.plan.entryDebit)) * 100;
+                      return (
+                        <tr key={p.id} className="bg-emerald-50/30">
+                          <td className="px-3 py-2 font-sans font-semibold text-slate-900">
+                            [LEDGER] {p.underlying} {p.plan.long.strike}/{p.plan.short.strike} {p.direction}
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-700">{pMfePct.toFixed(1)}%</td>
+                          <td className="px-3 py-2 text-right font-semibold text-indigo-700">
+                            {((p.learnedRunnerProb ?? 0.5) * 100).toFixed(1)}%
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-700">
+                            {((p.learnedRecoveryProb ?? 0.5) * 100).toFixed(1)}%
+                          </td>
+                          <td className="px-3 py-2 text-right font-bold text-[#008F6B]">
+                            {((p.learnedKeepFrac ?? 0.8) * 100).toFixed(1)}%
+                          </td>
+                          <td className="px-3 py-2 font-sans text-[11px] text-slate-700">
+                            {p.learnedExitAction ?? 'RUNNER_V3_1 Taper + Adaptive Ratchet'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {dash.activeCandidates
+                      .filter((c) => !c.takenByLedger)
+                      .map((c) => {
+                        const cPeak = Math.max(c.plan.entryDebit, c.confirmedPeakValue ?? c.peakValue ?? c.plan.entryDebit);
+                        const cMfePct = ((cPeak - c.plan.entryDebit) / Math.max(0.01, c.plan.width - c.plan.entryDebit)) * 100;
+                        return (
+                          <tr key={c.id} className="hover:bg-slate-50">
+                            <td className="px-3 py-2 font-sans font-medium text-slate-800">
+                              [SHADOW] {c.underlying} {c.plan.long.strike}/{c.plan.short.strike} {c.direction}
+                            </td>
+                            <td className="px-3 py-2 text-right text-slate-700">{cMfePct.toFixed(1)}%</td>
+                            <td className="px-3 py-2 text-right font-semibold text-indigo-700">
+                              {((c.learnedRunnerProb ?? 0.5) * 100).toFixed(1)}%
+                            </td>
+                            <td className="px-3 py-2 text-right text-slate-700">
+                              {((c.learnedRecoveryProb ?? 0.5) * 100).toFixed(1)}%
+                            </td>
+                            <td className="px-3 py-2 text-right font-bold text-[#008F6B]">
+                              {((c.learnedKeepFrac ?? 0.8) * 100).toFixed(1)}%
+                            </td>
+                            <td className="px-3 py-2 font-sans text-[11px] text-slate-600">
+                              {c.learnedExitAction ?? 'RUNNER_V3_1 Taper + Adaptive Ratchet'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       {model && model.calibration.length > 0 ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
@@ -1869,12 +2248,17 @@ function Rules({
   return (
     <div className="space-y-6 text-sm leading-6 text-slate-600">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs">
-        <h2 className="mb-2 text-base font-bold text-slate-900">Execution &amp; Pricing Rules</h2>
+        <h2 className="mb-2 text-base font-bold text-slate-900">Execution &amp; Dynamic Profit-Ratchet Exit Rules</h2>
         <p>
           Spot and option prices come directly from Angel One SmartAPI. Every vertical debit spread buys the long leg at the live ask and sells the short leg at the live bid, and reverses on exit. Brokerage is ₹20 per order plus STT, NSE exchange fees, stamp duty, and 18% GST.
         </p>
         <p className="mt-2">
-          Exits trigger automatically: take profit at {formatPct(cfg.takeProfitFracOfMaxGain * 100, 0)} of max gain, stop loss at {formatPct(cfg.stopLossFracOfDebit * 100, 0)} of entry debit, time stop after {cfg.maxHoldSessions} sessions, or when {cfg.exitAtDte} DTE remain.
+          Instead of a rigid binary stop, exits use a <strong>Self-Learning Contextual Exit Policy (ADAPTIVE_LEARNED)</strong> built on top of the winning <strong>RUNNER_V3_1</strong> tapered ratchet and each spread&apos;s confirmed high-water mark (MFE as % of Max Gain):
+          (1) Initial Stop at -{formatPct(cfg.stopLossFracOfDebit * 100, 0)} of debit (with online ML early stop tightening to -38% when a trade stagnates across ≥3 sessions with low recovery probability);
+          (2) Risk-Halving Ratchet at 11% MFE (cuts max loss in half to -32%);
+          (3) Break-Even + Brokerage/STT Cost-Recovery Floor at 16% MFE (locks in entry debit + 5%–10% of max gain);
+          (4) High-Water-Mark Profit-Lock Trail at 22%–29.9% MFE (locks in +10% to +20% of max gain);
+          (5) At ≥30% MFE, evaluates the 4-factor Trend Gate + online ML Runner Continuation Head: either banks 30% TAKE_PROFIT immediately when runner continuation probability is low, or arms Runner Mode with a learned keep fraction (66.7%–83% tapering to 66.7% at 60% MFE) up to a 75% ceiling.
         </p>
       </section>
 
