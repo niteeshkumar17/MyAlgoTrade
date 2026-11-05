@@ -218,18 +218,26 @@ async function archivePending(store: KvStore, state: LedgerState): Promise<boole
 
 function mergeMonotonicState(target: LedgerState, latest: LedgerState) {
   const closedIds = new Set(
-    latest.closedSummaries.filter((s) => s.exitReason !== 'STALE_DATA_FORCED').map((s) => s.id)
+    [...target.closedSummaries, ...latest.closedSummaries]
+      .filter((s) => s && s.exitReason !== 'STALE_DATA_FORCED')
+      .map((s) => s.id)
   );
   for (const s of latest.closedSummaries) {
-    if (s.exitReason === 'STALE_DATA_FORCED') continue;
+    if (!s || s.exitReason === 'STALE_DATA_FORCED') continue;
     if (!target.closedSummaries.some((x) => x.id === s.id)) {
       target.closedSummaries.push(s);
     }
   }
   for (const t of latest.pending.trades) {
-    if (t.exitReason === 'STALE_DATA_FORCED') continue;
+    if (!t || t.exitReason === 'STALE_DATA_FORCED') continue;
     if (!target.pending.trades.some((x) => x.id === t.id)) {
       target.pending.trades.push(t);
+    }
+  }
+  for (const c of latest.pending.candidates) {
+    if (!c || c.exitReason === 'STALE_DATA_FORCED') continue;
+    if (!target.pending.candidates.some((x) => x.id === c.id)) {
+      target.pending.candidates.push(c);
     }
   }
   for (const ls of latest.liveSamples ?? []) {
@@ -244,10 +252,23 @@ function mergeMonotonicState(target: LedgerState, latest: LedgerState) {
       target.liveSamples.push(ls);
     }
   }
+
+  // Merge any open positions present in latest that are not in target (and not closed)
   target.openPositions = target.openPositions.filter((pos) => !closedIds.has(`T-${pos.id}`));
+  for (const other of latest.openPositions ?? []) {
+    if (!other || closedIds.has(`T-${other.id}`)) continue;
+    if (!target.openPositions.some((p) => p.id === other.id)) {
+      target.openPositions.push(other);
+    }
+  }
   for (const pos of target.openPositions) {
-    const other = latest.openPositions.find((p) => p.id === pos.id);
+    const other = latest.openPositions?.find((p) => p.id === pos.id);
     if (!other) continue;
+    const posMarkMs = pos.lastMark?.at ? Date.parse(pos.lastMark.at) : 0;
+    const otherMarkMs = other.lastMark?.at ? Date.parse(other.lastMark.at) : 0;
+    if (other.lastMark && otherMarkMs > posMarkMs) {
+      pos.lastMark = other.lastMark;
+    }
     pos.peakValue = Math.max(pos.peakValue ?? pos.plan.entryDebit, other.peakValue ?? other.plan.entryDebit);
     pos.confirmedPeakValue = Math.max(
       pos.confirmedPeakValue ?? pos.peakValue,
@@ -262,9 +283,34 @@ function mergeMonotonicState(target: LedgerState, latest: LedgerState) {
       pos.runnerTrendGateReason = other.runnerTrendGateReason;
     }
   }
+
+  // Merge active candidates
+  const closedCandIds = new Set([
+    ...target.pending.candidates.map((c) => c.id),
+    ...latest.pending.candidates.map((c) => c.id),
+    ...target.liveSamples.map((s) => s.id),
+    ...(latest.liveSamples ?? []).map((s) => s.id),
+  ]);
+  target.activeCandidates = target.activeCandidates.filter((c) => !c.closedAt && !closedCandIds.has(c.id));
+  for (const other of latest.activeCandidates ?? []) {
+    if (!other || other.closedAt || closedCandIds.has(other.id)) continue;
+    if (!target.activeCandidates.some((c) => c.id === other.id)) {
+      target.activeCandidates.push(other);
+    }
+  }
   for (const cand of target.activeCandidates) {
-    const other = latest.activeCandidates.find((c) => c.id === cand.id);
+    const other = latest.activeCandidates?.find((c) => c.id === cand.id);
     if (!other) continue;
+    const candMarkMs = cand.lastMark?.at ? Date.parse(cand.lastMark.at) : 0;
+    const otherMarkMs = other.lastMark?.at ? Date.parse(other.lastMark.at) : 0;
+    if (other.lastMark && otherMarkMs > candMarkMs) {
+      cand.lastMark = other.lastMark;
+    }
+    if (!cand.takenByLedger && other.takenByLedger) {
+      cand.takenByLedger = true;
+      cand.positionId = other.positionId;
+      cand.skipReason = null;
+    }
     cand.peakValue = Math.max(cand.peakValue ?? cand.plan.entryDebit, other.peakValue ?? other.plan.entryDebit);
     cand.confirmedPeakValue = Math.max(
       cand.confirmedPeakValue ?? cand.peakValue,
@@ -275,6 +321,38 @@ function mergeMonotonicState(target: LedgerState, latest: LedgerState) {
     cand.runnerFloorLearned = Math.max(cand.runnerFloorLearned ?? 0, other.runnerFloorLearned ?? 0);
     cand.runnerArmed = Boolean(cand.runnerArmed || other.runnerArmed);
   }
+
+  // Merge lastSignalBar and regimes
+  for (const [k, v] of Object.entries(latest.lastSignalBar ?? {})) {
+    const cur = target.lastSignalBar[k];
+    if (!cur || Date.parse(v) > Date.parse(cur)) {
+      target.lastSignalBar[k] = v;
+    }
+  }
+  if (latest.market?.regimes && target.market) {
+    const mergedRegimes: MarketSnapshot['regimes'] = { ...latest.market.regimes };
+    for (const [u, tReg] of Object.entries(target.market.regimes ?? {})) {
+      const lReg = mergedRegimes[u];
+      if (!lReg) {
+        mergedRegimes[u] = tReg;
+        continue;
+      }
+      const tMs = Date.parse(tReg.barStart);
+      const lMs = Date.parse(lReg.barStart);
+      if (tMs > lMs) {
+        mergedRegimes[u] = tReg;
+      } else if (tMs === lMs) {
+        mergedRegimes[u] = { ...lReg, ...tReg, ema20: tReg.ema20 ?? lReg.ema20, vwap: tReg.vwap ?? lReg.vwap, prevAdx14: tReg.prevAdx14 ?? lReg.prevAdx14 };
+      }
+    }
+    target.market.regimes = mergedRegimes;
+  }
+  if (latest.lastCycle) {
+    const tMs = target.lastCycle ? Date.parse(target.lastCycle.at) : 0;
+    const lMs = Date.parse(latest.lastCycle.at);
+    if (lMs > tMs) target.lastCycle = latest.lastCycle;
+  }
+  revalue(target, target.market?.spots?.NIFTY?.ltp ?? latest.market?.spots?.NIFTY?.ltp ?? null);
 }
 
 async function persist(store: KvStore, state: LedgerState, rev: number): Promise<boolean> {
@@ -1171,10 +1249,45 @@ async function runPaperCycleUnlocked(
   const fromIst = formatIstForAngel(nowMs - 35 * 86_400_000);
   const toIst = formatIstForAngel(nowMs);
 
-  const regimes: MarketSnapshot['regimes'] = {};
+  const regimes: MarketSnapshot['regimes'] = { ...(state.market?.regimes ?? {}) };
   const trendMap: Record<string, UnderlyingTrendContext> = {};
   const signalPlans: Array<{ underlying: string; candles: Candle[]; index: number }> = [];
+
+  // Determine the expected start timestamp of the latest completed today :15 hourly bar (if any)
+  const expectedTodayBarStart =
+    !opts.history && session.minuteOfDay >= 10 * 60 + 15 && session.minuteOfDay < 15 * 60 + 30
+      ? `${session.dateStr}T${String(Math.min(14, Math.floor((session.minuteOfDay - 15) / 60) - 1)).padStart(2, '0')}:15:00+05:30`
+      : null;
+
   for (const underlying of UNDERLYINGS) {
+    const existingReg = state.market?.regimes?.[underlying];
+    if (
+      !opts.history &&
+      expectedTodayBarStart &&
+      existingReg &&
+      existingReg.barStart === expectedTodayBarStart
+    ) {
+      // Completed hourly bar for the current :15 slot was already scanned; reuse cached regime & trend context
+      const fallbackSpot = spots[underlying]?.ltp ?? 0;
+      const emaVal = existingReg.ema20 ?? fallbackSpot;
+      const vwapVal = existingReg.vwap ?? emaVal;
+      const prevAdxVal = existingReg.prevAdx14 ?? existingReg.adx14;
+      regimes[underlying] = {
+        ...existingReg,
+        ema20: emaVal,
+        vwap: vwapVal,
+        prevAdx14: prevAdxVal,
+      };
+      trendMap[underlying] = {
+        spot: fallbackSpot || emaVal,
+        ema20: emaVal,
+        vwap: vwapVal,
+        adx14: existingReg.adx14,
+        prevAdx14: prevAdxVal,
+      };
+      continue;
+    }
+
     let fresh: Candle[] | null = null;
     try {
       fresh = await market.fetchCandles(underlying, fromIst, toIst);
@@ -1191,12 +1304,10 @@ async function runPaperCycleUnlocked(
     if (idx < 0 || !isRowComplete(rows[idx])) continue;
     const barStart = candles[idx].time;
     const barEnd = hourlyBarEndMs(Date.parse(barStart));
-    regimes[underlying] = {
-      regime: classifyRegime(rows[idx], vixPctile),
-      rsi14: rows[idx].rsi14,
-      adx14: rows[idx].adx14,
-      barStart,
-    };
+    if (existingReg && Date.parse(existingReg.barStart) > Date.parse(barStart)) {
+      regimes[underlying] = existingReg;
+      continue;
+    }
     // Compute session VWAP for the underlying Trend Gate
     const barDate = istDate(Date.parse(barStart));
     let pv = 0;
@@ -1209,12 +1320,23 @@ async function runPaperCycleUnlocked(
         vv += vol;
       }
     }
+    const vwapVal = vv > 0 ? pv / vv : candles[idx].close;
+    const prevAdxVal = idx > 0 ? rows[idx - 1].adx14 : rows[idx].adx14;
+    regimes[underlying] = {
+      regime: classifyRegime(rows[idx], vixPctile),
+      rsi14: rows[idx].rsi14,
+      adx14: rows[idx].adx14,
+      prevAdx14: prevAdxVal,
+      ema20: rows[idx].ema20,
+      vwap: vwapVal,
+      barStart,
+    };
     trendMap[underlying] = {
       spot: spots[underlying]?.ltp ?? candles[idx].close,
       ema20: rows[idx].ema20,
-      vwap: vv > 0 ? pv / vv : candles[idx].close,
+      vwap: vwapVal,
       adx14: rows[idx].adx14,
-      prevAdx14: idx > 0 ? rows[idx - 1].adx14 : rows[idx].adx14,
+      prevAdx14: prevAdxVal,
     };
     if (nowMs - barEnd > 60 * 60 * 1000) continue;
     signalPlans.push({ underlying, candles, index: idx });
@@ -1263,7 +1385,6 @@ async function runPaperCycleUnlocked(
       continue;
     }
     if (!entriesOpen) {
-      state.lastSignalBar[key] = barTime;
       log(state, 'SKIP', `${plan.underlying} signal outside the 09:30–15:00 entry window`, plan.underlying);
       continue;
     }
@@ -1722,6 +1843,9 @@ export async function refreshLiveState(
   const row = { data: loaded.state, rev: loaded.rev };
 
   const state = row.data;
+  if (lastLiveStateMemo && lastLiveStateMemo.ledgerId === state.ledgerId) {
+    mergeMonotonicState(state, lastLiveStateMemo);
+  }
   state.config = { ...DEFAULT_ENGINE_CONFIG };
   // Deduplicate any identical active shadow contracts (keep the earliest entry or any referenced by an open position)
   const openCandIds = new Set(state.openPositions.map((p) => p.candidateId));
@@ -1825,12 +1949,13 @@ export async function refreshLiveState(
     revalue(state, state.market?.spots?.NIFTY?.ltp ?? null);
     lastLiveRefreshMs = nowMs;
     lastLiveStateMemo = state;
+    store.setLocalCache?.(stateKey(state.ledgerId), row.rev, state);
 
-    // Persist immediately if an exit executed or if any position's peak/floor ratcheted up
+    // Persist immediately if an exit executed or if any position's peak/floor ratcheted up, or every 6s during live hours
     if (exitExecuted || floorOrPeakRaised) {
       lastDbPersistMs = nowMs;
       await persist(store, state, row.rev).catch(() => {});
-    } else if (nowMs - lastDbPersistMs >= 15_000 && state.market?.live && !cycleInFlight) {
+    } else if (nowMs - lastDbPersistMs >= 6_000 && state.market?.live) {
       lastDbPersistMs = nowMs;
       await persist(store, state, row.rev).catch(() => {});
     }

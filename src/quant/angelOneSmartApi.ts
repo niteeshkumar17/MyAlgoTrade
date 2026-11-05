@@ -66,6 +66,24 @@ let jwtExpiresAtMs = 0;
 let lastLoginAtIso: string | null = null;
 let lastQuoteFetchAtIso: string | null = null;
 let lastAngelError: string | null = null;
+let loginInflight: Promise<string | null> | null = null;
+
+export interface SharedAngelSession {
+  jwtToken: string;
+  expiresAtMs: number;
+  loginAtIso: string;
+}
+
+export interface AngelSessionStore {
+  get(): Promise<SharedAngelSession | null>;
+  set(session: SharedAngelSession): Promise<void>;
+}
+
+let sharedSessionStore: AngelSessionStore | null = null;
+
+export function registerAngelSessionStore(store: AngelSessionStore | null) {
+  sharedSessionStore = store;
+}
 
 function decodeBase32(base32Raw: string): Buffer {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -153,33 +171,73 @@ export async function ensureAngelOneSession(forceRefresh = false): Promise<strin
   }
   const now = Date.now();
   if (!forceRefresh && cachedJwtToken && now < jwtExpiresAtMs) return cachedJwtToken;
-  try {
-    const res = await fetch(`${ANGEL_BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword`, {
-      method: 'POST',
-      headers: headers(apiKey),
-      body: JSON.stringify({ clientcode: clientCode, password: mpin, totp: generateAngelTotp(totpSecret, now) }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const payload = (await res.json()) as {
-      status?: boolean;
-      message?: string;
-      errorcode?: string;
-      data?: { jwtToken?: string };
-    };
-    if (!res.ok || !payload.status || !payload.data?.jwtToken) {
-      lastAngelError = payload.message || payload.errorcode || `Angel login HTTP ${res.status}`;
-      cachedJwtToken = null;
+  if (loginInflight) return loginInflight;
+
+  const rejectedToken = forceRefresh ? cachedJwtToken : null;
+  loginInflight = (async () => {
+    // Check shared session store first so multiple instances reuse the same active JWT token
+    if (sharedSessionStore) {
+      try {
+        const shared = await sharedSessionStore.get();
+        if (
+          shared &&
+          shared.jwtToken &&
+          shared.expiresAtMs > Date.now() + 60_000 &&
+          (!forceRefresh || shared.jwtToken !== rejectedToken)
+        ) {
+          cachedJwtToken = shared.jwtToken;
+          jwtExpiresAtMs = shared.expiresAtMs;
+          lastLoginAtIso = shared.loginAtIso;
+          lastAngelError = null;
+          return cachedJwtToken;
+        }
+      } catch {
+        // ignore store read error and proceed with direct login
+      }
+    }
+
+    try {
+      const loginNow = Date.now();
+      const res = await fetch(`${ANGEL_BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword`, {
+        method: 'POST',
+        headers: headers(apiKey),
+        body: JSON.stringify({ clientcode: clientCode, password: mpin, totp: generateAngelTotp(totpSecret, loginNow) }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const payload = (await res.json()) as {
+        status?: boolean;
+        message?: string;
+        errorcode?: string;
+        data?: { jwtToken?: string };
+      };
+      if (!res.ok || !payload.status || !payload.data?.jwtToken) {
+        lastAngelError = payload.message || payload.errorcode || `Angel login HTTP ${res.status}`;
+        cachedJwtToken = null;
+        return null;
+      }
+      cachedJwtToken = payload.data.jwtToken;
+      jwtExpiresAtMs = loginNow + 18 * 60 * 60 * 1000;
+      lastLoginAtIso = new Date(loginNow).toISOString();
+      lastAngelError = null;
+      if (sharedSessionStore) {
+        await sharedSessionStore
+          .set({
+            jwtToken: cachedJwtToken,
+            expiresAtMs: jwtExpiresAtMs,
+            loginAtIso: lastLoginAtIso,
+          })
+          .catch(() => {});
+      }
+      return cachedJwtToken;
+    } catch (err) {
+      lastAngelError = err instanceof Error ? err.message : 'Angel login failed';
       return null;
     }
-    cachedJwtToken = payload.data.jwtToken;
-    jwtExpiresAtMs = now + 18 * 60 * 60 * 1000;
-    lastLoginAtIso = new Date(now).toISOString();
-    lastAngelError = null;
-    return cachedJwtToken;
-  } catch (err) {
-    lastAngelError = err instanceof Error ? err.message : 'Angel login failed';
-    return null;
-  }
+  })().finally(() => {
+    loginInflight = null;
+  });
+
+  return loginInflight;
 }
 
 interface RawQuote {

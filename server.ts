@@ -1,8 +1,11 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+dotenv.config({ override: true });
+
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { registerAngelSessionStore, type SharedAngelSession } from './src/quant/angelOneSmartApi.js';
 import { angelMarketData } from './src/quant/marketData.js';
 import {
   mutateLedger,
@@ -14,7 +17,7 @@ import {
 } from './src/quant/paperEngine.js';
 import { buildDashboard } from './src/quant/report.js';
 import { getOfflineResearch } from './src/quant/research.js';
-import { createStore, databaseConfigured } from './src/quant/store.js';
+import { createStore, databaseConfigured, KEY_ANGEL_SESSION } from './src/quant/store.js';
 import { loadTerminalCandles, type TerminalInterval } from './src/quant/terminalCandles.js';
 import type { OptionRight } from './src/quant/types.js';
 
@@ -23,6 +26,20 @@ const app = express();
 app.use(express.json({ limit: '32kb' }));
 
 const store = createStore();
+registerAngelSessionStore({
+  async get() {
+    const row = await store.get<SharedAngelSession>(KEY_ANGEL_SESSION);
+    return row ? row.data : null;
+  },
+  async set(session) {
+    const existing = await store.get<SharedAngelSession>(KEY_ANGEL_SESSION);
+    const saved = await store.put(KEY_ANGEL_SESSION, session, existing ? existing.rev : null);
+    if (!saved.ok) {
+      const retry = await store.get<SharedAngelSession>(KEY_ANGEL_SESSION);
+      await store.put(KEY_ANGEL_SESSION, session, retry ? retry.rev : null);
+    }
+  },
+});
 const market = angelMarketData();
 
 function adminSecret(): string {

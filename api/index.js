@@ -1,5 +1,5 @@
 // server.ts
-import "dotenv/config";
+import dotenv from "dotenv";
 import express from "express";
 import path3 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -184,6 +184,11 @@ var jwtExpiresAtMs = 0;
 var lastLoginAtIso = null;
 var lastQuoteFetchAtIso = null;
 var lastAngelError = null;
+var loginInflight = null;
+var sharedSessionStore = null;
+function registerAngelSessionStore(store2) {
+  sharedSessionStore = store2;
+}
 function decodeBase32(base32Raw) {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   const cleaned = base32Raw.toUpperCase().replace(/[^A-Z2-7]/g, "");
@@ -257,28 +262,57 @@ async function ensureAngelOneSession(forceRefresh = false) {
   }
   const now = Date.now();
   if (!forceRefresh && cachedJwtToken && now < jwtExpiresAtMs) return cachedJwtToken;
-  try {
-    const res = await fetch(`${ANGEL_BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword`, {
-      method: "POST",
-      headers: headers(apiKey),
-      body: JSON.stringify({ clientcode: clientCode, password: mpin, totp: generateAngelTotp(totpSecret, now) }),
-      signal: AbortSignal.timeout(8e3)
-    });
-    const payload = await res.json();
-    if (!res.ok || !payload.status || !payload.data?.jwtToken) {
-      lastAngelError = payload.message || payload.errorcode || `Angel login HTTP ${res.status}`;
-      cachedJwtToken = null;
+  if (loginInflight) return loginInflight;
+  const rejectedToken = forceRefresh ? cachedJwtToken : null;
+  loginInflight = (async () => {
+    if (sharedSessionStore) {
+      try {
+        const shared = await sharedSessionStore.get();
+        if (shared && shared.jwtToken && shared.expiresAtMs > Date.now() + 6e4 && (!forceRefresh || shared.jwtToken !== rejectedToken)) {
+          cachedJwtToken = shared.jwtToken;
+          jwtExpiresAtMs = shared.expiresAtMs;
+          lastLoginAtIso = shared.loginAtIso;
+          lastAngelError = null;
+          return cachedJwtToken;
+        }
+      } catch {
+      }
+    }
+    try {
+      const loginNow = Date.now();
+      const res = await fetch(`${ANGEL_BASE_URL}/rest/auth/angelbroking/user/v1/loginByPassword`, {
+        method: "POST",
+        headers: headers(apiKey),
+        body: JSON.stringify({ clientcode: clientCode, password: mpin, totp: generateAngelTotp(totpSecret, loginNow) }),
+        signal: AbortSignal.timeout(8e3)
+      });
+      const payload = await res.json();
+      if (!res.ok || !payload.status || !payload.data?.jwtToken) {
+        lastAngelError = payload.message || payload.errorcode || `Angel login HTTP ${res.status}`;
+        cachedJwtToken = null;
+        return null;
+      }
+      cachedJwtToken = payload.data.jwtToken;
+      jwtExpiresAtMs = loginNow + 18 * 60 * 60 * 1e3;
+      lastLoginAtIso = new Date(loginNow).toISOString();
+      lastAngelError = null;
+      if (sharedSessionStore) {
+        await sharedSessionStore.set({
+          jwtToken: cachedJwtToken,
+          expiresAtMs: jwtExpiresAtMs,
+          loginAtIso: lastLoginAtIso
+        }).catch(() => {
+        });
+      }
+      return cachedJwtToken;
+    } catch (err) {
+      lastAngelError = err instanceof Error ? err.message : "Angel login failed";
       return null;
     }
-    cachedJwtToken = payload.data.jwtToken;
-    jwtExpiresAtMs = now + 18 * 60 * 60 * 1e3;
-    lastLoginAtIso = new Date(now).toISOString();
-    lastAngelError = null;
-    return cachedJwtToken;
-  } catch (err) {
-    lastAngelError = err instanceof Error ? err.message : "Angel login failed";
-    return null;
-  }
+  })().finally(() => {
+    loginInflight = null;
+  });
+  return loginInflight;
 }
 function depthPrice(level) {
   const n = Number(level?.price ?? 0);
@@ -3341,7 +3375,7 @@ var ResilientKvStore = class {
     return Boolean(this.pool) && Date.now() >= this.pgDisabledUntilMs;
   }
   ttlForKey(key) {
-    if (key === KEY_LEASE) return 0;
+    if (key === KEY_LEASE || key === KEY_ANGEL_SESSION) return 0;
     if (key === KEY_INSTRUMENTS) return 36e5;
     if (key === KEY_ACTIVE) return 6e4;
     return isWithinSessionHours(Date.now()) ? 3e3 : 6e4;
@@ -3360,6 +3394,12 @@ var ResilientKvStore = class {
     } catch (err) {
       if (!isTransientPgError(err)) throw err;
       return await this.pool.query(text, values);
+    }
+  }
+  setLocalCache(key, rev, data) {
+    this.cache.set(key, { rev, data });
+    if (key !== KEY_LEASE && key !== KEY_ANGEL_SESSION) {
+      this.saveToDisk();
     }
   }
   async get(key) {
@@ -3387,7 +3427,9 @@ var ResilientKvStore = class {
         if (payload && typeof payload.rev === "number" && "data" in payload) {
           this.cache.set(key, payload);
           this.pgFetchedAt.set(key, Date.now());
-          this.saveToDisk();
+          if (key !== KEY_LEASE && key !== KEY_ANGEL_SESSION) {
+            this.saveToDisk();
+          }
           return { rev: payload.rev, data: payload.data };
         }
         return null;
@@ -3418,7 +3460,7 @@ var ResilientKvStore = class {
         }
         this.cache.set(key, envelope2);
         this.pgFetchedAt.set(key, Date.now());
-        if (key !== KEY_LEASE) {
+        if (key !== KEY_LEASE && key !== KEY_ANGEL_SESSION) {
           this.saveToDisk();
         }
         return { ok: true, rev: rev2 };
@@ -3435,7 +3477,7 @@ var ResilientKvStore = class {
     const rev = (expectedRev ?? 0) + 1;
     const envelope = { rev, data };
     this.cache.set(key, envelope);
-    if (key !== KEY_LEASE) {
+    if (key !== KEY_LEASE && key !== KEY_ANGEL_SESSION) {
       this.saveToDisk();
     }
     return { ok: true, rev };
@@ -3470,6 +3512,7 @@ function createStore() {
 var KEY_ACTIVE = "PAPER_V2:ACTIVE";
 var KEY_LEASE = "PAPER_V2:LEASE";
 var KEY_INSTRUMENTS = "PAPER_V2:INSTRUMENTS";
+var KEY_ANGEL_SESSION = "PAPER_V2:ANGEL_SESSION";
 var stateKey = (ledgerId) => `PAPER_V2:${ledgerId}:STATE`;
 var tradesKey = (ledgerId, month) => `PAPER_V2:${ledgerId}:TRADES:${month}`;
 var candidatesKey = (ledgerId, month) => `PAPER_V2:${ledgerId}:CANDIDATES:${month}`;
@@ -3617,18 +3660,24 @@ async function archivePending(store2, state) {
 }
 function mergeMonotonicState(target, latest) {
   const closedIds = new Set(
-    latest.closedSummaries.filter((s) => s.exitReason !== "STALE_DATA_FORCED").map((s) => s.id)
+    [...target.closedSummaries, ...latest.closedSummaries].filter((s) => s && s.exitReason !== "STALE_DATA_FORCED").map((s) => s.id)
   );
   for (const s of latest.closedSummaries) {
-    if (s.exitReason === "STALE_DATA_FORCED") continue;
+    if (!s || s.exitReason === "STALE_DATA_FORCED") continue;
     if (!target.closedSummaries.some((x) => x.id === s.id)) {
       target.closedSummaries.push(s);
     }
   }
   for (const t of latest.pending.trades) {
-    if (t.exitReason === "STALE_DATA_FORCED") continue;
+    if (!t || t.exitReason === "STALE_DATA_FORCED") continue;
     if (!target.pending.trades.some((x) => x.id === t.id)) {
       target.pending.trades.push(t);
+    }
+  }
+  for (const c of latest.pending.candidates) {
+    if (!c || c.exitReason === "STALE_DATA_FORCED") continue;
+    if (!target.pending.candidates.some((x) => x.id === c.id)) {
+      target.pending.candidates.push(c);
     }
   }
   for (const ls of latest.liveSamples ?? []) {
@@ -3637,9 +3686,20 @@ function mergeMonotonicState(target, latest) {
     }
   }
   target.openPositions = target.openPositions.filter((pos) => !closedIds.has(`T-${pos.id}`));
+  for (const other of latest.openPositions ?? []) {
+    if (!other || closedIds.has(`T-${other.id}`)) continue;
+    if (!target.openPositions.some((p) => p.id === other.id)) {
+      target.openPositions.push(other);
+    }
+  }
   for (const pos of target.openPositions) {
-    const other = latest.openPositions.find((p) => p.id === pos.id);
+    const other = latest.openPositions?.find((p) => p.id === pos.id);
     if (!other) continue;
+    const posMarkMs = pos.lastMark?.at ? Date.parse(pos.lastMark.at) : 0;
+    const otherMarkMs = other.lastMark?.at ? Date.parse(other.lastMark.at) : 0;
+    if (other.lastMark && otherMarkMs > posMarkMs) {
+      pos.lastMark = other.lastMark;
+    }
     pos.peakValue = Math.max(pos.peakValue ?? pos.plan.entryDebit, other.peakValue ?? other.plan.entryDebit);
     pos.confirmedPeakValue = Math.max(
       pos.confirmedPeakValue ?? pos.peakValue,
@@ -3654,9 +3714,32 @@ function mergeMonotonicState(target, latest) {
       pos.runnerTrendGateReason = other.runnerTrendGateReason;
     }
   }
+  const closedCandIds = /* @__PURE__ */ new Set([
+    ...target.pending.candidates.map((c) => c.id),
+    ...latest.pending.candidates.map((c) => c.id),
+    ...target.liveSamples.map((s) => s.id),
+    ...(latest.liveSamples ?? []).map((s) => s.id)
+  ]);
+  target.activeCandidates = target.activeCandidates.filter((c) => !c.closedAt && !closedCandIds.has(c.id));
+  for (const other of latest.activeCandidates ?? []) {
+    if (!other || other.closedAt || closedCandIds.has(other.id)) continue;
+    if (!target.activeCandidates.some((c) => c.id === other.id)) {
+      target.activeCandidates.push(other);
+    }
+  }
   for (const cand of target.activeCandidates) {
-    const other = latest.activeCandidates.find((c) => c.id === cand.id);
+    const other = latest.activeCandidates?.find((c) => c.id === cand.id);
     if (!other) continue;
+    const candMarkMs = cand.lastMark?.at ? Date.parse(cand.lastMark.at) : 0;
+    const otherMarkMs = other.lastMark?.at ? Date.parse(other.lastMark.at) : 0;
+    if (other.lastMark && otherMarkMs > candMarkMs) {
+      cand.lastMark = other.lastMark;
+    }
+    if (!cand.takenByLedger && other.takenByLedger) {
+      cand.takenByLedger = true;
+      cand.positionId = other.positionId;
+      cand.skipReason = null;
+    }
     cand.peakValue = Math.max(cand.peakValue ?? cand.plan.entryDebit, other.peakValue ?? other.plan.entryDebit);
     cand.confirmedPeakValue = Math.max(
       cand.confirmedPeakValue ?? cand.peakValue,
@@ -3667,6 +3750,36 @@ function mergeMonotonicState(target, latest) {
     cand.runnerFloorLearned = Math.max(cand.runnerFloorLearned ?? 0, other.runnerFloorLearned ?? 0);
     cand.runnerArmed = Boolean(cand.runnerArmed || other.runnerArmed);
   }
+  for (const [k, v] of Object.entries(latest.lastSignalBar ?? {})) {
+    const cur = target.lastSignalBar[k];
+    if (!cur || Date.parse(v) > Date.parse(cur)) {
+      target.lastSignalBar[k] = v;
+    }
+  }
+  if (latest.market?.regimes && target.market) {
+    const mergedRegimes = { ...latest.market.regimes };
+    for (const [u, tReg] of Object.entries(target.market.regimes ?? {})) {
+      const lReg = mergedRegimes[u];
+      if (!lReg) {
+        mergedRegimes[u] = tReg;
+        continue;
+      }
+      const tMs = Date.parse(tReg.barStart);
+      const lMs = Date.parse(lReg.barStart);
+      if (tMs > lMs) {
+        mergedRegimes[u] = tReg;
+      } else if (tMs === lMs) {
+        mergedRegimes[u] = { ...lReg, ...tReg, ema20: tReg.ema20 ?? lReg.ema20, vwap: tReg.vwap ?? lReg.vwap, prevAdx14: tReg.prevAdx14 ?? lReg.prevAdx14 };
+      }
+    }
+    target.market.regimes = mergedRegimes;
+  }
+  if (latest.lastCycle) {
+    const tMs = target.lastCycle ? Date.parse(target.lastCycle.at) : 0;
+    const lMs = Date.parse(latest.lastCycle.at);
+    if (lMs > tMs) target.lastCycle = latest.lastCycle;
+  }
+  revalue(target, target.market?.spots?.NIFTY?.ltp ?? latest.market?.spots?.NIFTY?.ltp ?? null);
 }
 async function persist(store2, state, rev) {
   let saved = await store2.put(stateKey(state.ledgerId), state, rev);
@@ -4386,10 +4499,32 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
   const vixPctile = vix === null ? null : vixSeries.percentile(today, vix);
   const fromIst = formatIstForAngel(nowMs - 35 * 864e5);
   const toIst = formatIstForAngel(nowMs);
-  const regimes = {};
+  const regimes = { ...state.market?.regimes ?? {} };
   const trendMap = {};
   const signalPlans = [];
+  const expectedTodayBarStart = !opts.history && session.minuteOfDay >= 10 * 60 + 15 && session.minuteOfDay < 15 * 60 + 30 ? `${session.dateStr}T${String(Math.min(14, Math.floor((session.minuteOfDay - 15) / 60) - 1)).padStart(2, "0")}:15:00+05:30` : null;
   for (const underlying of UNDERLYINGS) {
+    const existingReg = state.market?.regimes?.[underlying];
+    if (!opts.history && expectedTodayBarStart && existingReg && existingReg.barStart === expectedTodayBarStart) {
+      const fallbackSpot = spots[underlying]?.ltp ?? 0;
+      const emaVal = existingReg.ema20 ?? fallbackSpot;
+      const vwapVal2 = existingReg.vwap ?? emaVal;
+      const prevAdxVal2 = existingReg.prevAdx14 ?? existingReg.adx14;
+      regimes[underlying] = {
+        ...existingReg,
+        ema20: emaVal,
+        vwap: vwapVal2,
+        prevAdx14: prevAdxVal2
+      };
+      trendMap[underlying] = {
+        spot: fallbackSpot || emaVal,
+        ema20: emaVal,
+        vwap: vwapVal2,
+        adx14: existingReg.adx14,
+        prevAdx14: prevAdxVal2
+      };
+      continue;
+    }
     let fresh = null;
     try {
       fresh = await market2.fetchCandles(underlying, fromIst, toIst);
@@ -4406,12 +4541,10 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
     if (idx < 0 || !isRowComplete(rows[idx])) continue;
     const barStart = candles[idx].time;
     const barEnd = hourlyBarEndMs(Date.parse(barStart));
-    regimes[underlying] = {
-      regime: classifyRegime(rows[idx], vixPctile),
-      rsi14: rows[idx].rsi14,
-      adx14: rows[idx].adx14,
-      barStart
-    };
+    if (existingReg && Date.parse(existingReg.barStart) > Date.parse(barStart)) {
+      regimes[underlying] = existingReg;
+      continue;
+    }
     const barDate = istDate(Date.parse(barStart));
     let pv = 0;
     let vv = 0;
@@ -4423,12 +4556,23 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
         vv += vol;
       }
     }
+    const vwapVal = vv > 0 ? pv / vv : candles[idx].close;
+    const prevAdxVal = idx > 0 ? rows[idx - 1].adx14 : rows[idx].adx14;
+    regimes[underlying] = {
+      regime: classifyRegime(rows[idx], vixPctile),
+      rsi14: rows[idx].rsi14,
+      adx14: rows[idx].adx14,
+      prevAdx14: prevAdxVal,
+      ema20: rows[idx].ema20,
+      vwap: vwapVal,
+      barStart
+    };
     trendMap[underlying] = {
       spot: spots[underlying]?.ltp ?? candles[idx].close,
       ema20: rows[idx].ema20,
-      vwap: vv > 0 ? pv / vv : candles[idx].close,
+      vwap: vwapVal,
       adx14: rows[idx].adx14,
-      prevAdx14: idx > 0 ? rows[idx - 1].adx14 : rows[idx].adx14
+      prevAdx14: prevAdxVal
     };
     if (nowMs - barEnd > 60 * 60 * 1e3) continue;
     signalPlans.push({ underlying, candles, index: idx });
@@ -4465,7 +4609,6 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
       continue;
     }
     if (!entriesOpen) {
-      state.lastSignalBar[key] = barTime;
       log(state, "SKIP", `${plan.underlying} signal outside the 09:30\u201315:00 entry window`, plan.underlying);
       continue;
     }
@@ -4868,6 +5011,9 @@ async function refreshLiveState(store2, market2, nowMs = Date.now()) {
   const loaded = await loadOrCreate(store2, nowMs);
   const row = { data: loaded.state, rev: loaded.rev };
   const state = row.data;
+  if (lastLiveStateMemo && lastLiveStateMemo.ledgerId === state.ledgerId) {
+    mergeMonotonicState(state, lastLiveStateMemo);
+  }
   state.config = { ...DEFAULT_ENGINE_CONFIG };
   const openCandIds = new Set(state.openPositions.map((p) => p.candidateId));
   const seenContracts = /* @__PURE__ */ new Set();
@@ -4962,11 +5108,12 @@ async function refreshLiveState(store2, market2, nowMs = Date.now()) {
     revalue(state, state.market?.spots?.NIFTY?.ltp ?? null);
     lastLiveRefreshMs = nowMs;
     lastLiveStateMemo = state;
+    store2.setLocalCache?.(stateKey(state.ledgerId), row.rev, state);
     if (exitExecuted || floorOrPeakRaised) {
       lastDbPersistMs = nowMs;
       await persist(store2, state, row.rev).catch(() => {
       });
-    } else if (nowMs - lastDbPersistMs >= 15e3 && state.market?.live && !cycleInFlight) {
+    } else if (nowMs - lastDbPersistMs >= 6e3 && state.market?.live) {
       lastDbPersistMs = nowMs;
       await persist(store2, state, row.rev).catch(() => {
       });
@@ -5421,10 +5568,25 @@ async function loadTerminalCandles(req) {
 }
 
 // server.ts
+dotenv.config({ override: true });
 var __dirname = path3.dirname(fileURLToPath2(import.meta.url));
 var app = express();
 app.use(express.json({ limit: "32kb" }));
 var store = createStore();
+registerAngelSessionStore({
+  async get() {
+    const row = await store.get(KEY_ANGEL_SESSION);
+    return row ? row.data : null;
+  },
+  async set(session) {
+    const existing = await store.get(KEY_ANGEL_SESSION);
+    const saved = await store.put(KEY_ANGEL_SESSION, session, existing ? existing.rev : null);
+    if (!saved.ok) {
+      const retry = await store.get(KEY_ANGEL_SESSION);
+      await store.put(KEY_ANGEL_SESSION, session, retry ? retry.rev : null);
+    }
+  }
+});
 var market = angelMarketData();
 function adminSecret() {
   return (process.env.ADMIN_SECRET || process.env.DASHBOARD_PASSCODE || "").trim();

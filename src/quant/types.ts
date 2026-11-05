@@ -529,7 +529,18 @@ export interface MarketSnapshot {
   spots: Record<string, SpotQuote>;
   vix: number | null;
   vixPctile: number | null;
-  regimes: Record<string, { regime: MarketRegime; rsi14: number; adx14: number; barStart: string }>;
+  regimes: Record<
+    string,
+    {
+      regime: MarketRegime;
+      rsi14: number;
+      adx14: number;
+      prevAdx14?: number;
+      ema20?: number;
+      vwap?: number;
+      barStart: string;
+    }
+  >;
 }
 
 export interface AngelStatusSnapshot {

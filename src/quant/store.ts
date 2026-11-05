@@ -18,6 +18,7 @@ export interface KvRow<T> {
 export interface KvStore {
   get<T>(key: string): Promise<KvRow<T> | null>;
   put<T>(key: string, data: T, expectedRev: number | null): Promise<{ ok: true; rev: number } | { ok: false }>;
+  setLocalCache?<T>(key: string, rev: number, data: T): void;
 }
 
 interface Envelope<T> {
@@ -44,6 +45,10 @@ export class MemoryKvStore implements KvStore {
     const rev = expectedRev + 1;
     this.rows.set(key, { rev, data });
     return { ok: true, rev };
+  }
+
+  setLocalCache<T>(key: string, rev: number, data: T): void {
+    this.rows.set(key, { rev, data });
   }
 }
 
@@ -147,7 +152,7 @@ export class ResilientKvStore implements KvStore {
   }
 
   private ttlForKey(key: string): number {
-    if (key === KEY_LEASE) return 0;
+    if (key === KEY_LEASE || key === KEY_ANGEL_SESSION) return 0;
     if (key === KEY_INSTRUMENTS) return 3_600_000; // 1 hour for 898KB instrument master
     if (key === KEY_ACTIVE) return 60_000; // 60s for active ledger pointer
     return isWithinSessionHours(Date.now()) ? 3_000 : 60_000; // 3s during live NSE hours, 60s during off-hours
@@ -170,6 +175,13 @@ export class ResilientKvStore implements KvStore {
     } catch (err) {
       if (!isTransientPgError(err)) throw err;
       return await this.pool.query(text, values);
+    }
+  }
+
+  setLocalCache<T>(key: string, rev: number, data: T): void {
+    this.cache.set(key, { rev, data });
+    if (key !== KEY_LEASE && key !== KEY_ANGEL_SESSION) {
+      this.saveToDisk();
     }
   }
 
@@ -200,7 +212,9 @@ export class ResilientKvStore implements KvStore {
         if (payload && typeof payload.rev === 'number' && 'data' in payload) {
           this.cache.set(key, payload);
           this.pgFetchedAt.set(key, Date.now());
-          this.saveToDisk();
+          if (key !== KEY_LEASE && key !== KEY_ANGEL_SESSION) {
+            this.saveToDisk();
+          }
           return { rev: payload.rev, data: payload.data };
         }
         return null;
@@ -232,7 +246,7 @@ export class ResilientKvStore implements KvStore {
         }
         this.cache.set(key, envelope);
         this.pgFetchedAt.set(key, Date.now());
-        if (key !== KEY_LEASE) {
+        if (key !== KEY_LEASE && key !== KEY_ANGEL_SESSION) {
           this.saveToDisk();
         }
         return { ok: true, rev };
@@ -250,7 +264,7 @@ export class ResilientKvStore implements KvStore {
     const rev = (expectedRev ?? 0) + 1;
     const envelope: Envelope<T> = { rev, data };
     this.cache.set(key, envelope);
-    if (key !== KEY_LEASE) {
+    if (key !== KEY_LEASE && key !== KEY_ANGEL_SESSION) {
       this.saveToDisk();
     }
     return { ok: true, rev };
@@ -292,6 +306,7 @@ export function createStore(): KvStore {
 export const KEY_ACTIVE = 'PAPER_V2:ACTIVE';
 export const KEY_LEASE = 'PAPER_V2:LEASE';
 export const KEY_INSTRUMENTS = 'PAPER_V2:INSTRUMENTS';
+export const KEY_ANGEL_SESSION = 'PAPER_V2:ANGEL_SESSION';
 
 export const stateKey = (ledgerId: string) => `PAPER_V2:${ledgerId}:STATE`;
 export const tradesKey = (ledgerId: string, month: string) => `PAPER_V2:${ledgerId}:TRADES:${month}`;
