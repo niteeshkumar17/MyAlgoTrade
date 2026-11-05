@@ -1297,13 +1297,17 @@ async function runPaperCycleUnlocked(
   }
 
   let quotes: Record<string, LegQuote> = {};
+  let quoteBatchOk = quoteTokens.size === 0;
   if (quoteTokens.size > 0) {
     try {
       const fetched = await market.fetchOptionQuotes([...quoteTokens]);
-      if (!fetched) {
+      if (!fetched || Object.keys(fetched).length === 0) {
         state.counters.dataErrors += 1;
         log(state, 'DATA', 'Option quote batch failed; open positions were not marked this cycle');
-      } else quotes = fetched;
+      } else {
+        quotes = fetched;
+        quoteBatchOk = true;
+      }
     } catch (err) {
       state.counters.dataErrors += 1;
       log(state, 'DATA', err instanceof Error ? err.message : 'Option quote batch failed');
@@ -1312,11 +1316,11 @@ async function runPaperCycleUnlocked(
 
   for (const pos of state.openPositions) {
     bumpSession(pos, today);
-    applyMark(pos, quotes, nowMs, cfg, state, trendMap, today);
+    if (quoteBatchOk) applyMark(pos, quotes, nowMs, cfg, state, trendMap, today);
   }
   for (const cand of state.activeCandidates) {
     bumpSession(cand, today);
-    applyMark(cand, quotes, nowMs, cfg, state, trendMap, today);
+    if (quoteBatchOk) applyMark(cand, quotes, nowMs, cfg, state, trendMap, today);
   }
 
   const stillOpen: PaperPosition[] = [];

@@ -3281,6 +3281,7 @@ var ResilientKvStore = class {
     this.cache = /* @__PURE__ */ new Map();
     this.pgFetchedAt = /* @__PURE__ */ new Map();
     this.pgDisabledUntilMs = 0;
+    this.diskMtimeMs = 0;
     this.loadFromDisk();
     if (this.pool) {
       this.ensureSchema().catch((err) => {
@@ -3308,6 +3309,7 @@ var ResilientKvStore = class {
   loadFromDisk() {
     try {
       if (fs2.existsSync(DISK_STORE_PATH)) {
+        const stat = fs2.statSync(DISK_STORE_PATH);
         const raw = fs2.readFileSync(DISK_STORE_PATH, "utf8");
         const parsed = JSON.parse(raw);
         for (const [k, v] of Object.entries(parsed)) {
@@ -3315,6 +3317,7 @@ var ResilientKvStore = class {
             this.cache.set(k, v);
           }
         }
+        this.diskMtimeMs = stat.mtimeMs;
       }
     } catch {
     }
@@ -3330,6 +3333,7 @@ var ResilientKvStore = class {
       const tmp = `${DISK_STORE_PATH}.tmp`;
       fs2.writeFileSync(tmp, JSON.stringify(obj), "utf8");
       fs2.renameSync(tmp, DISK_STORE_PATH);
+      this.diskMtimeMs = fs2.statSync(DISK_STORE_PATH).mtimeMs;
     } catch {
     }
   }
@@ -3359,6 +3363,14 @@ var ResilientKvStore = class {
     }
   }
   async get(key) {
+    if (!this.canUsePg()) {
+      try {
+        if (fs2.existsSync(DISK_STORE_PATH) && fs2.statSync(DISK_STORE_PATH).mtimeMs > this.diskMtimeMs) {
+          this.loadFromDisk();
+        }
+      } catch {
+      }
+    }
     const cached = this.cache.get(key);
     const fetchedAt = this.pgFetchedAt.get(key) ?? 0;
     const ttl = this.ttlForKey(key);
@@ -4486,13 +4498,17 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
     });
   }
   let quotes = {};
+  let quoteBatchOk = quoteTokens.size === 0;
   if (quoteTokens.size > 0) {
     try {
       const fetched = await market2.fetchOptionQuotes([...quoteTokens]);
-      if (!fetched) {
+      if (!fetched || Object.keys(fetched).length === 0) {
         state.counters.dataErrors += 1;
         log(state, "DATA", "Option quote batch failed; open positions were not marked this cycle");
-      } else quotes = fetched;
+      } else {
+        quotes = fetched;
+        quoteBatchOk = true;
+      }
     } catch (err) {
       state.counters.dataErrors += 1;
       log(state, "DATA", err instanceof Error ? err.message : "Option quote batch failed");
@@ -4500,11 +4516,11 @@ async function runPaperCycleUnlocked(store2, market2, opts) {
   }
   for (const pos of state.openPositions) {
     bumpSession(pos, today);
-    applyMark(pos, quotes, nowMs, cfg, state, trendMap, today);
+    if (quoteBatchOk) applyMark(pos, quotes, nowMs, cfg, state, trendMap, today);
   }
   for (const cand of state.activeCandidates) {
     bumpSession(cand, today);
-    applyMark(cand, quotes, nowMs, cfg, state, trendMap, today);
+    if (quoteBatchOk) applyMark(cand, quotes, nowMs, cfg, state, trendMap, today);
   }
   const stillOpen = [];
   for (const pos of state.openPositions) {

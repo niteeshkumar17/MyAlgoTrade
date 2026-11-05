@@ -78,6 +78,7 @@ export class ResilientKvStore implements KvStore {
   private cache = new Map<string, Envelope<unknown>>();
   private pgFetchedAt = new Map<string, number>();
   private pgDisabledUntilMs = 0;
+  private diskMtimeMs = 0;
 
   constructor(private pool: pg.Pool | null) {
     this.loadFromDisk();
@@ -109,6 +110,7 @@ export class ResilientKvStore implements KvStore {
   private loadFromDisk() {
     try {
       if (fs.existsSync(DISK_STORE_PATH)) {
+        const stat = fs.statSync(DISK_STORE_PATH);
         const raw = fs.readFileSync(DISK_STORE_PATH, 'utf8');
         const parsed = JSON.parse(raw) as Record<string, Envelope<unknown>>;
         for (const [k, v] of Object.entries(parsed)) {
@@ -116,6 +118,7 @@ export class ResilientKvStore implements KvStore {
             this.cache.set(k, v);
           }
         }
+        this.diskMtimeMs = stat.mtimeMs;
       }
     } catch {
       // ignore corrupt disk cache
@@ -133,6 +136,7 @@ export class ResilientKvStore implements KvStore {
       const tmp = `${DISK_STORE_PATH}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(obj), 'utf8');
       fs.renameSync(tmp, DISK_STORE_PATH);
+      this.diskMtimeMs = fs.statSync(DISK_STORE_PATH).mtimeMs;
     } catch {
       // ignore disk write error on read-only fs
     }
@@ -170,6 +174,15 @@ export class ResilientKvStore implements KvStore {
   }
 
   async get<T>(key: string): Promise<KvRow<T> | null> {
+    if (!this.canUsePg()) {
+      try {
+        if (fs.existsSync(DISK_STORE_PATH) && fs.statSync(DISK_STORE_PATH).mtimeMs > this.diskMtimeMs) {
+          this.loadFromDisk();
+        }
+      } catch {
+        // ignore stat error
+      }
+    }
     const cached = this.cache.get(key);
     const fetchedAt = this.pgFetchedAt.get(key) ?? 0;
     const ttl = this.ttlForKey(key);
